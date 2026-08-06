@@ -1,5 +1,5 @@
-# gui/theme.py
-# Eche visual system — purple accent matched to Eche Installer.
+﻿# gui/theme.py
+# Eche visual system â€” purple accent matched to Eche Installer.
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import os
 import sys
 
 APP_NAME = "Eche"
-APP_VERSION = "1.1.2"
+APP_VERSION = "1.3.0"
 APP_TITLE = f"{APP_NAME} v{APP_VERSION}"
 
 # Palette (installer-aligned purple + deep dark)

@@ -7,8 +7,6 @@ from core.context_manager import ensure_context_channel, get_home_guild
 from core.context_summarizer import summarize_context
 
 
-OWNER_ID = 284007193181945857
-
 
 class ContextDebug(commands.Cog):
     def __init__(self, bot):
@@ -18,10 +16,8 @@ class ContextDebug(commands.Cog):
     # SHOW SUMMARY
     # ---------------------------------------------------------
     @commands.command(name="context_show")
+    @commands.is_owner()
     async def context_show(self, ctx, member: discord.Member):
-        if ctx.author.id != OWNER_ID:
-            return await ctx.send("Hey, @everyone, I just tried to do something very silly")
-
         guild = get_home_guild(self.bot)
         channel, pinned = await ensure_context_channel(
             self.bot, guild, member.id, member.name
@@ -42,10 +38,8 @@ class ContextDebug(commands.Cog):
     # OVERWRITE SUMMARY (PATCHED + SAFE)
     # ---------------------------------------------------------
     @commands.command(name="context_overwrite")
+    @commands.is_owner()
     async def context_overwrite(self, ctx, member: discord.Member, *, new_summary: str):
-        if ctx.author.id != OWNER_ID:
-            return await ctx.send("Hey, @everyone, I just tried to do something very silly")
-
         guild = get_home_guild(self.bot)
         channel, pinned = await ensure_context_channel(
             self.bot, guild, member.id, member.name
@@ -97,10 +91,8 @@ class ContextDebug(commands.Cog):
     # CLEAR SUMMARY
     # ---------------------------------------------------------
     @commands.command(name="context_clear")
+    @commands.is_owner()
     async def context_clear(self, ctx, member: discord.Member):
-        if ctx.author.id != OWNER_ID:
-            return await ctx.send("Hey, @everyone, I just tried to do something very silly")
-
         guild = get_home_guild(self.bot)
         channel, pinned = await ensure_context_channel(
             self.bot, guild, member.id, member.name
@@ -134,10 +126,8 @@ class ContextDebug(commands.Cog):
     # RAW CONTEXT
     # ---------------------------------------------------------
     @commands.command(name="context_raw")
+    @commands.is_owner()
     async def context_raw(self, ctx, member: discord.Member):
-        if ctx.author.id != OWNER_ID:
-            return await ctx.send("Hey, @everyone, I just tried to do something very silly")
-
         guild = get_home_guild(self.bot)
         channel, pinned = await ensure_context_channel(
             self.bot, guild, member.id, member.name
@@ -149,10 +139,8 @@ class ContextDebug(commands.Cog):
     # REPAIR BOT MEMORY (FULL AUTO-REBUILD)
     # ---------------------------------------------------------
     @commands.command(name="bot_repair")
+    @commands.is_owner()
     async def repair_bot_memory(self, ctx):
-        if ctx.author.id != OWNER_ID:
-            return await ctx.send("Hey, @everyone, I just tried to do something very silly")
-
         from core.bot_memory import ensure_bot_memory_channel, BOT_HEADER
         guild = get_home_guild(self.bot)
 
@@ -191,10 +179,8 @@ class ContextDebug(commands.Cog):
     # DEBUGUSER
     # ---------------------------------------------------------
     @commands.command(name="context_debuguser")
+    @commands.is_owner()
     async def context_debuguser(self, ctx, member: discord.Member = None):
-        if ctx.author.id != OWNER_ID:
-            return await ctx.send("Hey, @everyone, I just tried to do something very silly")
-
         member = member or ctx.author
         guild = get_home_guild(self.bot)
 

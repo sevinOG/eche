@@ -4,7 +4,9 @@ import discord
 from discord.ext import commands
 import inspect
 
-print("[on_message] Loaded from:", inspect.getfile(inspect.currentframe()))
+from core.debuglog import dprint
+
+dprint("[on_message] Loaded from:", inspect.getfile(inspect.currentframe()))
 
 # --- AZBOT INTERNALS ---
 from core.context_manager import update_context, HOME_SERVER_ID
@@ -24,14 +26,14 @@ from core.boo_kaitar import maybe_boo
 class OnMessage(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        print("[on_message] Cog initialized")
+        dprint("[on_message] Cog initialized")
 
         # Override flags
         self.bot.next_reply_override = False
         self.bot.override_waiting_for = None
 
     async def cog_load(self):
-        print("[on_message] Cog loaded")
+        dprint("[on_message] Cog loaded")
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):

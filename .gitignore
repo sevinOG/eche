@@ -35,7 +35,10 @@ Thumbs.db
 echelon_*/
 **/__trash*/
 
-# Portable app runtime (local only)
+# Portable app runtime + freeze output (local only; build with eche_source/BUILD.bat)
+# Do not commit frozen binaries / _internal trees — installer is the ready-to-run path.
+eche/Eche.exe
+eche/_internal/
 eche/config/
 eche/cookies/
 eche/logs/
@@ -47,6 +50,13 @@ eche/**/opted_in.json
 eche/**/gui.lock
 eche/**/settings.json
 eche/**/secrets*
+eche/install.json
+eche/icon.ico
+eche/icon.png
+eche_source/Uninstall.exe
+eche_source/START_HERE.txt
+eche_source/gui.lock
+eche_installer_source/final/
 
 # Keep installer dist EXE for convenience (optional)
 # eche_installer/dist/ is tracked for local convenience; strip secrets only

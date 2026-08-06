@@ -1,8 +1,8 @@
-@echo off
+﻿@echo off
 setlocal EnableDelayedExpansion
 title Eche Installer - Build
 REM Always use:  python.exe -m PyInstaller
-REM Never call pyinstaller.exe directly — Windows launcher stubs break when the
+REM Never call pyinstaller.exe directly â€” Windows launcher stubs break when the
 REM venv folder is renamed (they hardcode the old python path).
 
 set "SCRIPT_DIR=%~dp0"
@@ -102,7 +102,7 @@ set /a SIZE_MB=%SIZE% / 1024 / 1024
 
 if not exist "%SCRIPT_DIR%final" mkdir "%SCRIPT_DIR%final"
 copy /y "%OUT_EXE%" "%SCRIPT_DIR%final\Eche-Installer.exe" >nul
-echo 1.1.1 > "%SCRIPT_DIR%final\VERSION"
+echo 1.3.0 > "%SCRIPT_DIR%final\VERSION"
 echo Eche Installer - run Eche-Installer.exe > "%SCRIPT_DIR%final\README.txt"
 
 echo.

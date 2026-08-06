@@ -2,14 +2,15 @@ import sys
 import os
 import multiprocessing
 import inspect
-
-print(">>> BOT.PY IS RUNNING — TOP OF FILE")
-print(">>> PYTHON EXECUTABLE:", sys.executable)
-
 import shutil
-print("FFMPEG PATH:", shutil.which("ffmpeg"))
-print(os.path.exists("cookies/ytcookies.txt"))
-print(os.path.abspath("cookies/ytcookies.txt"))
+
+from core.debuglog import dprint
+
+dprint(">>> BOT.PY IS RUNNING — TOP OF FILE")
+dprint(">>> PYTHON EXECUTABLE:", sys.executable)
+dprint("FFMPEG PATH:", shutil.which("ffmpeg"))
+dprint(os.path.exists("cookies/ytcookies.txt"))
+dprint(os.path.abspath("cookies/ytcookies.txt"))
 
 
 # ---------------------------------------------------------
@@ -24,14 +25,14 @@ except Exception:
 
 OPUS_PATH = find_opus_dll() if find_opus_dll else None
 if OPUS_PATH:
-    print(">>> LOADING OPUS FROM:", OPUS_PATH)
+    dprint(">>> LOADING OPUS FROM:", OPUS_PATH)
     try:
         discord.opus.load_opus(OPUS_PATH)
     except Exception as e:
-        print(">>> OPUS LOAD FAILED:", e)
+        dprint(">>> OPUS LOAD FAILED:", e)
 else:
-    print(">>> OPUS DLL NOT FOUND (voice may be unavailable)")
-print(">>> OPUS LOADED:", discord.opus.is_loaded())
+    dprint(">>> OPUS DLL NOT FOUND (voice may be unavailable)")
+dprint(">>> OPUS LOADED:", discord.opus.is_loaded())
 
 # ---------------------------------------------------------
 # NORMAL IMPORTS

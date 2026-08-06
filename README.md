@@ -2,41 +2,43 @@
 
 Open-source Discord bot + desktop control panel.
 
-**Repo:** [github.com/sevinOG/eche](https://github.com/sevinOG/eche)
+**Repo:** [github.com/sevinOG/eche](https://github.com/sevinOG/eche) · **Version:** see root [`VERSION`](VERSION) (currently **1.3.0**)
+
+**Formerly Echelon** — same project, rebranded to **Eche** (product, folders, EXE names). Older docs or shortcuts may still say “Echelon”; treat them as legacy names for this repo.
 
 ## Four forks only
 
 | Fork | Folder | What |
 |------|--------|------|
-| **App (portable)** | `eche/` | Onedir app: `Eche.exe` + `_internal/` |
+| **App (portable)** | `eche/` | **Build output** (onedir: `Eche.exe` + `_internal/`) — produced by `BUILD.bat`, not a pre-shipped binary tree in git |
 | **App source** | `eche_source/` | Python source + `BUILD.bat` / `SETUP_AND_BUILD.bat` |
-| **Installer (portable)** | `eche_installer/` | Wizard: `dist\Eche-Installer.exe` |
+| **Installer (portable)** | `eche_installer/` / `prebuilt/` | Wizard: `Eche-Installer.exe` — **recommended ready-to-run path** |
 | **Installer source** | `eche_installer_source/` | Installer UI + `build.bat` |
 
 ---
 
-## Install: beginners (one download)
+## Recommended: ready to run (installer)
 
 **[Download Eche-Installer.exe](https://github.com/sevinOG/eche/raw/main/prebuilt/Eche-Installer.exe)**
 
 1. Save and run **Eche-Installer.exe**
 2. Keep **Install from GitHub** selected
 3. Choose a folder → **Install**
-4. Open the folder → run **`RUN_ECHE.bat`** (source) or **`Eche.exe`** if present
+4. Open the folder → run **`RUN_ECHE.bat`** (source install) or **`Eche.exe`** if a portable freeze is present
 
-More hand-holding: [START_HERE.md](START_HERE.md).
+More hand-holding: [START_HERE.md](START_HERE.md). Privacy: [PRIVACY.md](PRIVACY.md).
 
-Unsigned open-source EXEs often trip SmartScreen/Defender. Prefer the official GitHub link; Edge **Keep** / SmartScreen **Run anyway**.
+Unsigned open-source EXEs often trip SmartScreen/Defender until you add code signing. Prefer the official GitHub link; Edge **Keep** / SmartScreen **Run anyway**.
+
+> A fresh `git clone` does **not** include a frozen `eche/Eche.exe` + `_internal/` tree. That folder is created when you run `eche_source\BUILD.bat`. For a working app without building, use the installer above.
 
 ---
 
-## Install: Git + terminal
+## Install: Git + terminal (developers)
 
 ### 0) Install Git and Python first (Windows / PowerShell)
 
-Open **PowerShell** (normal is fine; use “Run as administrator” only if winget asks).
-
-Use **exact package IDs** (`--id` + `-e`). Do **not** pass bare names like `git` or `python` — winget’s fuzzy match is unreliable.
+Open **PowerShell**. Use **exact package IDs** (`--id` + `-e`). Do **not** pass bare names like `git` or `python`.
 
 ```powershell
 # Git for Windows  — package id: Git.Git
@@ -53,7 +55,7 @@ winget install --id Python.Python.3.12 -e --source winget --accept-package-agree
 | Python 3.11 (also fine) | `Python.Python.3.11` | Same flags as above |
 | Python 3.13 (also fine) | `Python.Python.3.13` | Same flags as above |
 
-**After install:** close PowerShell completely, open a **new** window so `PATH` updates, then check:
+**After install:** close PowerShell, open a **new** window, then:
 
 ```powershell
 git --version
@@ -61,12 +63,8 @@ python --version
 py -0p
 ```
 
-You want Git 2.x and Python 3.11+ (not 2.7). If `python` still fails but `py -3.12` works, either use the full path from `py -0p` or open a fresh terminal again.
-
 **Manual downloads (if winget is missing):**  
 [git-scm.com/downloads](https://git-scm.com/downloads) · [python.org/downloads](https://www.python.org/downloads/) (enable **Add python.exe to PATH**).
-
-Windows is required for the portable freeze (`.bat` scripts). Linux/mac can run the GUI from source with Qt available.
 
 ### 1) Clone
 
@@ -75,9 +73,7 @@ git clone https://github.com/sevinOG/eche.git
 cd eche
 ```
 
-### 2) Run from source (fastest for development)
-
-**PowerShell (Windows):**
+### 2) Run from source (dev GUI)
 
 ```powershell
 cd eche_source
@@ -87,56 +83,30 @@ python -m venv .venv
 .\.venv\Scripts\python.exe eche_app.py
 ```
 
-Or after the venv exists:
-
-```powershell
-cd eche_source
-.\RUN_ECHE.bat
-```
-
-**bash (Git Bash / WSL / macOS / Linux):**
-
-```bash
-cd eche_source
-python3 -m venv .venv
-source .venv/bin/activate   # Windows Git Bash: source .venv/Scripts/activate
-pip install -U pip
-pip install -r requirements.txt
-python eche_app.py
-```
+Or: `.\RUN_ECHE.bat` after the venv exists.
 
 First GUI run: **Settings → Discord bot token → Run Bot**.
 
+Optional verbose bot logs: set environment variable `ECHE_DEBUG=1`.
+
 ### 3) Build the portable app (onedir folder)
-
-Windows PowerShell:
-
-```powershell
-cd eche_source
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-.\BUILD.bat
-```
-
-One-shot helper (venv + deps + freeze):
 
 ```powershell
 cd eche_source
 .\SETUP_AND_BUILD.bat
 ```
 
-Output:
+Creates/refreshes sibling **`eche/`**:
 
 ```text
 eche/
-  Eche.exe          ← small launcher (double-click this)
-  _internal/        ← libraries / Qt / cogs (must stay next to Eche.exe)
+  Eche.exe          ← small launcher
+  _internal/        ← must stay next to Eche.exe
   assets/
-  config/
   ...
 ```
 
-Copy the whole **`eche/`** folder (USB, Desktop, another PC). Do not ship `Eche.exe` alone.
+Copy the **whole** `eche/` folder if you move it. Do not ship `Eche.exe` alone.
 
 ### 4) Installer from source (maintainers)
 
@@ -145,65 +115,61 @@ cd eche_installer_source
 .\build.bat
 ```
 
-Produces `eche_installer_source\dist\Eche-Installer.exe` (also copied under `prebuilt/` when you publish).
+Produces `dist\Eche-Installer.exe` (publish under `prebuilt/` when ready). Code-signing this EXE is recommended for SmartScreen.
 
 ---
 
 ## Packaging: why onedir (not one-file)
 
-The app freeze is **one-folder (onedir)** mode, not a single fat EXE.
-
 | Mode | What happens | Why we avoid / use it |
 |------|----------------|------------------------|
-| **One-file** | Bootloader unpacks the entire app to a temp dir at every launch | Looks like a **dropper** to Defender ML → more false positives |
-| **Onedir** (current) | Slim `Eche.exe` + `_internal/` next to it | Normal desktop-app layout; less AV noise; easier to debug |
+| **One-file** | Unpacks to temp every launch | Dropper-like → Defender ML false positives |
+| **Onedir** (current) | Slim `Eche.exe` + `_internal/` | Normal app layout; less AV noise |
 
-Details:
+- Spec: `eche_source/build_exe.spec` — `exclude_binaries=True` + `COLLECT`
+- **UPX off**
+- Installer wraps/copies folders or fetches source; it does not re-extract the bot stack on every double-click
 
-- Spec: `eche_source/build_exe.spec` — `exclude_binaries=True` + `COLLECT` → `dist/Eche/`
-- **UPX is off** (packers also raise AV scores)
-- `BUILD.bat` publishes `dist\Eche\` → sibling portable `eche/`
-- The **installer** is the “wrapper”: it copies a folder (or fetches source from GitHub), creates shortcuts, and registers uninstall — not “self-extract the whole bot into `%TEMP%` every run”
-- Optional future: wrap the onedir folder with Inno Setup / NSIS for a signed setup.exe; the runtime app stays onedir either way
+---
 
-Installer binary itself remains a single downloadable wizard EXE for the beginner path; it is small compared to the full bot stack and does not re-extract the app on every launch.
+## Privacy
+
+Tokens and keys stay on your machine except when talking to **Discord**, **Groq** (if enabled), or **Unsplash** (image command). See **[PRIVACY.md](PRIVACY.md)**.
 
 ---
 
 ## Repo layout after clone
 
 ```text
-eche/                      ← monorepo root (this repo)
-  README.md
-  START_HERE.md
-  prebuilt/Eche-Installer.exe
-  eche/                    ← portable app (after BUILD.bat)
-  eche_source/             ← edit & freeze here
-  eche_installer/          ← prebuilt installer convenience copy
+eche/                      ← monorepo root
+  README.md  START_HERE.md  PRIVACY.md  VERSION
+  prebuilt/Eche-Installer.exe   ← recommended ready path
+  eche/                    ← portable onedir *after* BUILD.bat (not pre-frozen in git)
+  eche_source/             ← app source
+  eche_installer/          ← installer convenience copy
   eche_installer_source/   ← installer source
 ```
 
 ---
 
-## Common commands cheat sheet
+## Common commands
 
 | Goal | Command |
 |------|---------|
-| Install Git (exact id) | `winget install --id Git.Git -e --source winget --accept-package-agreements --accept-source-agreements` |
-| Install Python 3.12 (exact id) | `winget install --id Python.Python.3.12 -e --source winget --accept-package-agreements --accept-source-agreements` |
+| Install Git | `winget install --id Git.Git -e --source winget --accept-package-agreements --accept-source-agreements` |
+| Install Python 3.12 | `winget install --id Python.Python.3.12 -e --source winget --accept-package-agreements --accept-source-agreements` |
 | Clone | `git clone https://github.com/sevinOG/eche.git` |
 | Dev GUI | `cd eche_source` → venv + `python eche_app.py` |
-| Dev GUI (bat) | `.\eche_source\RUN_ECHE.bat` |
 | Freeze portable | `.\eche_source\BUILD.bat` |
-| Setup + freeze | `.\eche_source\SETUP_AND_BUILD.bat` |
 | Build installer | `.\eche_installer_source\build.bat` |
-| Pull latest | `git pull` |
+| Debug logs | `$env:ECHE_DEBUG=1` then run bot/GUI |
 
 ---
 
-## Maintainers
+## Maintainers & contact
 
-**Grok (xAI)** — [MAINTAINERS.md](MAINTAINERS.md).
+Prefer **[GitHub Issues](https://github.com/sevinOG/eche/issues)** for bugs and features.  
+See [MAINTAINERS.md](MAINTAINERS.md) (no secrets in issues).
 
 ## License
 

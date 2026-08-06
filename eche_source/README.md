@@ -1,6 +1,10 @@
 # eche_source — edit & build
 
-Application source for **Eche**. Freeze output is **onedir** (folder), not one-file.
+Application source for **Eche** (formerly Echelon). Freeze output is **onedir** (folder), not one-file.
+
+**Ready-to-run without building?** Use the monorepo installer:  
+[prebuilt/Eche-Installer.exe](https://github.com/sevinOG/eche/raw/main/prebuilt/Eche-Installer.exe)  
+`../eche/` is only populated after `BUILD.bat` — it is not a pre-shipped binary tree in git.
 
 ## Why onedir?
 
@@ -40,7 +44,11 @@ Or: `SETUP_AND_BUILD.bat` (venv + deps + freeze in one go).
 
 Or: `RUN_ECHE.bat`
 
+Optional verbose logs: set `ECHE_DEBUG=1` before launching.
+
+Owner-only Discord commands use Discord’s **application owner** (`@commands.is_owner()`), not a hardcoded user id.
+
 ## Spec
 
 `build_exe.spec` — `exclude_binaries=True` + `COLLECT` → `dist/Eche/`.  
-See monorepo [README.md](../README.md) for full clone/install docs.
+See monorepo [README.md](../README.md) · [PRIVACY.md](../PRIVACY.md).

@@ -1,9 +1,9 @@
-# charoverride.py
+# charoverride.py — Owner-only next-reply override
+# Owner = Discord application owner (no hardcoded user IDs).
 
 import discord
 from discord.ext import commands
 
-OWNER_ID = 284007193181945857
 
 class CharOverride(commands.Cog):
     def __init__(self, bot):
@@ -12,10 +12,8 @@ class CharOverride(commands.Cog):
         self.bot.override_waiting_for = None
 
     @commands.command(name="charoverride")
+    @commands.is_owner()
     async def charoverride(self, ctx):
-        if ctx.author.id != OWNER_ID:
-            return await ctx.send("Hey, @everyone, I just tried to do something very silly")
-
         msg = await ctx.send("What would you like me to say?")
 
         self.bot.next_reply_override = True
@@ -23,8 +21,6 @@ class CharOverride(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message):
-        # REMOVED BOT BLOCK
-
         # If override isn't active, ignore
         if not getattr(self.bot, "next_reply_override", False):
             return
@@ -36,13 +32,17 @@ class CharOverride(commands.Cog):
         if message.reference.message_id != self.bot.override_waiting_for:
             return
 
+        # Only the application owner may complete the override
+        if not await self.bot.is_owner(message.author):
+            return
+
         # --- VALID OVERRIDE TRIGGER ---
         user_text = message.content
 
         # Call your normal pipeline but with 2000-char limit
         reply = await self.bot.generate_reply(
             user_text,
-            max_chars=2000
+            max_chars=2000,
         )
 
         await message.channel.send(reply)

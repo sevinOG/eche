@@ -31,7 +31,7 @@ INSTALLER_MARKERS = (
     "echelon_installer_source",  # legacy
 )
 
-USER_AGENT = "Eche-Installer/1.4 (+https://github.com/sevinOG/eche)"
+USER_AGENT = "Eche-Installer/1.3.0 (+https://github.com/sevinOG/eche)"
 
 
 def repo_web_url() -> str:

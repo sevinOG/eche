@@ -1,4 +1,4 @@
-# image_search.py (IMAGE ONLY + BUTTONS + 60s TIMEOUT + BLACKOUT, CLEAN + DEBUG)
+# image_search.py (IMAGE ONLY + BUTTONS + 60s TIMEOUT + BLACKOUT)
 
 import discord
 import aiohttp
@@ -6,13 +6,15 @@ import os
 from discord.ext import commands
 from discord.ui import View, Button
 
-print(">>> [image_search] Module imported")
+from core.debuglog import dprint
+
+dprint(">>> [image_search] Module imported")
 
 UNSPLASH_ACCESS = os.getenv("US_ACCESS_TOKEN")
 UNSPLASH_SECRET = os.getenv("US_SECRET_TOKEN")
 
-print(f">>> [image_search] UNSPLASH_ACCESS loaded: {bool(UNSPLASH_ACCESS)}")
-print(f">>> [image_search] UNSPLASH_SECRET loaded: {bool(UNSPLASH_SECRET)}")
+dprint(f">>> [image_search] UNSPLASH_ACCESS loaded: {bool(UNSPLASH_ACCESS)}")
+dprint(f">>> [image_search] UNSPLASH_SECRET loaded: {bool(UNSPLASH_SECRET)}")
 
 
 # =========================================================
@@ -35,7 +37,7 @@ class ImageNavigator(View):
         )
 
     async def on_timeout(self):
-        print(">>> [ImageNavigator] Timeout reached — disabling buttons")
+        dprint(">>> [ImageNavigator] Timeout reached — disabling buttons")
 
         # Disable and darken all buttons
         for child in self.children:
@@ -46,7 +48,7 @@ class ImageNavigator(View):
         try:
             await self.message.edit(view=self)
         except Exception as e:
-            print(f">>> [ImageNavigator] Timeout edit failed: {e}")
+            dprint(f">>> [ImageNavigator] Timeout edit failed: {e}")
 
     @discord.ui.button(label="Last", style=discord.ButtonStyle.secondary)
     async def last_button(self, interaction: discord.Interaction, button: Button):
@@ -73,13 +75,13 @@ class ImageNavigator(View):
 class ImageSearch(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        print(">>> [ImageSearch] Cog initialized")
+        dprint(">>> [ImageSearch] Cog initialized")
 
     async def unsplash_multi(self, query: str, count=10):
-        print(f">>> [unsplash_multi] Searching for: {query}")
+        dprint(f">>> [unsplash_multi] Searching for: {query}")
 
         if not UNSPLASH_ACCESS:
-            print(">>> [unsplash_multi] ERROR: Missing UNSPLASH_ACCESS")
+            dprint(">>> [unsplash_multi] ERROR: Missing UNSPLASH_ACCESS")
             return None
 
         url = "https://api.unsplash.com/search/photos"
@@ -92,20 +94,20 @@ class ImageSearch(commands.Cog):
 
         async with aiohttp.ClientSession() as session:
             async with session.get(url, params=params) as resp:
-                print(f">>> [unsplash_multi] Status: {resp.status}")
+                dprint(f">>> [unsplash_multi] Status: {resp.status}")
                 if resp.status != 200:
                     text = await resp.text()
-                    print(f">>> [unsplash_multi] ERROR BODY: {text}")
+                    dprint(f">>> [unsplash_multi] ERROR BODY: {text}")
                     return None
                 data = await resp.json()
 
         results = data.get("results", [])
-        print(f">>> [unsplash_multi] Found {len(results)} results")
+        dprint(f">>> [unsplash_multi] Found {len(results)} results")
         return results
 
     @commands.command(name="image")
     async def image(self, ctx, *, query: str):
-        print(f">>> [image] Triggered by {ctx.author} | Query: {query}")
+        dprint(f">>> [image] Triggered by {ctx.author} | Query: {query}")
 
         results = await self.unsplash_multi(query)
         if not results:
@@ -123,6 +125,6 @@ class ImageSearch(commands.Cog):
 
 
 async def setup(bot):
-    print(">>> [image_search] setup() called — adding Cog...")
+    dprint(">>> [image_search] setup() called — adding Cog...")
     await bot.add_cog(ImageSearch(bot))
-    print(">>> [image_search] Cog added successfully")
+    dprint(">>> [image_search] Cog added successfully")

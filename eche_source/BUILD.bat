@@ -1,14 +1,14 @@
-@echo off
+﻿@echo off
 setlocal EnableDelayedExpansion
 title Eche - Build portable app
-REM Source-only tree → clean portable ../eche/ (no Python source in portable)
+REM Source-only tree â†’ clean portable ../eche/ (no Python source in portable)
 REM Always: python -m PyInstaller  (never pyinstaller.exe)
 
 set "SCRIPT_DIR=%~dp0"
 REM If this bat was copied into portable eche\, jump to real source tree
 if exist "%SCRIPT_DIR%install.json" if exist "%SCRIPT_DIR%..\eche_source\BUILD.bat" (
   if not exist "%SCRIPT_DIR%.venv\Scripts\python.exe" (
-    echo [INFO] This BUILD.bat is inside portable eche\ — redirecting to eche_source\
+    echo [INFO] This BUILD.bat is inside portable eche\ â€” redirecting to eche_source\
     call "%SCRIPT_DIR%..\eche_source\BUILD.bat" %*
     exit /b !errorlevel!
   )
@@ -34,7 +34,7 @@ set "NOPAUSE=%ECHE_NO_PAUSE%"
 
 echo.
 echo  ========================================
-echo   ECHE SOURCE → PORTABLE APP
+echo   ECHE SOURCE â†’ PORTABLE APP
 echo  ========================================
 echo   From: %SCRIPT_DIR%
 echo   To:   %PORTABLE%
@@ -42,7 +42,7 @@ echo   Python: %PY%
 echo.
 
 if not exist "%SCRIPT_DIR%build_exe.spec" (
-  echo [FATAL] Not a source tree — missing build_exe.spec
+  echo [FATAL] Not a source tree â€” missing build_exe.spec
   echo   Run BUILD.bat from eche_source\  (not from portable eche\)
   if not defined NOPAUSE pause
   exit /b 1
@@ -62,14 +62,14 @@ if not exist "%PY%" (
 
 echo [1/5] Dependencies...
 "%PY%" -m pip install -q -r "%SCRIPT_DIR%requirements.txt"
-if errorlevel 1 echo [WARN] pip had issues — continuing
+if errorlevel 1 echo [WARN] pip had issues â€” continuing
 "%PY%" -c "import PyInstaller" 2>nul
 if errorlevel 1 (
   echo [INFO] Installing PyInstaller...
   "%PY%" -m pip install -q pyinstaller
 )
 
-REM Runtime folders are gitignored — create them so PyInstaller datas= do not fail
+REM Runtime folders are gitignored â€” create them so PyInstaller datas= do not fail
 for %%D in (context cookies logs memories) do (
   if not exist "%SCRIPT_DIR%%%D" mkdir "%SCRIPT_DIR%%%D"
   if not exist "%SCRIPT_DIR%%%D\.gitkeep" type nul > "%SCRIPT_DIR%%%D\.gitkeep"
@@ -129,7 +129,7 @@ for %%N in (
   )
 )
 
-echo [4/5] Publishing freeze → portable (Eche.exe + _internal)...
+echo [4/5] Publishing freeze â†’ portable (Eche.exe + _internal)...
 if exist "%PORTABLE%\Eche.exe" del /f /q "%PORTABLE%\Eche.exe"
 if exist "%PORTABLE%\_internal" rmdir /s /q "%PORTABLE%\_internal"
 
@@ -167,20 +167,20 @@ if exist "%SCRIPT_DIR%VERSION" copy /y "%SCRIPT_DIR%VERSION" "%PORTABLE%\VERSION
 > "%PORTABLE%\install.json" (
   echo {
   echo   "kind": "portable_app",
-  echo   "version": "1.1.1",
+  echo   "version": "1.3.0",
   echo   "built_from": "eche_source"
   echo }
 )
 
 > "%PORTABLE%\README.txt" (
-  echo ECHE portable app — no Python source here.
+  echo ECHE portable app â€” no Python source here.
   echo Double-click Eche.exe. Copy this whole folder to USB.
   echo Source lives in sibling eche_source\. Built by BUILD.bat.
 )
 
 REM Final guard: refuse if source folders reappeared
 if exist "%PORTABLE%\core" if exist "%PORTABLE%\gui" if not exist "%PORTABLE%\Eche.exe" (
-  echo [WARN] Portable looks like source without exe — something went wrong
+  echo [WARN] Portable looks like source without exe â€” something went wrong
 )
 
 if not exist "%PORTABLE%\Eche.exe" (
@@ -189,7 +189,7 @@ if not exist "%PORTABLE%\Eche.exe" (
   exit /b 1
 )
 if not exist "%PORTABLE%\assets\icon.png" (
-  echo [WARN] assets\icon.png missing in portable — window icon may be blank
+  echo [WARN] assets\icon.png missing in portable â€” window icon may be blank
 ) else (
   echo [OK] assets\icon.png present
 )

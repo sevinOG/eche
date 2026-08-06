@@ -3,6 +3,8 @@
 import discord
 import os
 
+from core.debuglog import dprint
+
 # Always load HOME_SERVER_ID safely with a fallback
 HOME_SERVER_ID = int(os.getenv("HOME_SERVER_ID", "0"))
 
@@ -21,14 +23,14 @@ async def ensure_context_channel(bot, guild, user_id, username=None):
     category = discord.utils.get(guild.categories, name=category_name)
 
     if not category:
-        print(f"[context_manager] Creating category: {category_name}")
+        dprint(f"[context_manager] Creating category: {category_name}")
         category = await guild.create_category(category_name)
 
     channel_name = "context"
     channel = discord.utils.get(category.channels, name=channel_name)
 
     if not channel:
-        print(f"[context_manager] Creating context channel for {user_id}")
+        dprint(f"[context_manager] Creating context channel for {user_id}")
         channel = await category.create_text_channel(channel_name)
 
     pins = await channel.pins()
@@ -48,7 +50,7 @@ async def ensure_context_channel(bot, guild, user_id, username=None):
 
     header = f"Context for {display_name}:\n"
 
-    print(f"[context_manager] Creating pinned message for {user_id}")
+    dprint(f"[context_manager] Creating pinned message for {user_id}")
     msg = await channel.send(header)
     await msg.pin()
 
@@ -63,7 +65,7 @@ async def update_context(bot, guild, user_id, message_text, username=None):
 
     channel, pinned = await ensure_context_channel(bot, guild, user_id, username)
     if not channel or not pinned:
-        print(f"[context_manager] ERROR: Could not update user context for {user_id}.")
+        dprint(f"[context_manager] ERROR: Could not update user context for {user_id}.")
         return
 
     # Determine header
@@ -104,7 +106,7 @@ async def update_context(bot, guild, user_id, message_text, username=None):
     new_content = before_summary + after_summary + new_section
 
     if len(new_content) > 1990:
-        print(f"[context_manager] WARNING: User context exceeded limit before summarization for {user_id}. Resetting.")
+        dprint(f"[context_manager] WARNING: User context exceeded limit before summarization for {user_id}. Resetting.")
         new_content = (
             header +
             "Summary:\n(none yet)\n\nNew:\n" +
@@ -114,14 +116,14 @@ async def update_context(bot, guild, user_id, message_text, username=None):
     try:
         await pinned.edit(content=new_content)
     except Exception as e:
-        print(f"[context_manager] ERROR editing pinned message for {user_id}: {e}")
+        dprint(f"[context_manager] ERROR editing pinned message for {user_id}: {e}")
 
     # Check message count in New: section and trigger summarizer every 3rd message
     try:
         new_lines = [line for line in new_section.splitlines() if line.strip() and not line.startswith("New:")]
-        print(f"[context_manager] User {user_id} lines in New: section: {len(new_lines)}")
+        dprint(f"[context_manager] User {user_id} lines in New: section: {len(new_lines)}")
         if len(new_lines) >= 3:
-            print(f"[context_manager] Reached 3+ messages in user {user_id} New:, triggering summarizer.")
+            dprint(f"[context_manager] Reached 3+ messages in user {user_id} New:, triggering summarizer.")
             from core.context_summarizer import summarize_context
             await summarize_context(
                 bot,
@@ -130,4 +132,4 @@ async def update_context(bot, guild, user_id, message_text, username=None):
                 username
             )
     except Exception as e:
-        print(f"[context_manager] ERROR checking user summarization trigger for {user_id}: {e}")
+        dprint(f"[context_manager] ERROR checking user summarization trigger for {user_id}: {e}")
