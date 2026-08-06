@@ -1,5 +1,5 @@
 # core/personality.py
-# Sevin personality prompt — editable via GUI (config/personality.txt).
+# Eche personality prompt — editable via GUI (config/personality.txt).
 
 from __future__ import annotations
 
