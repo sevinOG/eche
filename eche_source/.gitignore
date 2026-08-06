@@ -6,6 +6,7 @@ __pycache__/
 build/
 dist/
 *.log
+build_pyinstaller.log
 .env
 .env.*
 config/settings.json
@@ -19,3 +20,6 @@ memories/
 *.dpapi
 .DS_Store
 Thumbs.db
+Uninstall.exe
+START_HERE.txt
+gui.lock
