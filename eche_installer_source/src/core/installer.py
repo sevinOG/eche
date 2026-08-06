@@ -88,16 +88,39 @@ class Installer:
                         try_fetch_portable_app_from_release,
                     )
 
-                    self.log(f"Fetching Eche source from {repo_web_url()} …")
+                    # Always app source (eche_source), never installer source
+                    sub = (opts.github_subdir or "eche_source").strip()
+                    if "installer" in sub.lower():
+                        self.log(
+                            f"Ignoring invalid github_subdir={sub!r}; "
+                            "forcing eche_source (application)."
+                        )
+                        sub = "eche_source"
+                    self.log(
+                        f"Fetching Eche *application* source from {repo_web_url()} "
+                        f"(folder {sub}/) …"
+                    )
                     tmp_root = fetch_to_temp_source(
-                        subdir=opts.github_subdir or "eche_source",
+                        subdir=sub,
                         log=self.log,
                         progress=self.progress,
                     )
-                    self.log(f"Source staged at {tmp_root}")
-                    self.log("Continuing as install-from-source…")
-                    self.progress(45, "Installing source tree…")
-                    self._copy_tree(Path(tmp_root), install_path, copied_files)
+                    # Hard check before copy
+                    tmp_path = Path(tmp_root)
+                    if (tmp_path / "src" / "main.py").is_file() and not (
+                        tmp_path / "cogs"
+                    ).is_dir():
+                        raise RuntimeError(
+                            "Staged tree looks like installer source, not app source. Aborting."
+                        )
+                    if not (tmp_path / "core").is_dir():
+                        raise RuntimeError(
+                            "Staged tree missing core/ — not Eche application source."
+                        )
+                    self.log(f"App source staged at {tmp_root}")
+                    self.log("Continuing as install-from-source (application)…")
+                    self.progress(45, "Installing application source…")
+                    self._copy_tree(tmp_path, install_path, copied_files)
 
                     # Best-effort: if Releases publish a portable app, put it here too
                     try:
