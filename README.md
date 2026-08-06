@@ -86,7 +86,10 @@ build.bat
 - This repo does **not** contain Discord tokens, API keys, or your server IDs.  
 - Never paste secrets into GitHub Issues.  
 - If you fork, keep `config/settings.json` and `config/secrets.dpapi.json` **out of git**.  
-- Windows may show SmartScreen on first run of open-source EXEs → *More info → Run anyway*.
+- **Unsigned EXE warnings are normal** for open-source apps without a paid  
+  Authenticode certificate. Opera / Windows Defender / SmartScreen may warn.  
+  Use **Download anyway** / **More info → Run again** when you trust this repo.  
+  Builds ship **without UPX packing** (UPX is a common false-positive trigger).
 
 ---
 

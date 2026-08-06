@@ -112,14 +112,16 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    # UPX causes browser/AV false positives — keep off
+    upx=False,
     console=False,
     disable_windowed_traceback=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    # Windows embeds .ico in the exe; source brand art is assets/icon.png
-    icon=str(Path('assets/icon.ico')) if Path('assets/icon.ico').is_file() else None,
+    # Multi-size .ico for Explorer + taskbar
+    icon=str(Path('assets/icon.ico').resolve()) if Path('assets/icon.ico').is_file() else None,
+    version='version_info.txt' if Path('version_info.txt').is_file() else None,
 )
 
 coll = COLLECT(
@@ -128,6 +130,6 @@ coll = COLLECT(
     a.zipfiles,
     a.datas,
     strip=False,
-    upx=True,
+    upx=False,
     name='Echelon'
 )

@@ -70,11 +70,19 @@ def _asset_icon_paths() -> list[str]:
 
 
 def brand_icon():
+    """QIcon for window/taskbar — load PNG + ICO at several sizes."""
+    from PyQt6.QtCore import QSize
     from PyQt6.QtGui import QIcon
 
     icon = QIcon()
-    for p in _asset_icon_paths():
+    paths = _asset_icon_paths()
+    sizes = (16, 24, 32, 48, 64, 128, 256)
+    for p in paths:
+        # full file
         icon.addFile(p)
+        # explicit sizes help Windows shell pick a crisp glyph
+        for s in sizes:
+            icon.addFile(p, QSize(s, s))
     return icon
 
 

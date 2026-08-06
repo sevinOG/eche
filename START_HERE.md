@@ -20,8 +20,18 @@ Click this link (saves a program to your PC):
 
 **[⬇️ Download Echelon-Installer.exe](https://github.com/sevinOG/echelon_ecosystem/raw/main/prebuilt/Echelon-Installer.exe)**
 
-> That is a normal Windows download. If Windows SmartScreen warns you, choose  
-> **More info → Run anyway** (you built nothing malicious — this is open source you can read).
+> That is a normal Windows download of **unsigned open-source software**.  
+> Some browsers (including **Opera**) and antivirus tools flag **any** new  
+> `.exe` that isn’t signed by a paid code-signing certificate — especially  
+> programs packaged with PyInstaller. That is a **false positive** pattern,  
+> not proof of malware.  
+>
+> - **Opera “virus detected”**: open the download details → allow/keep the file,  
+>   or download with Edge/Chrome once, or use “Download anyway”.  
+> - **Windows SmartScreen**: **More info → Run anyway**.  
+> - Prefer the official link from this GitHub repo only.  
+> - Advanced users can rebuild the installer from `echelon_installer_source`  
+>   so the binary is one they compiled themselves.
 
 ### Step 2 — Run the installer
 
