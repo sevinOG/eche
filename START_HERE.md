@@ -15,12 +15,13 @@ If a browser blocks the file: unsigned open-source EXEs often get false positive
 
 ## After install
 
-- **`Eche.exe`** present → double-click it (keep `_internal/` next to it — onedir layout)  
-- Only source files → **`RUN_ECHE.bat`**, or install free [Python](https://www.python.org/downloads/) (check **Add to PATH**) then **SETUP_AND_BUILD.bat**
+1. Prefer **`Eche.exe`** if present → double-click it (keep `_internal/` next to it — onedir layout)  
+2. If you only have **source** files → install free [Python](https://www.python.org/downloads/) (check **Add to PATH**), then double-click **`SETUP_AND_BUILD.bat`** once → open `dist\Eche\Eche.exe` or the published `eche\Eche.exe`  
+3. **`RUN_ECHE.bat`** is optional (runs from Python without building)
 
 Settings → Discord token → Run Bot.
 
-A fresh clone of the repo does **not** include a ready `eche/Eche.exe` — use the installer above, or build from `eche_source`.
+A fresh clone of the repo does **not** include a ready `eche/Eche.exe` — use the installer above, or **build** from `eche_source` (below).
 
 ## Comfortable with Git / terminal?
 
@@ -29,17 +30,18 @@ winget install --id Git.Git -e --source winget --accept-package-agreements --acc
 winget install --id Python.Python.3.12 -e --source winget --accept-package-agreements --accept-source-agreements
 ```
 
-New PowerShell window:
+New PowerShell window — **build the app** (preferred), then launch:
 
 ```powershell
 git clone https://github.com/sevinOG/eche.git
 cd eche\eche_source
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-.\.venv\Scripts\python.exe eche_app.py
+.\SETUP_AND_BUILD.bat
+cd ..\eche
+.\Eche.exe
 ```
 
-Full guide: [README.md](README.md) · Privacy: [PRIVACY.md](PRIVACY.md).
+(Developers who want to edit code without freezing: see [README.md](README.md) “Run from source”.)  
+Privacy: [PRIVACY.md](PRIVACY.md).
 
 ## Four forks
 

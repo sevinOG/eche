@@ -24,7 +24,7 @@ Open-source Discord bot + desktop control panel.
 1. Save and run **Eche-Installer.exe**
 2. Keep **Install from GitHub** selected
 3. Choose a folder → **Install**
-4. Open the folder → run **`RUN_ECHE.bat`** (source install) or **`Eche.exe`** if a portable freeze is present
+4. Open the folder → prefer **`Eche.exe`** if present; otherwise run **`SETUP_AND_BUILD.bat`** once to create it (or **`RUN_ECHE.bat`** for a Python-only launch)
 
 More hand-holding: [START_HERE.md](START_HERE.md). Privacy: [PRIVACY.md](PRIVACY.md).
 
@@ -73,7 +73,41 @@ git clone https://github.com/sevinOG/eche.git
 cd eche
 ```
 
-### 2) Run from source (dev GUI)
+### 2) Build the portable app (onedir) — preferred after clone
+
+Best for beginners who cloned the repo: one freeze, then double-click **`Eche.exe`** like a normal app.
+
+```powershell
+cd eche_source
+.\SETUP_AND_BUILD.bat
+```
+
+(`SETUP_AND_BUILD.bat` creates a venv, installs dependencies, and freezes. Needs Python from step 0.)
+
+Creates/refreshes sibling **`eche/`**:
+
+```text
+eche/
+  Eche.exe          ← double-click this
+  _internal/        ← must stay next to Eche.exe
+  assets/
+  ...
+```
+
+Then:
+
+```powershell
+cd ..\eche
+.\Eche.exe
+```
+
+Copy the **whole** `eche/` folder if you move it. Do not ship `Eche.exe` alone.
+
+First GUI run: **Settings → Discord bot token → Run Bot**.
+
+### 3) Run from source (optional — developers)
+
+Skip this if step 2 already gave you `Eche.exe`. Use source run only when editing code without re-freezing every time.
 
 ```powershell
 cd eche_source
@@ -85,28 +119,7 @@ python -m venv .venv
 
 Or: `.\RUN_ECHE.bat` after the venv exists.
 
-First GUI run: **Settings → Discord bot token → Run Bot**.
-
 Optional verbose bot logs: set environment variable `ECHE_DEBUG=1`.
-
-### 3) Build the portable app (onedir folder)
-
-```powershell
-cd eche_source
-.\SETUP_AND_BUILD.bat
-```
-
-Creates/refreshes sibling **`eche/`**:
-
-```text
-eche/
-  Eche.exe          ← small launcher
-  _internal/        ← must stay next to Eche.exe
-  assets/
-  ...
-```
-
-Copy the **whole** `eche/` folder if you move it. Do not ship `Eche.exe` alone.
 
 ### 4) Installer from source (maintainers)
 
@@ -159,8 +172,9 @@ eche/                      ← monorepo root
 | Install Git | `winget install --id Git.Git -e --source winget --accept-package-agreements --accept-source-agreements` |
 | Install Python 3.12 | `winget install --id Python.Python.3.12 -e --source winget --accept-package-agreements --accept-source-agreements` |
 | Clone | `git clone https://github.com/sevinOG/eche.git` |
-| Dev GUI | `cd eche_source` → venv + `python eche_app.py` |
-| Freeze portable | `.\eche_source\BUILD.bat` |
+| **Build portable (preferred)** | `.\eche_source\SETUP_AND_BUILD.bat` → run `.\eche\Eche.exe` |
+| Freeze only | `.\eche_source\BUILD.bat` |
+| Run from source (dev) | `cd eche_source` → venv + `python eche_app.py` |
 | Build installer | `.\eche_installer_source\build.bat` |
 | Debug logs | `$env:ECHE_DEBUG=1` then run bot/GUI |
 

@@ -11,22 +11,15 @@ Application source for **Eche** (formerly Echelon). Freeze output is **onedir** 
 One-file PyInstaller EXEs unpack to a temp directory every launch — Defender often treats that like a dropper.  
 Onedir keeps a small `Eche.exe` launcher beside `_internal/` (normal app layout, fewer false positives). UPX is disabled.
 
-## The only freeze script you need
+## Preferred: build the portable app
+
+For most people after clone, **freeze first**, then double-click `Eche.exe` (no Python needed day-to-day).
 
 ```bat
-BUILD.bat
+SETUP_AND_BUILD.bat
 ```
 
-Creates/refreshes the portable app in **`../eche/`**:
-
-```text
-../eche/Eche.exe
-../eche/_internal/   ← required; do not delete
-../eche/assets/
-...
-```
-
-## First setup (Git / terminal)
+Or step-by-step:
 
 ```bat
 python -m venv .venv
@@ -34,9 +27,18 @@ python -m venv .venv
 BUILD.bat
 ```
 
-Or: `SETUP_AND_BUILD.bat` (venv + deps + freeze in one go).
+Creates/refreshes the portable app in **`../eche/`**:
 
-## Dev run (no freeze)
+```text
+../eche/Eche.exe       ← double-click this
+../eche/_internal/     ← required; do not delete
+../eche/assets/
+...
+```
+
+## Optional: run from source (developers)
+
+Only if you are editing code and do not want to re-freeze every change:
 
 ```bat
 .venv\Scripts\python.exe eche_app.py
