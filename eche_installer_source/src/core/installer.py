@@ -308,16 +308,29 @@ class Installer:
 
             self.progress(100, "Install complete")
             self.log(f"[SUCCESS] Eche installed to {install_path}")
+
+            # Eche.exe is only expected for portable/EXE installs (or recovery
+            # that already had a freeze). GitHub / source installs ship the
+            # recipe — use SETUP_AND_BUILD.bat; no EXE warning.
+            needs_exe = opts.source_type in ("exe", "dist_dir", "portable_dir")
             if main_exe and Path(main_exe).exists():
                 self.log(f"Launch: {main_exe}")
-                # Persist launch path for the Finish-page button
                 try:
                     launch_marker = install_path / ".eche_launch_path"
                     launch_marker.write_text(str(main_exe), encoding="utf-8")
                 except Exception:
                     pass
-            else:
-                self.log("WARNING: Could not locate Eche.exe after copy — Launch may fail")
+            elif needs_exe:
+                self.log(
+                    "WARNING: Could not locate Eche.exe after portable install — "
+                    "use Open Folder to check the install path."
+                )
+            elif opts.source_type in ("github", "source_dir"):
+                self.log(
+                    "Application source is ready (no Eche.exe yet — normal). "
+                    "Open the folder and run SETUP_AND_BUILD.bat after installing Python, "
+                    "or use START_HERE.txt."
+                )
 
             return True
 

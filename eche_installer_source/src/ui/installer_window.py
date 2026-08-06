@@ -948,17 +948,49 @@ class EcheInstallerWindow(QMainWindow):
             self.status_label.setText("Installation successful")
             self._log("=== INSTALL SUCCESS ===")
             install_dir = Path(self.path_input.text().strip())
-            # Resolve launch target for Finish page
             self.launch_exe = self._resolve_launch_exe(install_dir)
+            is_source_install = self.source_mode in (
+                "github",
+                "source_repo",
+                "recover_source",
+            ) or (
+                getattr(self, "radio_github", None)
+                and self.radio_github.isChecked()
+            )
+
             if self.launch_exe:
                 self._log(f"Launch target: {self.launch_exe}")
+                self.finish_desc.setText(
+                    f"Eche is ready at\n{install_dir}\n\nApp: {self.launch_exe}"
+                )
+                self.btn_launch.setEnabled(True)
+                if hasattr(self, "btn_launch"):
+                    self.btn_launch.setText("Launch Eche")
+            elif is_source_install:
+                self._log(
+                    "Source install complete — no Eche.exe yet (expected). "
+                    "Open folder → SETUP_AND_BUILD.bat or START_HERE.txt"
+                )
+                self.finish_desc.setText(
+                    f"Application source installed to\n{install_dir}\n\n"
+                    "Next steps (also in START_HERE.txt):\n"
+                    "1. Open the install folder\n"
+                    "2. If SETUP_AND_BUILD.bat is there, run it once "
+                    "(needs free Python with Add to PATH)\n"
+                    "3. Then open dist\\Eche\\Eche.exe\n\n"
+                    "You do not need Eche.exe before that step."
+                )
+                self.btn_launch.setEnabled(False)
+                if hasattr(self, "btn_launch"):
+                    self.btn_launch.setText("Build first (see START_HERE)")
             else:
-                self._log("WARNING: Could not resolve Eche.exe for Launch button")
-            self.finish_desc.setText(
-                f"Eche has been successfully deployed to\n{install_dir}\n\n"
-                + (f"App: {self.launch_exe}" if self.launch_exe else "Use Open Install Folder if Launch fails.")
-            )
-            self.btn_launch.setEnabled(bool(self.launch_exe))
+                self._log("No Eche.exe found — open the install folder.")
+                self.finish_desc.setText(
+                    f"Installed to\n{install_dir}\n\n"
+                    "Use Open Install Folder to browse files."
+                )
+                self.btn_launch.setEnabled(False)
+
             QTimer.singleShot(800, self._go_to_finish)
         else:
             self.status_label.setText("Installation failed - check log")
@@ -969,7 +1001,13 @@ class EcheInstallerWindow(QMainWindow):
     def _go_to_finish(self):
         self.current_step = 4
         self._update_step()
-        if self.chk_launch.isChecked() and self.install_success:
+        # Only auto-launch when a real app EXE exists (not source installs)
+        if (
+            self.chk_launch.isChecked()
+            and self.install_success
+            and self.launch_exe
+            and Path(self.launch_exe).is_file()
+        ):
             self._on_launch()
 
     def _on_uninstall_clicked(self):
@@ -1048,14 +1086,21 @@ class EcheInstallerWindow(QMainWindow):
             install_dir = Path(self.path_input.text().strip() or self.install_dir)
             exe = self.launch_exe or self._resolve_launch_exe(install_dir)
             if not exe or not Path(exe).is_file():
-                self._log(f"Launch failed — no Eche.exe under {install_dir}")
+                self._log("No Eche.exe yet — open install folder (source install is OK).")
                 from PyQt6.QtWidgets import QMessageBox
-                QMessageBox.warning(
+                QMessageBox.information(
                     self,
-                    "Cannot launch",
-                    f"Could not find Eche.exe in:\n{install_dir}\n\n"
-                    "Use Open Install Folder and double-click Eche.exe.",
+                    "Build the app first",
+                    f"There is no Eche.exe in:\n{install_dir}\n\n"
+                    "That is normal for a GitHub/source install.\n\n"
+                    "Open the install folder and:\n"
+                    "• Run SETUP_AND_BUILD.bat (needs Python once), or\n"
+                    "• Read START_HERE.txt\n\n"
+                    "Eche.exe is only required when installing a portable app "
+                    "or recovering from an existing app build.",
                 )
+                # Open folder so the user is not stuck
+                self._on_open_folder()
                 return
 
             exe_path = Path(exe)
