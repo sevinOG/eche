@@ -185,15 +185,17 @@ class Installer:
                 return False
 
             self.progress(60, "Creating shortcuts...")
+            # ONLY real Eche.exe — never random .venv/pip vendor EXEs
             main_exe = self._find_main_exe(install_path)
-            # Source trees: only create shortcuts if we also got an EXE (release overlay)
-            skip_app_shortcuts = opts.source_type in (
-                "source_dir",
-                "recover_source",
-            ) or (
-                opts.source_type == "github"
-                and not (main_exe and Path(main_exe).exists())
-            )
+            launch_target: Path | None = main_exe
+
+            # Source / GitHub installs: write a safe launcher bat if no app EXE yet
+            if opts.source_type in ("github", "source_dir") and not main_exe:
+                run_bat = self._write_run_eche_bat(install_path)
+                if run_bat and run_bat.is_file():
+                    launch_target = run_bat
+                    copied_files.append(str(run_bat))
+                    self.log(f"Wrote source launcher: {run_bat.name}")
 
             if opts.source_type == "github":
                 self._write_beginner_next_steps(install_path, main_exe)
@@ -221,19 +223,24 @@ class Installer:
 
             brand_icon = self._find_brand_icon(install_path, main_exe)
 
+            # Create app shortcuts when we have a real EXE *or* RUN_ECHE.bat
+            can_shortcut = bool(
+                launch_target
+                and Path(launch_target).exists()
+                and opts.source_type != "recover_source"
+            )
+
             if (
-                not skip_app_shortcuts
+                can_shortcut
                 and opts.create_desktop_shortcut
-                and main_exe
-                and Path(main_exe).exists()
             ):
                 desktop = get_desktop_path()
                 shortcut_path = desktop / "Eche.lnk"
                 if create_shortcut(
-                    str(main_exe),
+                    str(launch_target),
                     str(shortcut_path),
                     str(install_path),
-                    "Eche - Elite Operations",
+                    "Eche - Discord bot control panel",
                     brand_icon,
                 ):
                     created_shortcuts.append(str(shortcut_path))
@@ -242,17 +249,15 @@ class Installer:
                     self.log("Failed to create desktop shortcut")
 
             if (
-                not skip_app_shortcuts
+                can_shortcut
                 and opts.create_start_menu_shortcut
-                and main_exe
-                and Path(main_exe).exists()
             ):
                 start_menu = get_start_menu_path()
                 eche_menu = start_menu / "Eche"
                 eche_menu.mkdir(parents=True, exist_ok=True)
                 shortcut_path = eche_menu / "Eche.lnk"
                 if create_shortcut(
-                    str(main_exe),
+                    str(launch_target),
                     str(shortcut_path),
                     str(install_path),
                     "Eche",
@@ -311,13 +316,13 @@ class Installer:
 
             # Eche.exe is only expected for portable/EXE installs (or recovery
             # that already had a freeze). GitHub / source installs ship the
-            # recipe — use SETUP_AND_BUILD.bat; no EXE warning.
+            # recipe + RUN_ECHE.bat (runs via Python until you build).
             needs_exe = opts.source_type in ("exe", "dist_dir", "portable_dir")
-            if main_exe and Path(main_exe).exists():
-                self.log(f"Launch: {main_exe}")
+            if launch_target and Path(launch_target).exists():
+                self.log(f"Launch: {launch_target}")
                 try:
                     launch_marker = install_path / ".eche_launch_path"
-                    launch_marker.write_text(str(main_exe), encoding="utf-8")
+                    launch_marker.write_text(str(launch_target), encoding="utf-8")
                 except Exception:
                     pass
             elif needs_exe:
@@ -328,8 +333,8 @@ class Installer:
             elif opts.source_type in ("github", "source_dir"):
                 self.log(
                     "Application source is ready (no Eche.exe yet — normal). "
-                    "Open the folder and run SETUP_AND_BUILD.bat after installing Python, "
-                    "or use START_HERE.txt."
+                    "Double-click RUN_ECHE.bat (needs Python), or SETUP_AND_BUILD.bat "
+                    "to freeze a portable EXE."
                 )
 
             return True
@@ -368,7 +373,7 @@ class Installer:
         self, install_path: Path, main_exe: Path | None
     ) -> None:
         """Plain-English file for people who have never used GitHub or AI tools."""
-        has_exe = bool(main_exe and Path(main_exe).exists())
+        has_exe = bool(main_exe and self._is_real_app_exe(Path(main_exe)))
         lines = [
             "WELCOME TO ECHE",
             "==================",
@@ -390,15 +395,18 @@ class Installer:
             ]
         else:
             lines += [
-                "This folder is the Eche SOURCE (the recipe).",
-                "To turn it into a double-click app once:",
+                "HOW TO OPEN ECHE (source install — normal):",
                 "",
-                "  A) Install Python 3.11+ from https://www.python.org/downloads/",
-                "     (check the box: Add python.exe to PATH)",
+                "  1. Double-click RUN_ECHE.bat  (uses Python; installs deps first time)",
+                "  2. Or double-click SETUP_AND_BUILD.bat once to create Eche.exe",
                 "",
-                "  B) Double-click SETUP_AND_BUILD.bat in this folder.",
-                "     Wait until it finishes — then open dist\\Eche\\Eche.exe",
-                "     (or the published eche\\ folder if present).",
+                "If Python is missing: https://www.python.org/downloads/",
+                "  (check the box: Add python.exe to PATH)",
+                "",
+                "First run tips after the window opens:",
+                "  1. Settings → paste your Discord bot token",
+                "  2. Optional: free Groq API key (console.groq.com)",
+                "  3. Press Run Bot",
                 "",
             ]
         lines += [
@@ -617,29 +625,123 @@ class Installer:
             return str(main_exe)
         return None
 
+    def _is_real_app_exe(self, path: Path) -> bool:
+        """True only for the Eche application binary — never Uninstall / pip junk."""
+        p = Path(path)
+        if not p.is_file():
+            return False
+        name = p.name.lower()
+        if name not in ("eche.exe", "echelon.exe"):
+            return False
+        if "uninstall" in name:
+            return False
+        # Never treat venv / package tooling as the app
+        blocked = {
+            ".venv",
+            "venv",
+            "site-packages",
+            "pip",
+            "distlib",
+            "node_modules",
+            "__pycache__",
+            ".git",
+        }
+        if any(part.lower() in blocked for part in p.parts):
+            return False
+        return True
+
     def _find_main_exe(self, install_path: Path):
-        """Locate the real app EXE (never Uninstall.exe)."""
+        """Locate the real app EXE (Eche.exe only — never random *.exe)."""
         install_path = Path(install_path)
         prefer = [
             install_path / "Eche.exe",
             install_path / "Eche" / "Eche.exe",
             install_path / "dist" / "Eche" / "Eche.exe",
             install_path / "dist" / "Eche.exe",
+            # legacy brand
+            install_path / "Echelon.exe",
+            install_path / "dist" / "Echelon" / "Echelon.exe",
+            install_path / "dist" / "Echelon.exe",
         ]
         for p in prefer:
-            if p.is_file() and "uninstall" not in p.name.lower():
+            if self._is_real_app_exe(p):
                 return p
-        # Shallow first, then deep
-        for p in sorted(install_path.glob("*.exe")):
-            if p.is_file() and "uninstall" not in p.name.lower():
-                return p
-        for p in sorted(install_path.rglob("Eche.exe")):
-            if p.is_file():
-                return p
-        for p in sorted(install_path.rglob("*.exe")):
-            if p.is_file() and "uninstall" not in p.name.lower():
-                return p
+        for name in ("Eche.exe", "Echelon.exe"):
+            try:
+                for p in sorted(install_path.rglob(name)):
+                    if self._is_real_app_exe(p):
+                        return p
+            except OSError:
+                continue
         return None
+
+    def _write_run_eche_bat(self, install_path: Path) -> Path:
+        """
+        Beginner launcher for source installs: prefers built Eche.exe, else Python.
+        """
+        bat = Path(install_path) / "RUN_ECHE.bat"
+        bat.write_text(
+            "\r\n".join(
+                [
+                    "@echo off",
+                    "setlocal",
+                    'cd /d "%~dp0"',
+                    "title Eche",
+                    "",
+                    "rem Prefer a frozen portable build if present",
+                    'if exist "Eche.exe" (',
+                    '  start "" "Eche.exe"',
+                    "  exit /b 0",
+                    ")",
+                    'if exist "dist\\Eche\\Eche.exe" (',
+                    '  start "" "dist\\Eche\\Eche.exe"',
+                    "  exit /b 0",
+                    ")",
+                    'if exist "dist\\Eche.exe" (',
+                    '  start "" "dist\\Eche.exe"',
+                    "  exit /b 0",
+                    ")",
+                    "",
+                    "rem Source mode: run the GUI with Python",
+                    'if exist ".venv\\Scripts\\python.exe" (',
+                    '  ".venv\\Scripts\\python.exe" "eche_app.py"',
+                    "  if errorlevel 1 pause",
+                    "  exit /b %errorlevel%",
+                    ")",
+                    "",
+                    "where python >nul 2>&1",
+                    "if errorlevel 1 (",
+                    "  echo.",
+                    "  echo  Python is required to run Eche from source.",
+                    "  echo  Option A: Install Python 3.11+ from python.org",
+                    "  echo            ^(check Add python.exe to PATH^)",
+                    "  echo  Option B: Double-click SETUP_AND_BUILD.bat once",
+                    "  echo            to install deps and build Eche.exe",
+                    "  echo.",
+                    "  start https://www.python.org/downloads/",
+                    "  pause",
+                    "  exit /b 1",
+                    ")",
+                    "",
+                    "echo Creating private .venv and installing libraries...",
+                    "python -m venv .venv",
+                    'if errorlevel 1 ( echo venv failed & pause & exit /b 1 )',
+                    '".venv\\Scripts\\python.exe" -m pip install -U pip',
+                    '".venv\\Scripts\\python.exe" -m pip install -r requirements.txt',
+                    "if errorlevel 1 (",
+                    "  echo pip install failed — check internet",
+                    "  pause",
+                    "  exit /b 1",
+                    ")",
+                    '".venv\\Scripts\\python.exe" "eche_app.py"',
+                    "if errorlevel 1 pause",
+                    "exit /b %errorlevel%",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        return bat
 
     def _generate_uninstall_script(self):
         return """

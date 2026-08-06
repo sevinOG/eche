@@ -960,31 +960,36 @@ class EcheInstallerWindow(QMainWindow):
 
             if self.launch_exe:
                 self._log(f"Launch target: {self.launch_exe}")
-                self.finish_desc.setText(
-                    f"Eche is ready at\n{install_dir}\n\nApp: {self.launch_exe}"
-                )
+                is_bat = str(self.launch_exe).lower().endswith(".bat")
+                if is_bat:
+                    self.finish_desc.setText(
+                        f"Eche source is ready at\n{install_dir}\n\n"
+                        "Click Launch Eche (runs RUN_ECHE.bat via Python).\n"
+                        "Or open the folder and double-click RUN_ECHE.bat."
+                    )
+                else:
+                    self.finish_desc.setText(
+                        f"Eche is ready at\n{install_dir}\n\nApp: {self.launch_exe}"
+                    )
                 self.btn_launch.setEnabled(True)
                 if hasattr(self, "btn_launch"):
                     self.btn_launch.setText("Launch Eche")
             elif is_source_install:
                 self._log(
-                    "Source install complete — no Eche.exe yet (expected). "
-                    "Open folder → SETUP_AND_BUILD.bat or START_HERE.txt"
+                    "Source install complete — use RUN_ECHE.bat or SETUP_AND_BUILD.bat"
                 )
                 self.finish_desc.setText(
                     f"Application source installed to\n{install_dir}\n\n"
                     "Next steps (also in START_HERE.txt):\n"
                     "1. Open the install folder\n"
-                    "2. If SETUP_AND_BUILD.bat is there, run it once "
-                    "(needs free Python with Add to PATH)\n"
-                    "3. Then open dist\\Eche\\Eche.exe\n\n"
-                    "You do not need Eche.exe before that step."
+                    "2. Double-click RUN_ECHE.bat (needs Python once)\n"
+                    "   or SETUP_AND_BUILD.bat to create Eche.exe\n"
                 )
                 self.btn_launch.setEnabled(False)
                 if hasattr(self, "btn_launch"):
-                    self.btn_launch.setText("Build first (see START_HERE)")
+                    self.btn_launch.setText("Open folder / RUN_ECHE.bat")
             else:
-                self._log("No Eche.exe found — open the install folder.")
+                self._log("No launch target found — open the install folder.")
                 self.finish_desc.setText(
                     f"Installed to\n{install_dir}\n\n"
                     "Use Open Install Folder to browse files."
@@ -1067,18 +1072,29 @@ class EcheInstallerWindow(QMainWindow):
             self._log(f"Open folder failed: {exc}")
 
     def _resolve_launch_exe(self, install_dir: Path) -> str | None:
+        """Resolve a safe launch target: real Eche.exe or RUN_ECHE.bat only."""
         install_dir = Path(install_dir)
+        from ..core.installer import Installer
+
+        installer = Installer()
         marker = install_dir / ".eche_launch_path"
         if marker.is_file():
             try:
                 p = Path(marker.read_text(encoding="utf-8").strip())
-                if p.is_file():
+                if p.is_file() and (
+                    installer._is_real_app_exe(p)
+                    or p.name.lower() == "run_eche.bat"
+                ):
                     return str(p)
             except Exception:
                 pass
-        from ..core.installer import Installer
-        found = Installer()._find_main_exe(install_dir)
-        return str(found) if found else None
+        found = installer._find_main_exe(install_dir)
+        if found:
+            return str(found)
+        run_bat = install_dir / "RUN_ECHE.bat"
+        if run_bat.is_file():
+            return str(run_bat)
+        return None
 
     def _on_launch(self):
         import subprocess
@@ -1086,35 +1102,42 @@ class EcheInstallerWindow(QMainWindow):
             install_dir = Path(self.path_input.text().strip() or self.install_dir)
             exe = self.launch_exe or self._resolve_launch_exe(install_dir)
             if not exe or not Path(exe).is_file():
-                self._log("No Eche.exe yet — open install folder (source install is OK).")
-                from PyQt6.QtWidgets import QMessageBox
-                QMessageBox.information(
-                    self,
-                    "Build the app first",
-                    f"There is no Eche.exe in:\n{install_dir}\n\n"
-                    "That is normal for a GitHub/source install.\n\n"
-                    "Open the install folder and:\n"
-                    "• Run SETUP_AND_BUILD.bat (needs Python once), or\n"
-                    "• Read START_HERE.txt\n\n"
-                    "Eche.exe is only required when installing a portable app "
-                    "or recovering from an existing app build.",
-                )
-                # Open folder so the user is not stuck
-                self._on_open_folder()
-                return
+                # Last chance: write/run helper for source trees
+                from ..core.installer import Installer
+                run_bat = Installer()._write_run_eche_bat(install_dir)
+                if run_bat.is_file():
+                    exe = str(run_bat)
+                else:
+                    self._log("No launch target — open install folder.")
+                    from PyQt6.QtWidgets import QMessageBox
+                    QMessageBox.information(
+                        self,
+                        "Open Eche",
+                        f"Could not find Eche.exe or RUN_ECHE.bat in:\n{install_dir}\n\n"
+                        "Open the folder and run SETUP_AND_BUILD.bat (needs Python), "
+                        "or read START_HERE.txt.",
+                    )
+                    self._on_open_folder()
+                    return
 
             exe_path = Path(exe)
-            cwd = str(exe_path.parent)
+            cwd = str(install_dir if exe_path.suffix.lower() == ".bat" else exe_path.parent)
             self._log(f"Launching: {exe_path}")
 
             if platform.system() == "Windows":
-                # Prefer subprocess so we get a real process; startfile as fallback
                 try:
-                    subprocess.Popen(
-                        [str(exe_path)],
-                        cwd=cwd,
-                        close_fds=True,
-                    )
+                    if exe_path.suffix.lower() == ".bat":
+                        subprocess.Popen(
+                            ["cmd.exe", "/c", "start", "", str(exe_path)],
+                            cwd=cwd,
+                            close_fds=True,
+                        )
+                    else:
+                        subprocess.Popen(
+                            [str(exe_path)],
+                            cwd=cwd,
+                            close_fds=True,
+                        )
                 except Exception:
                     os.startfile(str(exe_path))  # type: ignore[attr-defined]
             else:

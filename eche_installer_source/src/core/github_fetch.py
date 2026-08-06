@@ -11,24 +11,24 @@ from typing import Callable
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-# Public hub (repo name kept for continuity; product brand is Eche)
+# Public hub — product and repo are both Eche / sevinOG/eche
 GITHUB_OWNER = "sevinOG"
 GITHUB_REPO = "eche"
 GITHUB_BRANCH = "main"
 
 # Application source only — NEVER installer source
 DEFAULT_SOURCE_SUBDIR = "eche_source"
-# Try these in order (rename / legacy)
+# Try these in order (primary first; legacy names for old archives only)
 APP_SOURCE_CANDIDATES = (
     "eche_source",
-    "echelon_source",
+    "echelon_source",  # legacy
     "eche-source",
-    "echelon-source",
+    "echelon-source",  # legacy
 )
 # If we see only these, we grabbed the wrong tree
 INSTALLER_MARKERS = (
     "eche_installer_source",
-    "echelon_installer_source",
+    "echelon_installer_source",  # legacy
 )
 
 USER_AGENT = "Eche-Installer/1.4 (+https://github.com/sevinOG/eche)"
