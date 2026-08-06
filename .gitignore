@@ -1,0 +1,38 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Build artifacts (except optional prebuilt installer)
+build/
+dist/
+**/build/
+**/dist/
+*.spec.bak
+
+# Secrets & local runtime (never publish)
+.env
+.env.*
+**/config/settings.json
+**/config/secrets.dpapi.json
+**/config/*.dpapi.json
+**/cookies/
+**/logs/
+**/context/
+**/memories/
+.echelon_*
+*.dpapi
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# Local personal notes
+PRIVATE*
+*.local.md
