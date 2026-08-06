@@ -92,14 +92,6 @@ build.bat
 ---
 
 ## Privacy
-
-This repo is scrubbed of:
-
-- Email addresses and personal contact info  
-- Discord tokens / API keys  
-- Home server IDs and other account identifiers  
-- Local paths under a single developer machine  
-
 If you fork, keep `config/settings.json` and `config/secrets.dpapi.json` **out of git**.
 
 ---
