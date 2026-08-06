@@ -1,4 +1,6 @@
-# eche_installer — deploy / recover
+# eche_installer_source — deploy / recover wizard
+
+The wizard is a **small one-download EXE**. The **application** it installs is **onedir** (`Eche.exe` + `_internal/`), not a one-file dropper-style freeze. See monorepo [README.md](../README.md).
 
 ## Scripts
 
@@ -12,6 +14,8 @@ Uses `eche_source\.venv` when present. Always runs
 
 ## Wizard directions
 
-1. Install **app** from portable / EXE  
-2. Install **app** from source tree  
-3. Recover **source** from a portable app  
+1. Install **app** from GitHub (source → `RUN_ECHE.bat` / optional freeze)  
+2. Install **app** from portable onedir folder / `Eche.exe`  
+3. Install **app** from source tree  
+4. Recover **source** from a portable app  
+

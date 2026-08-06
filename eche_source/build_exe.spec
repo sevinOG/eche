@@ -122,7 +122,13 @@ a = Analysis(
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
-# onedir layout: slim bootloader EXE + _internal next to it
+# =============================================================================
+# ONEDIR only (never one-file).
+# One-file unpacks the whole app to %TEMP% every launch — Defender ML often
+# scores that as dropper-like. Onedir = small Eche.exe + _internal/ beside it.
+# The installer (or a future Inno/NSIS setup) wraps/copies this folder; it does
+# not re-extract the bot stack on every user double-click. UPX stays OFF.
+# =============================================================================
 exe = EXE(
     pyz,
     a.scripts,
