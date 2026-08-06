@@ -32,36 +32,66 @@ Unsigned open-source EXEs often trip SmartScreen/Defender. Prefer the official G
 
 ## Install: Git + terminal
 
-### Prerequisites
+### 0) Install Git and Python first (Windows / PowerShell)
 
-- [Git](https://git-scm.com/downloads)
-- [Python 3.11+](https://www.python.org/downloads/) (Windows: check **Add python.exe to PATH**)
-- Windows for the portable freeze (`.bat` scripts). Linux/mac can run the GUI from source with Qt available.
+Open **PowerShell** (normal is fine; use “Run as administrator” only if winget asks).
+
+Use **exact package IDs** (`--id` + `-e`). Do **not** pass bare names like `git` or `python` — winget’s fuzzy match is unreliable.
+
+```powershell
+# Git for Windows  — package id: Git.Git
+winget install --id Git.Git -e --source winget --accept-package-agreements --accept-source-agreements
+
+# Python 3.12      — package id: Python.Python.3.12  (3.11+ works; stay off Python 2)
+winget install --id Python.Python.3.12 -e --source winget --accept-package-agreements --accept-source-agreements
+```
+
+| Tool | Exact winget package id | Notes |
+|------|-------------------------|--------|
+| Git | `Git.Git` | Git for Windows |
+| Python 3.12 (recommended) | `Python.Python.3.12` | Official CPython from PSF |
+| Python 3.11 (also fine) | `Python.Python.3.11` | Same flags as above |
+| Python 3.13 (also fine) | `Python.Python.3.13` | Same flags as above |
+
+**After install:** close PowerShell completely, open a **new** window so `PATH` updates, then check:
+
+```powershell
+git --version
+python --version
+py -0p
+```
+
+You want Git 2.x and Python 3.11+ (not 2.7). If `python` still fails but `py -3.12` works, either use the full path from `py -0p` or open a fresh terminal again.
+
+**Manual downloads (if winget is missing):**  
+[git-scm.com/downloads](https://git-scm.com/downloads) · [python.org/downloads](https://www.python.org/downloads/) (enable **Add python.exe to PATH**).
+
+Windows is required for the portable freeze (`.bat` scripts). Linux/mac can run the GUI from source with Qt available.
 
 ### 1) Clone
 
-```bash
+```powershell
 git clone https://github.com/sevinOG/eche.git
 cd eche
 ```
 
 ### 2) Run from source (fastest for development)
 
-**PowerShell / cmd (Windows):**
+**PowerShell (Windows):**
 
-```bat
+```powershell
 cd eche_source
 python -m venv .venv
-.venv\Scripts\python.exe -m pip install -U pip
-.venv\Scripts\python.exe -m pip install -r requirements.txt
-.venv\Scripts\python.exe eche_app.py
+.\.venv\Scripts\python.exe -m pip install -U pip
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe eche_app.py
 ```
 
 Or after the venv exists:
 
-```bat
+```powershell
 cd eche_source
-RUN_ECHE.bat
+.\RUN_ECHE.bat
 ```
 
 **bash (Git Bash / WSL / macOS / Linux):**
@@ -79,20 +109,20 @@ First GUI run: **Settings → Discord bot token → Run Bot**.
 
 ### 3) Build the portable app (onedir folder)
 
-Windows:
+Windows PowerShell:
 
-```bat
+```powershell
 cd eche_source
 python -m venv .venv
-.venv\Scripts\pip install -r requirements.txt
-BUILD.bat
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\BUILD.bat
 ```
 
 One-shot helper (venv + deps + freeze):
 
-```bat
+```powershell
 cd eche_source
-SETUP_AND_BUILD.bat
+.\SETUP_AND_BUILD.bat
 ```
 
 Output:
@@ -110,9 +140,9 @@ Copy the whole **`eche/`** folder (USB, Desktop, another PC). Do not ship `Eche.
 
 ### 4) Installer from source (maintainers)
 
-```bat
+```powershell
 cd eche_installer_source
-build.bat
+.\build.bat
 ```
 
 Produces `eche_installer_source\dist\Eche-Installer.exe` (also copied under `prebuilt/` when you publish).
@@ -159,12 +189,14 @@ eche/                      ← monorepo root (this repo)
 
 | Goal | Command |
 |------|---------|
+| Install Git (exact id) | `winget install --id Git.Git -e --source winget --accept-package-agreements --accept-source-agreements` |
+| Install Python 3.12 (exact id) | `winget install --id Python.Python.3.12 -e --source winget --accept-package-agreements --accept-source-agreements` |
 | Clone | `git clone https://github.com/sevinOG/eche.git` |
 | Dev GUI | `cd eche_source` → venv + `python eche_app.py` |
-| Dev GUI (bat) | `eche_source\RUN_ECHE.bat` |
-| Freeze portable | `eche_source\BUILD.bat` |
-| Setup + freeze | `eche_source\SETUP_AND_BUILD.bat` |
-| Build installer | `eche_installer_source\build.bat` |
+| Dev GUI (bat) | `.\eche_source\RUN_ECHE.bat` |
+| Freeze portable | `.\eche_source\BUILD.bat` |
+| Setup + freeze | `.\eche_source\SETUP_AND_BUILD.bat` |
+| Build installer | `.\eche_installer_source\build.bat` |
 | Pull latest | `git pull` |
 
 ---

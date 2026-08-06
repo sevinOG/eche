@@ -20,15 +20,24 @@ Settings → Discord token → Run Bot.
 
 ## Comfortable with Git / terminal?
 
-```bat
+Install tools first (PowerShell — **exact winget package ids**):
+
+```powershell
+winget install --id Git.Git -e --source winget --accept-package-agreements --accept-source-agreements
+winget install --id Python.Python.3.12 -e --source winget --accept-package-agreements --accept-source-agreements
+```
+
+Then open a **new** PowerShell window:
+
+```powershell
 git clone https://github.com/sevinOG/eche.git
 cd eche\eche_source
 python -m venv .venv
-.venv\Scripts\pip install -r requirements.txt
-.venv\Scripts\python.exe eche_app.py
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe eche_app.py
 ```
 
-Full guide: [README.md](README.md) (clone, source run, portable build, onedir packaging).
+Full guide: [README.md](README.md) (Git/Python install, clone, source run, portable onedir build).
 
 ## Four forks
 
