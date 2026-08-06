@@ -1,24 +1,7 @@
 # One-tap Windows download
 
-## Installer (start here)
+## [Eche-Installer.exe](https://github.com/sevinOG/echelon_ecosystem/raw/main/prebuilt/Eche-Installer.exe)
 
-**[⬇️ Echelon-Installer.exe](https://github.com/sevinOG/echelon_ecosystem/raw/main/prebuilt/Echelon-Installer.exe)**
+Product name is **Eche** (not Echelon) to avoid malware-name collisions in antivirus software.
 
-Same file as in this folder. Click → Save → Run.
-
-That is the supported beginner path on a fresh Windows 11 PC.
-
-## Optional: GitHub Releases
-
-If this project publishes a **Release**, you may also see:
-
-| Asset | Purpose |
-|-------|---------|
-| `Echelon-Installer.exe` | Setup wizard |
-| `Echelon-Portable.zip` (optional) | Ready-to-run app the installer can overlay |
-
-Releases page: https://github.com/sevinOG/echelon_ecosystem/releases
-
-## Advanced users
-
-Build the installer yourself from `../echelon_installer_source/build.bat`.
+If a browser blocks the download, use Edge “Keep” or SmartScreen “Run anyway” — open-source unsigned EXEs are often false-positives.

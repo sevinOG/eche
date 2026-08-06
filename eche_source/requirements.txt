@@ -1,0 +1,14 @@
+# Eche runtime dependencies — install into .venv BEFORE install.bat
+# so flash-drive / portable dist copies include every module.
+discord.py>=2.3
+PyQt6>=6.5
+python-dotenv>=1.0
+requests>=2.31
+aiohttp>=3.9
+psutil>=5.9
+dateparser>=1.2
+regex>=2023.0
+tzlocal>=5.0
+pytz>=2024.1
+yt-dlp>=2024.1.0
+pyinstaller>=6.0

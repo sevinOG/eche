@@ -23,7 +23,7 @@ dist/
 **/logs/
 **/context/
 **/memories/
-.echelon_*
+.eche_*
 *.dpapi
 
 # OS / editors

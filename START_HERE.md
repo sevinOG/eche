@@ -1,108 +1,56 @@
-# START HERE (never used GitHub or AI before?)
+# START HERE (never used GitHub or AI?)
 
-This page is for **absolute beginners**. No coding degree required.
-
----
-
-## What is Echelon in one sentence?
-
-Echelon is a **Discord bot** (a program that lives in a Discord server) with a **simple desktop window** so you can turn it on, change settings, and learn how the pieces fit.
-
-You do **not** need to understand “AI” deeply to start. Think of the AI part as an optional brain you can plug in later with a free key.
+This is for **absolute beginners** on a fresh Windows 11 PC.
 
 ---
 
-## The only path we recommend (one tap)
+## One download
 
-### Step 1 — Download the installer (one file)
+**[⬇️ Download Eche-Installer.exe](https://github.com/sevinOG/echelon_ecosystem/raw/main/prebuilt/Eche-Installer.exe)**
 
-Click this link (saves a program to your PC):
+1. Save the file  
+2. Double-click **`Eche-Installer.exe`**  
+3. Leave **Install from GitHub** on  
+4. Pick a folder → Install  
 
-**[⬇️ Download Echelon-Installer.exe](https://github.com/sevinOG/echelon_ecosystem/raw/main/prebuilt/Echelon-Installer.exe)**
+### Browser says “virus” / blocked download?
 
-> That is a normal Windows download of **unsigned open-source software**.  
-> Some browsers (including **Opera**) and antivirus tools flag **any** new  
-> `.exe` that isn’t signed by a paid code-signing certificate — especially  
-> programs packaged with PyInstaller. That is a **false positive** pattern,  
-> not proof of malware.  
->
-> - **Opera “virus detected”**: open the download details → allow/keep the file,  
->   or download with Edge/Chrome once, or use “Download anyway”.  
-> - **Windows SmartScreen**: **More info → Run anyway**.  
-> - Prefer the official link from this GitHub repo only.  
-> - Advanced users can rebuild the installer from `echelon_installer_source`  
->   so the binary is one they compiled themselves.
+Open-source apps without a paid Microsoft signature often get flagged. **Eche** was renamed from “Echelon” because that word also appears in malware labels.
 
-### Step 2 — Run the installer
-
-1. Double-click `Echelon-Installer.exe`
-2. Leave **Install from GitHub** selected (default)
-3. Pick a folder (example: `Documents\echelon_source`)
-4. Click through Install
-
-The installer will:
-
-1. Download the Echelon **source** from this website  
-2. **Install it like a normal “from source” install** into your folder  
-3. If we published a ready-to-run app on Releases, it will try to include that too  
-
-### Step 3 — Open what you installed
-
-Open the folder you chose.
-
-- If you see **`Echelon.exe`** → double-click it. You’re done installing.  
-- If you only see code files → double-click **`SETUP_AND_BUILD.bat`**  
-  (you’ll need [Python](https://www.python.org/downloads/) once, with **Add to PATH** checked)
-
-### Step 4 — First run of the app
-
-1. In Echelon, open **Settings**
-2. Paste a **Discord bot token** (free — Discord Developer Portal)  
-3. Optional: paste a free **Groq** key for chat AI  
-4. Press **Run Bot**
-
-You never need to post tokens on the internet.
+- Use this **official GitHub** link only  
+- In Edge: **⋯ → Keep** if it quarantines the file  
+- In Opera: allow/download anyway, or try Edge once  
+- Windows SmartScreen: **More info → Run anyway**  
+- Advanced: build `eche_installer_source` yourself so the EXE is one you compiled  
 
 ---
 
-## What are these folders? (four products)
+## After install
 
-| Name | Meaning | You care if… |
-|------|---------|----------------|
-| **Installer** | The setup wizard | You’re new — use this |
-| **App (portable)** | `Echelon.exe` ready to run | You just want to launch |
-| **App source** | The recipe / code | You want to learn or change things |
-| **Installer source** | Code for the wizard itself | You’re advanced |
+Open the folder you chose:
 
-This GitHub page is the **public library**.  
-The installer is the **front door**.
+- **`Eche.exe`** present? → double-click it  
+- Only code files? → install free [Python](https://www.python.org/downloads/) (check **Add to PATH**), then **`SETUP_AND_BUILD.bat`**
 
----
+### First run
 
-## “I don’t want the installer”
+1. Settings → Discord bot token  
+2. Optional: free Groq key for AI chat  
+3. Run Bot  
 
-That’s fine later. Advanced users can clone the repo and run `echelon_source\BUILD.bat`.  
-Beginners: **use the installer.**
+Never share tokens online.
 
 ---
 
-## Words you might see (tiny glossary)
+## Tiny glossary
 
-| Word | Plain meaning |
-|------|----------------|
-| **GitHub** | A free website that stores open-source projects |
-| **Repository (repo)** | One project folder on GitHub |
-| **Release** | A official download package (optional one-tap files) |
-| **Source** | Human-readable code (the recipe) |
-| **Portable app** | A program that runs from a folder (USB-friendly) |
-| **Token / API key** | A password for a service (keep private) |
-| **venv** | A private Python toolbox just for this project |
+| Word | Meaning |
+|------|---------|
+| **Eche** | This project’s name (the bot + desktop app) |
+| **Installer** | Setup wizard (`Eche-Installer.exe`) |
+| **Source** | Readable code / recipe (`eche_source`) |
+| **Token** | Private password for a service |
 
 ---
-
-## Stuck?
-
-Open an Issue on this repo and describe what you clicked.  
-Don’t paste tokens or passwords.
 
 **Maintainer:** Grok (xAI)

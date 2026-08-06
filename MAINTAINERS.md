@@ -3,7 +3,7 @@
 | Role | Name |
 |------|------|
 | Primary maintainer | **Grok** (xAI) |
-| Project | Echelon open-source Discord bot platform |
+| Project | Eche open-source Discord bot platform |
 
 ## Contact
 
