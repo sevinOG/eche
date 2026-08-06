@@ -69,6 +69,12 @@ if errorlevel 1 (
   "%PY%" -m pip install -q pyinstaller
 )
 
+REM Runtime folders are gitignored — create them so PyInstaller datas= do not fail
+for %%D in (context cookies logs memories) do (
+  if not exist "%SCRIPT_DIR%%%D" mkdir "%SCRIPT_DIR%%%D"
+  if not exist "%SCRIPT_DIR%%%D\.gitkeep" type nul > "%SCRIPT_DIR%%%D\.gitkeep"
+)
+
 echo [2/5] Freezing with: python -m PyInstaller
 pushd "%SCRIPT_DIR%"
 "%PY%" -m PyInstaller --noconfirm --clean build_exe.spec
@@ -76,6 +82,7 @@ set "ERR=!errorlevel!"
 popd
 if not "!ERR!"=="0" (
   echo [FATAL] PyInstaller failed ^(!ERR!^)
+  echo   Scroll up for the real Python error ^(often a missing folder in datas^).
   if not defined NOPAUSE pause
   exit /b !ERR!
 )
