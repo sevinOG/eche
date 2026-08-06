@@ -13,7 +13,7 @@ from urllib.request import Request, urlopen
 
 # Public hub (repo name kept for continuity; product brand is Eche)
 GITHUB_OWNER = "sevinOG"
-GITHUB_REPO = "echelon_ecosystem"
+GITHUB_REPO = "eche"
 GITHUB_BRANCH = "main"
 
 # Application source only — NEVER installer source
@@ -31,7 +31,7 @@ INSTALLER_MARKERS = (
     "echelon_installer_source",
 )
 
-USER_AGENT = "Eche-Installer/1.4 (+https://github.com/sevinOG/echelon_ecosystem)"
+USER_AGENT = "Eche-Installer/1.4 (+https://github.com/sevinOG/eche)"
 
 
 def repo_web_url() -> str:

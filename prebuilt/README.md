@@ -1,7 +1,5 @@
-# One-tap Windows download
+# Prebuilt
 
-## [Eche-Installer.exe](https://github.com/sevinOG/echelon_ecosystem/raw/main/prebuilt/Eche-Installer.exe)
+**[Eche-Installer.exe](https://github.com/sevinOG/eche/raw/main/prebuilt/Eche-Installer.exe)** — one-tap Windows installer.
 
-Product name is **Eche** (not Echelon) to avoid malware-name collisions in antivirus software.
-
-If a browser blocks the download, use Edge “Keep” or SmartScreen “Run anyway” — open-source unsigned EXEs are often false-positives.
+Rebuild from `../eche_installer_source/build.bat`.

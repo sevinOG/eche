@@ -1,21 +1,19 @@
 # Python
-.venv/
-__pycache__/
-*.py[cod]
-*.egg-info/
-.pytest_cache/
-.mypy_cache/
+**/__pycache__/
+**/*.py[cod]
+**/.venv/
+**/*.egg-info/
 
-# Build artifacts (except optional prebuilt installer)
-build/
-dist/
+# Local build noise (keep prebuilt/ intentionally)
 **/build/
-**/dist/
-*.spec.bak
+eche_source/dist/
+eche_installer_source/build/
+eche_installer_source/dist/
+eche_installer/build/
 
-# Secrets & local runtime (never publish)
-.env
-.env.*
+# Runtime / secrets (never publish)
+**/.env
+**/.env.*
 **/config/settings.json
 **/config/secrets.dpapi.json
 **/config/*.dpapi.json
@@ -23,16 +21,32 @@ dist/
 **/logs/
 **/context/
 **/memories/
-.eche_*
-*.dpapi
+**/.eche_*
+**/.echelon_*
+**/*.dpapi
 
 # OS / editors
 .DS_Store
 Thumbs.db
 .idea/
 .vscode/
-*.swp
 
-# Local personal notes
-PRIVATE*
-*.local.md
+# Old names / trash
+echelon_*/
+**/__trash*/
+
+# Portable app runtime (local only)
+eche/config/
+eche/cookies/
+eche/logs/
+eche/context/
+eche/memories/
+eche/dist/
+eche/*.lock
+eche/**/opted_in.json
+eche/**/gui.lock
+eche/**/settings.json
+eche/**/secrets*
+
+# Keep installer dist EXE for convenience (optional)
+# eche_installer/dist/ is tracked for local convenience; strip secrets only

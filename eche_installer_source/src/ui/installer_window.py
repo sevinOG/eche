@@ -342,7 +342,7 @@ class EcheInstallerWindow(QMainWindow):
 
         lines = [
             "Default mode: Install from GitHub",
-            "  → downloads eche_source from sevinOG/echelon_ecosystem",
+            "  → downloads eche_source from sevinOG/eche",
             "  → then installs that tree into your chosen folder",
             "",
             "You do not need a local copy of the project first.",
@@ -432,7 +432,7 @@ class EcheInstallerWindow(QMainWindow):
 
         src_info = QLabel(
             "Default: download **Eche application source** from the public GitHub hub "
-            "(sevinOG/echelon_ecosystem → eche_source/). "
+            "(sevinOG/eche → eche_source/). "
             "Local EXE / path options are under Advanced."
         )
         src_info.setObjectName("MutedLabel")
@@ -767,7 +767,7 @@ class EcheInstallerWindow(QMainWindow):
         if getattr(self, "radio_github", None) and self.radio_github.isChecked():
             self.source_mode = "github"
             self.source_input.setEnabled(False)
-            self.source_input.setText("github:sevinOG/echelon_ecosystem → eche_source")
+            self.source_input.setText("github:sevinOG/eche → eche_source")
             # Default dest for source checkout
             dest = Path(self.default_install_dir)
             if dest.name.lower() in ("eche", "eche_app"):
@@ -775,7 +775,7 @@ class EcheInstallerWindow(QMainWindow):
                 dest = dest.parent / "eche_source"
             self.path_input.setText(str(dest))
             self.repo_hint.setText(
-                "Downloads https://github.com/sevinOG/echelon_ecosystem "
+                "Downloads https://github.com/sevinOG/eche "
                 "(folder eche_source/) into the destination path."
             )
             self.repo_hint.show()
@@ -870,7 +870,7 @@ class EcheInstallerWindow(QMainWindow):
 
         source_text = self.source_input.text().strip()
         if getattr(self, "radio_github", None) and self.radio_github.isChecked():
-            source_text = "github:sevinOG/echelon_ecosystem"
+            source_text = "github:sevinOG/eche"
             stype = "github"
         elif getattr(self, "radio_recover", None) and self.radio_recover.isChecked():
             if not source_text:

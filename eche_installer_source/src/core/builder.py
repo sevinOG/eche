@@ -16,7 +16,7 @@ _INSTALLER_NAMES = (
 _INSTALLER_SOURCE_NAMES = ("eche_installer_source",)
 
 # Public hub (default install target)
-GITHUB_HUB = "https://github.com/sevinOG/echelon_ecosystem"
+GITHUB_HUB = "https://github.com/sevinOG/eche"
 GITHUB_DEFAULT_SUBDIR = "eche_source"
 
 

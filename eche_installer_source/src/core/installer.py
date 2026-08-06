@@ -403,7 +403,7 @@ class Installer:
             ]
         lines += [
             "Learning links:",
-            "  • Project home: https://github.com/sevinOG/echelon_ecosystem",
+            "  • Project home: https://github.com/sevinOG/eche",
             "  • Read START_HERE.md on GitHub if you got lost",
             "",
             "You never need to share tokens, passwords, or server IDs publicly.",
