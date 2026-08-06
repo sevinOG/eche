@@ -1,11 +1,24 @@
-# Prebuilt binaries
+# One-tap Windows download
 
-| File | Description |
-|------|-------------|
-| `Echelon-Installer.exe` | Portable installer wizard (optional convenience build) |
+## Installer (start here)
 
-## Verify
+**[⬇️ Echelon-Installer.exe](https://github.com/sevinOG/echelon_ecosystem/raw/main/prebuilt/Echelon-Installer.exe)**
 
-Prefer building from `../echelon_installer_source/build.bat` if you want a binary you compiled yourself.
+Same file as in this folder. Click → Save → Run.
 
-The installer defaults to downloading **Echelon application source** from this repository.
+That is the supported beginner path on a fresh Windows 11 PC.
+
+## Optional: GitHub Releases
+
+If this project publishes a **Release**, you may also see:
+
+| Asset | Purpose |
+|-------|---------|
+| `Echelon-Installer.exe` | Setup wizard |
+| `Echelon-Portable.zip` (optional) | Ready-to-run app the installer can overlay |
+
+Releases page: https://github.com/sevinOG/echelon_ecosystem/releases
+
+## Advanced users
+
+Build the installer yourself from `../echelon_installer_source/build.bat`.

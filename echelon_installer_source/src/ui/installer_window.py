@@ -307,14 +307,14 @@ class EchelonInstallerWindow(QMainWindow):
         layout.addSpacing(10)
 
         desc = QLabel(
-            "Echelon ships as three folders:\n"
-            "  • echelon/          — portable app (flash-drive ready)\n"
-            "  • echelon_source/   — full dev package (edit & rebuild)\n"
-            "  • echelon_installer/— this wizard\n\n"
-            "Two-way install:\n"
-            "  → App from portable/source (deploy Echelon.exe)\n"
-            "  → Source from app (recovery / rehydrate core, cogs, gui)\n\n"
-            "User-scope installs do not need admin rights."
+            "New to Discord bots, AI, and GitHub? You’re in the right place.\n\n"
+            "Default path (recommended):\n"
+            "  1) Download source from GitHub automatically\n"
+            "  2) Install it into the folder you choose\n"
+            "  3) Open START_HERE.txt — double-click Echelon.exe if present,\n"
+            "     or SETUP_AND_BUILD.bat once (free Python) to create the app\n\n"
+            "No admin rights needed for a normal user-folder install.\n"
+            "Advanced local EXE / recovery tools are optional."
         )
         desc.setWordWrap(True)
         desc.setStyleSheet(
@@ -332,27 +332,15 @@ class EchelonInstallerWindow(QMainWindow):
         )
         self.source_card.add_widget(src_title)
 
-        t = self.trees or {}
         lines = [
-            f"Workspace: {t.get('workspace') or '—'}",
-            f"Portable app (echelon/): {t.get('portable') or 'not found'}",
-            f"  EXE: {t.get('portable_exe') or 'not built yet — run package_portable.bat'}",
-            f"Source (echelon_source/): {t.get('source') or 'not found'}",
+            "Default mode: Install from GitHub",
+            "  → downloads echelon_source from sevinOG/echelon_ecosystem",
+            "  → then installs that tree into your chosen folder",
             "",
+            "You do not need a local copy of the project first.",
+            "Local files (if any) are only used in Advanced options.",
         ]
-        if self.source_path and self.source_type == "exe":
-            lines.append(f"Install source: EXE ready → {self.source_path}")
-            color = ECHELON_PALETTE["success"]
-        elif self.source_path and self.source_type in ("dist_dir", "portable_dir"):
-            lines.append(f"Install source: folder → {self.source_path}")
-            color = ECHELON_PALETTE["success"]
-        elif self.source_path and self.source_type == "source_dir":
-            lines.append(f"Install source: source tree (no EXE yet) → {self.source_path}")
-            lines.append("Tip: run echelon_source\\package_portable.bat first.")
-            color = ECHELON_PALETTE["warning"]
-        else:
-            lines.append("Install source: nothing detected — browse on the next step.")
-            color = ECHELON_PALETTE["warning"]
+        color = ECHELON_PALETTE["success"]
         src_text = "\n".join(lines)
 
         self.source_label = QLabel(src_text)

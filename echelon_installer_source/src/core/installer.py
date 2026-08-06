@@ -74,26 +74,60 @@ class Installer:
             created_shortcuts: List[str] = []
 
             if opts.source_type == "github":
-                try:
-                    from .github_fetch import fetch_source_from_github, repo_web_url
+                # 1) Download source to a temp folder
+                # 2) Re-run as install-from-source into the user destination
+                # 3) Optionally overlay a portable app from GitHub Releases
+                import shutil as _shutil
+                import tempfile as _tempfile
 
-                    self.log(f"Fetching from {repo_web_url()} …")
-                    fetch_source_from_github(
-                        install_path,
+                tmp_root = None
+                try:
+                    from .github_fetch import (
+                        fetch_to_temp_source,
+                        repo_web_url,
+                        try_fetch_portable_app_from_release,
+                    )
+
+                    self.log(f"Fetching Echelon source from {repo_web_url()} …")
+                    tmp_root = fetch_to_temp_source(
                         subdir=opts.github_subdir or "echelon_source",
                         log=self.log,
                         progress=self.progress,
                     )
-                    for p in install_path.rglob("*"):
-                        if p.is_file():
-                            copied_files.append(str(p))
+                    self.log(f"Source staged at {tmp_root}")
+                    self.log("Continuing as install-from-source…")
+                    self.progress(45, "Installing source tree…")
+                    self._copy_tree(Path(tmp_root), install_path, copied_files)
+
+                    # Best-effort: if Releases publish a portable app, put it here too
+                    try:
+                        exe = try_fetch_portable_app_from_release(
+                            install_path,
+                            log=self.log,
+                            progress=self.progress,
+                        )
+                        if exe:
+                            self.log(f"Portable app included: {exe}")
+                            for p in install_path.rglob("*"):
+                                if p.is_file() and str(p) not in copied_files:
+                                    copied_files.append(str(p))
+                    except Exception as pe:
+                        self.log(f"Portable overlay skipped: {pe}")
+
                     self.log(
-                        "GitHub install complete — open the folder and run BUILD.bat "
-                        "after creating a Python venv (see README)."
+                        "GitHub → source install complete. "
+                        "If Echelon.exe is present, launch it. "
+                        "Otherwise use SETUP_AND_BUILD.bat (needs Python once)."
                     )
                 except Exception as e:
                     self.log(f"ERROR: GitHub download failed: {e}")
                     return False
+                finally:
+                    if tmp_root:
+                        try:
+                            _shutil.rmtree(tmp_root, ignore_errors=True)
+                        except Exception:
+                            pass
             elif opts.source_type == "recover_source":
                 # Two-way: rebuild a dev source tree from a portable app / onedir
                 ok = self._recover_source_from_app(source_path, install_path, copied_files)
@@ -129,26 +163,19 @@ class Installer:
 
             self.progress(60, "Creating shortcuts...")
             main_exe = self._find_main_exe(install_path)
+            # Source trees: only create shortcuts if we also got an EXE (release overlay)
             skip_app_shortcuts = opts.source_type in (
-                "github",
                 "source_dir",
                 "recover_source",
+            ) or (
+                opts.source_type == "github"
+                and not (main_exe and Path(main_exe).exists())
             )
 
             if opts.source_type == "github":
-                readme = install_path / "NEXT_STEPS.txt"
-                readme.write_text(
-                    "Echelon source installed from GitHub\n"
-                    "====================================\n\n"
-                    "1. python -m venv .venv\n"
-                    "2. .venv\\Scripts\\pip install -r requirements.txt\n"
-                    "3. BUILD.bat\n\n"
-                    "That builds the portable Echelon app.\n"
-                    "Hub: https://github.com/sevinOG/echelon_ecosystem\n",
-                    encoding="utf-8",
-                )
-                copied_files.append(str(readme))
-                self.log(f"[SUCCESS] GitHub source installed to {install_path}")
+                self._write_beginner_next_steps(install_path, main_exe)
+                copied_files.append(str(install_path / "START_HERE.txt"))
+                self.log(f"[SUCCESS] GitHub install finished → {install_path}")
 
             if opts.source_type == "recover_source":
                 self.progress(90, "Writing recovery notes...")
@@ -300,6 +327,102 @@ class Installer:
                 except Exception as exc:
                     self.log(f"Copy warning {rel}: {exc}")
         self.log(f"Copied {len(copied_files)} files")
+
+    def _write_beginner_next_steps(
+        self, install_path: Path, main_exe: Path | None
+    ) -> None:
+        """Plain-English file for people who have never used GitHub or AI tools."""
+        has_exe = bool(main_exe and Path(main_exe).exists())
+        lines = [
+            "WELCOME TO ECHELON",
+            "==================",
+            "",
+            "You do NOT need to understand GitHub to use this folder.",
+            "This is a learning project — a Discord bot with a simple desktop window.",
+            "",
+        ]
+        if has_exe:
+            lines += [
+                "GOOD NEWS: Echelon.exe is already here.",
+                f"  → Double-click: {main_exe}",
+                "",
+                "First run tips:",
+                "  1. Open Settings and paste your Discord bot token (free from Discord).",
+                "  2. Optional: add a free Groq API key for AI chat (console.groq.com).",
+                "  3. Press Run Bot.",
+                "",
+            ]
+        else:
+            lines += [
+                "This folder is the Echelon SOURCE (the recipe).",
+                "To turn it into a double-click app once:",
+                "",
+                "  A) Install Python 3.11+ from https://www.python.org/downloads/",
+                "     (check the box: Add python.exe to PATH)",
+                "",
+                "  B) Double-click SETUP_AND_BUILD.bat in this folder.",
+                "     Wait until it finishes — then open dist\\Echelon\\Echelon.exe",
+                "     (or the published echelon\\ folder if present).",
+                "",
+            ]
+        lines += [
+            "Learning links:",
+            "  • Project home: https://github.com/sevinOG/echelon_ecosystem",
+            "  • Read START_HERE.md on GitHub if you got lost",
+            "",
+            "You never need to share tokens, passwords, or server IDs publicly.",
+            "",
+        ]
+        (install_path / "START_HERE.txt").write_text("\n".join(lines), encoding="utf-8")
+
+        # One-tap build helper for source installs (safe if BUILD.bat missing)
+        setup = install_path / "SETUP_AND_BUILD.bat"
+        if (install_path / "BUILD.bat").is_file() and not setup.is_file():
+            setup.write_text(
+                "@echo off\n"
+                "setlocal\n"
+                "title Echelon - one-tap setup\n"
+                "cd /d \"%~dp0\"\n"
+                "echo.\n"
+                "echo  ECHELON — first-time setup (beginner)\n"
+                "echo  =====================================\n"
+                "echo.\n"
+                "where python >nul 2>&1\n"
+                "if errorlevel 1 (\n"
+                "  echo [NEED] Python was not found.\n"
+                "  echo   1. Open https://www.python.org/downloads/\n"
+                "  echo   2. Install Python 3.11 or newer\n"
+                "  echo   3. ENABLE: Add python.exe to PATH\n"
+                "  echo   4. Close this window and run SETUP_AND_BUILD.bat again\n"
+                "  start https://www.python.org/downloads/\n"
+                "  pause\n"
+                "  exit /b 1\n"
+                ")\n"
+                "if not exist .venv\\Scripts\\python.exe (\n"
+                "  echo [1/3] Creating virtual environment...\n"
+                "  python -m venv .venv\n"
+                "  if errorlevel 1 (\n"
+                "    echo Failed to create .venv\n"
+                "    pause\n"
+                "    exit /b 1\n"
+                "  )\n"
+                ")\n"
+                "echo [2/3] Installing libraries (several minutes)...\n"
+                "\".venv\\Scripts\\python.exe\" -m pip install -U pip\n"
+                "\".venv\\Scripts\\python.exe\" -m pip install -r requirements.txt\n"
+                "if errorlevel 1 (\n"
+                "  echo pip install failed\n"
+                "  pause\n"
+                "  exit /b 1\n"
+                ")\n"
+                "echo [3/3] Building portable app...\n"
+                "set ECHELON_NO_PAUSE=1\n"
+                "call BUILD.bat\n"
+                "echo.\n"
+                "echo Done. Look for dist\\Echelon\\Echelon.exe or ..\\echelon\\Echelon.exe\n"
+                "pause\n",
+                encoding="utf-8",
+            )
 
     def _write_portable_marker(self, install_path: Path) -> None:
         marker = install_path / "install.json"
