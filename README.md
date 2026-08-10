@@ -4,12 +4,6 @@ Open-source Discord bot + desktop control panel.
 
 ---
 
-## Download
-
-**Get `Eche-Installer.exe` from [Releases](https://github.com/sevinOG/eche/releases) or from `prebuilt/` folder.**
-
-This installer is tiny (~10MB). It will download the bot for you - you don't need to clone the whole repo.
-
 ---
 
 ## Quick Start (No Terminal)
