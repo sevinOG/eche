@@ -23,16 +23,18 @@ SECRET_KEYS = (
     "us_secret_token",   # US_SECRET_TOKEN (Unsplash)
 )
 
-# Non-secret app config (IDs, flags, etc.)
+# UPDATED PUBLIC KEYS (per your request)
 PUBLIC_KEYS = (
     "home_server_id",
     "thoughts_thread_id",
-    "groq_model",
-    "provider_backend",  # cloud (Groq default) | ollama
-    "summarizer_model",  # optional model just for memory compression
-    "summarizer_prompt_path",  # optional path; blank = config/summarizer_prompt.txt
-    "project_path",  # portable package root for rebuilds
-    "suppress_no_provider_warn",  # "1" = don't re-show missing inference key dialog
+    "groq_model",          # active model → GROQ_MODEL env (for client.py)
+    "cloud_model",         # Cloud (Groq) model id
+    "ollama_model",        # Local Ollama model id
+    "provider_backend",    # cloud | ollama
+    "summarizer_model",
+    "summarizer_prompt_path",
+    "project_path",
+    "suppress_no_provider_warn",
 )
 
 # Map settings key -> environment variable used by the bot
@@ -65,7 +67,6 @@ PUBLIC_FIELD_META = (
         "Model ID",
         "Which AI model to call (default: llama-3.3-70b-versatile). Use ℹ to learn more.",
     ),
-    # project_path / suppress_no_provider_warn edited elsewhere
 )
 
 _SECRETS_FILENAME = "secrets.dpapi.json"
@@ -91,7 +92,6 @@ def secrets_path(root: str | None = None) -> str:
 
 
 def _dpapi_protect(data: bytes, description: str = "Eche secret") -> bytes:
-    """Windows DPAPI CryptProtectData via ctypes (no pywin32 dependency)."""
     import ctypes
     from ctypes import wintypes
 
@@ -108,7 +108,6 @@ def _dpapi_protect(data: bytes, description: str = "Eche secret") -> bytes:
     in_blob = DATA_BLOB(len(data), ctypes.cast(in_buf, ctypes.POINTER(ctypes.c_char)))
     out_blob = DATA_BLOB()
 
-    # CRYPTPROTECT_UI_FORBIDDEN = 0x1
     if not crypt32.CryptProtectData(
         ctypes.byref(in_blob),
         description,
@@ -127,7 +126,6 @@ def _dpapi_protect(data: bytes, description: str = "Eche secret") -> bytes:
 
 
 def _dpapi_unprotect(blob: bytes) -> bytes:
-    """Windows DPAPI CryptUnprotectData via ctypes."""
     import ctypes
     from ctypes import wintypes
 
@@ -187,8 +185,8 @@ def unprotect(token_b64: str) -> str:
             raise RuntimeError(f"DPAPI unprotect failed: {e}") from e
     raise RuntimeError("Secure secret storage requires Windows DPAPI.")
 
+
 def redact(value: str, keep: int = 4) -> str:
-    """Safe preview for logs/UI — never full secret."""
     if not value:
         return ""
     if len(value) <= keep * 2:
@@ -197,13 +195,11 @@ def redact(value: str, keep: int = 4) -> str:
 
 
 def _restrict_acl_windows(path: str) -> None:
-    """Best-effort: ACL so only the current user can read the secrets file."""
     try:
         import getpass
         import subprocess
 
         user = getpass.getuser()
-        # Inheritance disabled; grant current user only
         subprocess.run(
             [
                 "icacls",
@@ -254,7 +250,6 @@ def _load_encrypted_secrets(root: str) -> dict[str, str]:
         try:
             out[key] = unprotect(blob)
         except Exception:
-            # Corrupt / other-user ciphertext — skip
             out[key] = ""
     return out
 
@@ -285,7 +280,6 @@ def _load_public(root: str) -> dict[str, str]:
 
 def _save_public(root: str, public: dict[str, str]) -> None:
     data = _read_json(settings_path(root))
-    # Drop any leftover plaintext secrets from older versions
     for key in SECRET_KEYS:
         data.pop(key, None)
     for key in PUBLIC_KEYS:
@@ -295,7 +289,6 @@ def _save_public(root: str, public: dict[str, str]) -> None:
 
 
 def _seed_from_dotenv(root: str) -> dict[str, str]:
-    """Dev convenience: read .env once (does not write it)."""
     seeded: dict[str, str] = {k: "" for k in (*SECRET_KEYS, *PUBLIC_KEYS)}
     env_path = os.path.join(root, ".env")
     if not os.path.isfile(env_path):
@@ -306,17 +299,12 @@ def _seed_from_dotenv(root: str) -> dict[str, str]:
     except Exception:
         return seeded
 
-    # settings key -> .env key (inverse of ENV_MAP for secrets + public)
     for settings_key, env_name in ENV_MAP.items():
         seeded[settings_key] = (env.get(env_name) or "").strip()
     return seeded
 
 
 def _migrate_plaintext_settings(root: str) -> None:
-    """
-    If config/settings.json still has plaintext tokens (old builds),
-    move them into the DPAPI store and scrub the JSON file.
-    """
     path = settings_path(root)
     data = _read_json(path)
     if not data:
@@ -327,7 +315,6 @@ def _migrate_plaintext_settings(root: str) -> None:
     for key in SECRET_KEYS:
         plain = str(data.get(key) or "").strip()
         if plain:
-            # Prefer existing encrypted value if already present
             if not secrets.get(key):
                 secrets[key] = plain
             found = True
@@ -341,10 +328,6 @@ def _migrate_plaintext_settings(root: str) -> None:
 
 
 def load_all(root: str | None = None) -> dict[str, str]:
-    """
-    Load public + secret config (decrypted in memory only).
-    Priority for secrets: DPAPI store > .env seed (if DPAPI empty).
-    """
     root = root or _user_root()
     os.makedirs(os.path.join(root, "config"), exist_ok=True)
     _migrate_plaintext_settings(root)
@@ -352,7 +335,6 @@ def load_all(root: str | None = None) -> dict[str, str]:
     public = _load_public(root)
     secrets = _load_encrypted_secrets(root)
 
-    # Fill any empty gaps from .env (dev / first run) without writing .env
     seeded = _seed_from_dotenv(root)
     for key in SECRET_KEYS:
         if not secrets.get(key) and seeded.get(key):
@@ -362,15 +344,13 @@ def load_all(root: str | None = None) -> dict[str, str]:
             public[key] = seeded[key]
 
     out = {**public, **secrets}
-    # Ensure all keys exist
     for key in (*SECRET_KEYS, *PUBLIC_KEYS):
         out.setdefault(key, "")
-    # Portable source discovery — never hardcode a machine path
+
     stored = (out.get("project_path") or "").strip()
     try:
         from core.paths import resolve_source_root, is_source_tree
         resolved = resolve_source_root(stored or None)
-        # Prefer resolved when stored is empty, missing, or not a real source tree
         if not stored or not is_source_tree(stored):
             out["project_path"] = resolved
         else:
@@ -382,23 +362,52 @@ def load_all(root: str | None = None) -> dict[str, str]:
                 out["project_path"] = package_root()
             except Exception:
                 out["project_path"] = root or os.getcwd()
-    if not (out.get("groq_model") or "").strip():
-        out["groq_model"] = "llama-3.3-70b-versatile"
+
+    # ⭐ REPLACED TAIL OF load_all() PER YOUR REQUEST ⭐
+
     backend = (out.get("provider_backend") or "").strip().lower()
     if backend not in ("cloud", "ollama"):
         out["provider_backend"] = "cloud"
+        backend = "cloud"
+
+    legacy = (out.get("groq_model") or "").strip()
+    cloud_m = (out.get("cloud_model") or "").strip()
+    ollama_m = (out.get("ollama_model") or "").strip()
+
+    _CLOUD_DEFAULT = "llama-3.3-70b-versatile"
+    _OLLAMA_DEFAULT = "llama3"
+    _OLLAMA_LOOKALIKES = {"llama3", "llama3.2", "llama3.1", "mistral", "mixtral", "phi3", "qwen2.5"}
+
+    if not cloud_m:
+        if legacy and legacy not in _OLLAMA_LOOKALIKES and "llama-3.3" in legacy or (
+            legacy and legacy not in _OLLAMA_LOOKALIKES
+        ):
+            cloud_m = legacy if legacy not in _OLLAMA_LOOKALIKES else _CLOUD_DEFAULT
+        else:
+            cloud_m = _CLOUD_DEFAULT
+        out["cloud_model"] = cloud_m
+
+    if not ollama_m:
+        if legacy and (legacy in _OLLAMA_LOOKALIKES or backend == "ollama"):
+            ollama_m = legacy if legacy else _OLLAMA_DEFAULT
+        else:
+            ollama_m = _OLLAMA_DEFAULT
+        out["ollama_model"] = ollama_m
+
+    out["groq_model"] = cloud_m if backend == "cloud" else ollama_m
+    if not (out.get("groq_model") or "").strip():
+        out["groq_model"] = _CLOUD_DEFAULT if backend == "cloud" else _OLLAMA_DEFAULT
+
     return out
 
 
 def save_all(data: dict[str, Any], root: str | None = None) -> None:
-    """Persist public JSON + DPAPI-encrypted secrets."""
     root = root or _user_root()
     os.makedirs(os.path.join(root, "config"), exist_ok=True)
 
     public = {k: str(data.get(k) or "").strip() for k in PUBLIC_KEYS}
     secrets = {k: str(data.get(k) or "").strip() for k in SECRET_KEYS}
 
-    # If UI left a secret blank, keep previous encrypted value
     existing = _load_encrypted_secrets(root)
     for key in SECRET_KEYS:
         if not secrets.get(key) and existing.get(key):
@@ -409,10 +418,6 @@ def save_all(data: dict[str, Any], root: str | None = None) -> None:
 
 
 def apply_to_environ(root: str | None = None, override_existing: bool = False) -> dict[str, str]:
-    """
-    Load config into process environment for the bot / child process.
-    Returns the loaded map (including secrets) for in-process use.
-    """
     cfg = load_all(root)
     for key, env_name in ENV_MAP.items():
         val = (cfg.get(key) or "").strip()
@@ -429,7 +434,6 @@ def has_discord_token(root: str | None = None) -> bool:
 
 
 def clear_secrets(root: str | None = None) -> None:
-    """Remove all stored secrets; keep public settings."""
     root = root or _user_root()
     public = _load_public(root)
     _save_public(root, public)
@@ -437,7 +441,6 @@ def clear_secrets(root: str | None = None) -> None:
 
 
 def scrub_text(text: str, root: str | None = None) -> str:
-    """Redact known secret values from a log line (best-effort)."""
     if not text:
         return text
     try:
@@ -449,7 +452,6 @@ def scrub_text(text: str, root: str | None = None) -> str:
         val = (cfg.get(key) or "").strip()
         if val and len(val) >= 8 and val in out:
             out = out.replace(val, redact(val))
-    # Common env-style leaks
     for env_name in ENV_MAP.values():
         val = (os.environ.get(env_name) or "").strip()
         if val and len(val) >= 8 and val in out:
