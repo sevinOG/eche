@@ -2,157 +2,171 @@
 
 Open-source Discord bot + desktop control panel.
 
-**Repo:** https://github.com/sevinOG/eche · **Version:** see root `VERSION` (currently **1.3.1**)
+---
 
-**Formerly Echelon** — same project, rebranded to **Eche** (product, folders, EXE names). Older docs or shortcuts may still say "Echelon"; treat them as legacy names for this repo.
+## Download
 
-## Four forks only
+**Get `Eche-Installer.exe` from [Releases](https://github.com/sevinOG/eche/releases) or from `prebuilt/` folder.**
 
-| Fork | Folder | What |
-| --- | --- | --- |
-| **App (portable)** | `eche/` | **Build output** (onedir: `Eche.exe` + `_internal/`) — produced by `BUILD.bat` or auto-built by installer |
-| **App source** | `eche_source/` | Python source + `BUILD.bat` (installer auto-builds this now) |
-| **Installer (portable)** | `eche_installer/` / `prebuilt/` | Wizard: `Eche-Installer.exe` — **recommended** |
-| **Installer source** | `eche_installer_source/` | Installer UI + `build.bat` |
+This installer is tiny (~10MB). It will download the bot for you - you don't need to clone the whole repo.
 
 ---
 
-## Recommended: ready to run (installer) - NEW USERS START HERE
+## Quick Start (No Terminal)
 
-**[Download Eche-Installer.exe](https://github.com/sevinOG/eche/releases/latest/download/Eche-Installer.exe)**  
-*If the above direct link doesn't work, get it from **[Releases page](https://github.com/sevinOG/eche/releases)** or `prebuilt/Eche-Installer.exe` in the repo.*
+1. Download `Eche-Installer.exe`
+2. Double-click it
+3. Keep **Install from GitHub** checked
+4. Pick a folder → **Install** (2-3 min first time, needs Python - get it from python.org, check **Add to PATH**)
+5. `Eche.exe` launches automatically
 
-1. Save and run **Eche-Installer.exe**
+Start Menu shortcut: `Eche`
 
-2. Keep **Install from GitHub** selected (now auto-builds Eche.exe - no batch files needed)
-
-3. Choose a folder → **Install** → wait 2-3 min first time (needs Python from python.org, check **Add python.exe to PATH**)
-
-4. **Eche.exe** launches automatically from `..\eche\Eche.exe` - Start Menu shortcut `Eche.lnk` also points to it
-
-If auto-build fails, check `START_HERE.txt` in your install folder - it will tell you if Python is missing.
+If it fails, check `START_HERE.txt` in your install folder.
 
 ---
 
-### Terminal Quick Install (installer only, then installer fetches the rest)
 
-Don't clone the whole repo. Just grab the installer and let it download what you need:
+### 0) Install Git and Python
 
-#### Option A: One-liner to get installer (PowerShell)
+Download from:
+- https://git-scm.com/downloads
+- https://www.python.org/downloads (check **Add python.exe to PATH**)
 
-```powershell
-# Download installer only (tiny, ~10MB)
-Invoke-WebRequest -Uri "https://github.com/sevinOG/eche/releases/latest/download/Eche-Installer.exe" -OutFile "Eche-Installer.exe"
+Or with winget (CMD also works, not just PowerShell):
+```
+winget install --id Git.Git -e
+winget install --id Python.Python.3.12 -e
+```
+Close CMD, open new CMD.
 
-# Run it - it will fetch the app source from GitHub and auto-build Eche.exe
-.\Eche-Installer.exe
+### 1) Clone ONLY installer (~10MB, not whole repo)
+
+**CMD:**
+```cmd
+mkdir eche-setup
+cd eche-setup
+git clone --filter=blob:none --no-checkout https://github.com/sevinOG/eche.git .
+git sparse-checkout set --no-cone prebuilt
+git checkout main
+prebuilt\Eche-Installer.exe
 ```
 
-#### Option B: What the installer can fetch (you pick in the UI)
-
-The installer now pulls from GitHub, you choose tier:
-
-| Tier | What installer downloads | Who it's for |
-| --- | --- | --- |
-| **Bot only** | `eche/` portable app (`Eche.exe` + `_internal/`) - smallest | Just want to run the bot |
-| **Bot + Source** | `eche/` + `eche_source/` full Python source | Want to run + tweak code |
-| **Bot + Source + Installer Source** | `eche/` + `eche_source/` + `eche_installer_source/` | Full repo for maintaining installer |
-
-> Current default: **Bot + Source** (fetches `eche_source/` and auto-builds `eche/`).  
-> If you want Bot-only (faster), select **"Portable App from Release"** in installer instead of GitHub.
-
-
-
-## Install: Command Line (for devs)
-
-### For Developers (Git + terminal - full repo)
-
-Use this if you're contributing code. For normal use, use the one-liner above.
-
-#### 0) Install Git and Python first (Windows / PowerShell)
-
-```powershell
-winget install --id Git.Git -e --source winget --accept-package-agreements --accept-source-agreements
-winget install --id Python.Python.3.12 -e --source winget --accept-package-agreements --accept-source-agreements
+**Git Bash:**
+```bash
+git clone --filter=blob:none --no-checkout https://github.com/sevinOG/eche.git eche-setup
+cd eche-setup
+git sparse-checkout set --no-cone prebuilt
+git checkout main
+./prebuilt/Eche-Installer.exe
 ```
 
-After install: close PowerShell, open new window:
+### What happens:
 
-```powershell
-git --version
-python --version
+```
+You cloned:  prebuilt/Eche-Installer.exe (installer only, 10MB)
+       ↓
+Installer fetches:  eche_source/ (bot source from GitHub)
+       ↓
+Installer auto-builds:  eche/Eche.exe (portable app)
 ```
 
-#### 1) Clone (full)
+### Other tiers (if you want source)
 
-```powershell
+**Bot + Source:**
+```cmd
+git sparse-checkout set --no-cone prebuilt eche_source
+git checkout main
+```
+
+**Full (Bot + Source + Installer Source):**
+```cmd
+git sparse-checkout set --no-cone prebuilt eche_source eche_installer_source
+git checkout main
+```
+
+---
+
+## For Developers (Full Clone)
+
+Only if you're editing code.
+
+```cmd
 git clone https://github.com/sevinOG/eche.git
 cd eche
-```
-
-This gives you **everything**: bot + source + installer source (your Tier 3).
-
-#### 2) Build portable (devs)
-
-```powershell
 cd eche_source
-.\SETUP_AND_BUILD.bat
-# -> creates ../eche/Eche.exe
+SETUP_AND_BUILD.bat
+cd ..\eche
+Eche.exe
 ```
 
-#### 3) Run from source
-
-```powershell
+Run from source without building:
+```cmd
 cd eche_source
 python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-.\.venv\Scripts\python.exe eche_app.py
+.venv\Scripts\python.exe -m pip install -r requirements.txt
+.venv\Scripts\python.exe eche_app.py
 ```
 
-#### 4) Build installer
-
-```powershell
+Build installer:
+```cmd
 cd eche_installer_source
-.\build.bat
-# -> dist/Eche-Installer.exe
+build.bat
 ```
 
 ---
 
-## Packaging: why onedir
+## Why onedir, not one-file
 
-| Mode | What happens | Why |
-| --- | --- | --- |
-| One-file | Unpacks to temp every launch | Defender false positives |
-| Onedir (current) | `Eche.exe` + `_internal/` | Normal app layout |
+| Mode | Issue |
+|---|---|
+| One-file | Unpacks to temp every launch, looks like dropper to Defender |
+| Onedir (we use) | `Eche.exe` + `_internal/` - normal app layout |
 
-Spec: `eche_source/build_exe.spec`
+Spec: `eche_source/build_exe.spec`, UPX off.
 
 ---
 
-## Repo layout
+## Repo Layout
 
 ```
 eche/
-  README.md  VERSION
-  prebuilt/Eche-Installer.exe   <- download this only, it fetches rest
-  eche/                    <- portable after build/installer (not in git)
-  eche_source/             <- app source
-  eche_installer_source/   <- installer source
+  prebuilt/Eche-Installer.exe  <- download this, it fetches rest
+  eche/                       <- built app after installer/BUILD.bat (not in git)
+  eche_source/                <- bot source
+  eche_installer_source/      <- installer source
 ```
 
 ---
 
-## Common commands
+## Common Commands (CMD)
 
 | Goal | Command |
-| --- | --- |
-| **Install for users (fastest)** | `iwr -Uri https://github.com/sevinOG/eche/releases/latest/download/Eche-Installer.exe -OutFile Eche-Installer.exe; .\Eche-Installer.exe` |
-| **Install portable only** | In installer UI, select "Portable App from Release" |
-| **Install full source** | In installer UI, select "Install from GitHub" (default, auto-builds) |
-| **Clone full repo (dev)** | `git clone https://github.com/sevinOG/eche.git` |
-| **Build from clone** | `.\eche_source\SETUP_AND_BUILD.bat` |
-| **Build installer** | `.\eche_installer_source\build.bat` |
+|---|---|
+| Clone installer only | `git clone --filter=blob:none --no-checkout https://github.com/sevinOG/eche.git . && git sparse-checkout set --no-cone prebuilt && git checkout main` |
+| Run installer | `prebuilt\Eche-Installer.exe` |
+| Full clone | `git clone https://github.com/sevinOG/eche.git` |
+| Build portable | `eche_source\SETUP_AND_BUILD.bat` |
+| Build installer | `eche_installer_source\build.bat` |
+
+<details>
+<summary>PowerShell version (if you must)</summary>
+
+```powershell
+mkdir eche-setup; cd eche-setup
+git clone --filter=blob:none --no-checkout https://github.com/sevinOG/eche.git .
+git sparse-checkout set --no-cone prebuilt
+git checkout main
+.\prebuilt\Eche-Installer.exe
+```
+
+Or one-liner download:
+```powershell
+Invoke-WebRequest -Uri "https://raw.githubusercontent.com/sevinOG/eche/main/prebuilt/Eche-Installer.exe" -OutFile "Eche-Installer.exe"
+.\Eche-Installer.exe
+```
+
+</details>
 
 ---
 
@@ -160,13 +174,9 @@ eche/
 
 Tokens stay local except Discord, Groq, Unsplash. See PRIVACY.md.
 
-## License
+## Changelog v1.3.1
 
-MIT
-
-## What Changed in v1.3.1
-
-- Installer now auto-builds Eche.exe (needs Python) - no manual batch step
-- Added direct download link + terminal one-liner (installer-only download)
-- Installer can now fetch Bot / Bot+Source / Full tiers from GitHub
+- Installer now auto-builds Eche.exe (2-3 min first time, needs Python)
+- New terminal flow: clone installer only (10MB sparse checkout), installer fetches bot
+- Removed manual SETUP_AND_BUILD.bat step for new users
 - Shortcuts point directly to Eche.exe
