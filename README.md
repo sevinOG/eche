@@ -2,21 +2,6 @@
 
 Open-source Discord bot + desktop control panel.
 
----
-
----
-
-## Quick Start (No Terminal)
-
-1. Download `Eche-Installer.exe`
-2. Double-click it
-3. Keep **Install from GitHub** checked
-4. Pick a folder → **Install** (2-3 min first time, needs Python - get it from python.org, check **Add to PATH**)
-5. `Eche.exe` launches automatically
-
-Start Menu shortcut: `Eche`
-
-If it fails, check `START_HERE.txt` in your install folder.
 
 ---
 
