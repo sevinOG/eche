@@ -1,9 +1,8 @@
 import json
-import os
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import (
+from PyQt6.QtCore import Qt, pyqtSignal as Signal
+from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
