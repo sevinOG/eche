@@ -5,6 +5,7 @@ Open-source Discord bot + desktop control panel.
 
 ---
 
+QUICKSTART:
 
 ### 0) Install Git and Python
 
