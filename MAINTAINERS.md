@@ -30,3 +30,4 @@ This repository is maintained in the open. Contributions and review may involve 
 | Optional later | Inno/NSIS wrapping onedir | does not replace onedir runtime |
 
 Public install docs: root [README.md](README.md). Privacy: [PRIVACY.md](PRIVACY.md).
+ 
