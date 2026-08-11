@@ -13,7 +13,7 @@ Download from:
 - https://git-scm.com/downloads
 - https://www.python.org/downloads (check **Add python.exe to PATH**)
 
-Or with winget (CMD also works, not just PowerShell):
+Or with winget:
 ```
 winget install --id Git.Git -e
 winget install --id Python.Python.3.12 -e
