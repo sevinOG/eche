@@ -1,7 +1,6 @@
-# games/highlow.py
-
 import discord
 import random
+import asyncio
 from discord.ui import View
 from cogs.games._core import register_game
 
@@ -11,9 +10,6 @@ ODDS_TABLE = {
     3: {"win": 3.0, "lose": 2},
 }
 
-# ---------------------------------------------------------
-# ⭐ ODDS OPTIONS FOR BET GUI
-# ---------------------------------------------------------
 ODDS_OPTIONS = [
     ("Odds 1", 1),
     ("Odds 2", 2),
@@ -53,7 +49,8 @@ class HighLowGame:
             description=(
                 f"**Odds:** {odds}\n"
                 f"**Bet:** {betvalue}\n"
-                f"**Session Balance:** {starting_balance}\n\n"
+                f"**Session Balance:** {starting_balance}\n"
+                f"**Bank Start:** {starting_balance}\n\n"
                 f"Your first number is:\n"
                 f"**{first_number}**\n\n"
                 "Will the next number be **higher** or **lower**?"
@@ -65,7 +62,8 @@ class HighLowGame:
             ctx=ctx,
             odds=odds,
             betvalue=betvalue,
-            session_balance=starting_balance,
+            session_balance=starting_balance,  # running total = current bank value
+            starting_balance=starting_balance,  # remember where we started
             first_number=first_number,
             save_callback=save_callback
         )
@@ -75,18 +73,31 @@ class HighLowGame:
 
 
 class HighLowButtons(View):
-    def __init__(self, ctx, odds, betvalue, session_balance, first_number, save_callback):
+    def __init__(self, ctx, odds, betvalue, session_balance, starting_balance, first_number, save_callback):
         super().__init__(timeout=30)
         self.ctx = ctx
         self.odds = odds
         self.betvalue = betvalue
         self.session_balance = session_balance
+        self.starting_balance = starting_balance
         self.first_number = first_number
         self.save_callback = save_callback
         self.message = None
+        self._finalized = False
+        self._lock = asyncio.Lock()
+
+    async def _finalize_balance(self, final_balance: float):
+        """Ensures bank is only saved ONCE - prevents cycling bug."""
+        async with self._lock:
+            if self._finalized:
+                return
+            self._finalized = True
+            try:
+                await self.save_callback(self.ctx.author, final_balance)
+            except Exception as e:
+                print(f"[highlow] save failed: {e}")
 
     async def interaction_check(self, interaction):
-        # Reset timeout on interaction
         self.timeout = 30
         return interaction.user.id == self.ctx.author.id
 
@@ -115,31 +126,26 @@ class HighLowButtons(View):
         if win:
             delta = int(self.betvalue * odds_data["win"])
             self.session_balance += delta
-
             embed = discord.Embed(
                 title="🎉 You Won!",
                 description=(
-                    f"First number: **{self.first_number}**\n"
-                    f"Second number: **{second_number}**\n\n"
-                    f"**Odds:** {self.odds}\n"
-                    f"You won **{delta} coins**!\n"
-                    f"Session Balance: **{self.session_balance}**"
+                    f"First: **{self.first_number}** → Second: **{second_number}**\n"
+                    f"**Odds:** {self.odds} | Won **{delta}**\n"
+                    f"Session: **{self.session_balance}** (Started: {self.starting_balance})\n"
+                    f"Net: **{self.session_balance - self.starting_balance:+}**"
                 ),
                 color=discord.Color.green()
             )
-
         else:
             delta = int(self.betvalue * odds_data["lose"])
             self.session_balance -= delta
-
             embed = discord.Embed(
                 title="💀 You Lost!",
                 description=(
-                    f"First number: **{self.first_number}**\n"
-                    f"Second number: **{second_number}**\n\n"
-                    f"**Odds:** {self.odds}\n"
-                    f"You lost **{delta} coins**.\n"
-                    f"Session Balance: **{self.session_balance}**"
+                    f"First: **{self.first_number}** → Second: **{second_number}**\n"
+                    f"**Odds:** {self.odds} | Lost **{delta}**\n"
+                    f"Session: **{self.session_balance}** (Started: {self.starting_balance})\n"
+                    f"Net: **{self.session_balance - self.starting_balance:+}**"
                 ),
                 color=discord.Color.red()
             )
@@ -149,6 +155,7 @@ class HighLowButtons(View):
             odds=self.odds,
             betvalue=self.betvalue,
             session_balance=self.session_balance,
+            starting_balance=self.starting_balance,
             save_callback=self.save_callback,
             message=self.message
         )
@@ -156,17 +163,19 @@ class HighLowButtons(View):
         await self.message.edit(embed=embed, view=end_view)
 
     async def on_timeout(self):
-        # Final embed on timeout
+        # FIXED: Now saves on timeout, and only once
+        await self._finalize_balance(self.session_balance)
         embed = discord.Embed(
-            title="🎲 High-Low — Concluded",
+            title="🎲 High-Low — Concluded (Timeout)",
             description=(
                 f"**Odds:** {self.odds}\n"
                 f"**Final Session Balance:** {self.session_balance}\n"
-                f"**Player:** {self.ctx.author.mention}"
+                f"**Net Change:** {self.session_balance - self.starting_balance:+}\n"
+                f"**Player:** {self.ctx.author.mention}\n\n"
+                "*Saved to bank due to inactivity.*"
             ),
             color=discord.Color.gold()
         )
-
         try:
             await self.message.edit(embed=embed, view=None)
         except:
@@ -174,24 +183,36 @@ class HighLowButtons(View):
 
 
 class HighLowEndButtons(View):
-    def __init__(self, ctx, odds, betvalue, session_balance, save_callback, message):
-        super().__init__(timeout=30)
+    def __init__(self, ctx, odds, betvalue, session_balance, starting_balance, save_callback, message):
+        super().__init__(timeout=60)
         self.ctx = ctx
         self.odds = odds
         self.betvalue = betvalue
         self.session_balance = session_balance
+        self.starting_balance = starting_balance
         self.save_callback = save_callback
         self.message = message
+        self._finalized = False
+        self._lock = asyncio.Lock()
+
+    async def _finalize_balance(self, final_balance: float):
+        async with self._lock:
+            if self._finalized:
+                return
+            self._finalized = True
+            try:
+                await self.save_callback(self.ctx.author, final_balance)
+            except Exception as e:
+                print(f"[highlow] save failed: {e}")
 
     async def interaction_check(self, interaction):
-        # Reset timeout on interaction
-        self.timeout = 30
+        self.timeout = 60
         return interaction.user.id == self.ctx.author.id
 
     @discord.ui.button(label="Play Again", style=discord.ButtonStyle.green)
     async def play_again(self, interaction, button):
         await interaction.response.defer()
-
+        # No save yet - keep running total in memory
         await HighLowGame.start(
             ctx=self.ctx,
             odds=self.odds,
@@ -202,27 +223,47 @@ class HighLowEndButtons(View):
             message=self.message
         )
 
-    @discord.ui.button(label="Take Winnings", style=discord.ButtonStyle.gray)
+    @discord.ui.button(label="Take Winnings", style=discord.ButtonStyle.gray, emoji="💰")
     async def take_winnings(self, interaction, button):
         await interaction.response.defer()
 
-        await self.save_callback(self.ctx.author, self.session_balance)
+        # FIXED: Guard against double-save
+        await self._finalize_balance(self.session_balance)
 
         for child in self.children:
             child.disabled = True
 
-        # Final embed — no new message
         embed = discord.Embed(
             title="🎲 High-Low — Concluded",
             description=(
                 f"**Odds:** {self.odds}\n"
                 f"**Final Session Balance:** {self.session_balance}\n"
-                f"**Player:** {self.ctx.author.mention}"
+                f"**Net Change:** {self.session_balance - self.starting_balance:+}\n"
+                f"**Player:** {self.ctx.author.mention}\n\n"
+                "*Bank updated.*"
             ),
             color=discord.Color.gold()
         )
-
         await self.message.edit(embed=embed, view=None)
+
+    async def on_timeout(self):
+        # FIXED: Was missing - now saves if user AFKs on this screen
+        await self._finalize_balance(self.session_balance)
+        embed = discord.Embed(
+            title="🎲 High-Low — Concluded (Timeout)",
+            description=(
+                f"**Odds:** {self.odds}\n"
+                f"**Final Session Balance:** {self.session_balance}\n"
+                f"**Net Change:** {self.session_balance - self.starting_balance:+}\n"
+                f"**Player:** {self.ctx.author.mention}\n\n"
+                "*Saved to bank due to inactivity.*"
+            ),
+            color=discord.Color.gold()
+        )
+        try:
+            await self.message.edit(embed=embed, view=None)
+        except:
+            pass
 
 
 register_game("High/Low", HighLowGame)

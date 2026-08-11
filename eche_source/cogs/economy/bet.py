@@ -1,5 +1,3 @@
-# economy/bet.py
-
 import discord
 from discord.ext import commands
 import os
@@ -27,7 +25,6 @@ class GameSelectButton(discord.ui.Button):
         await interaction.response.defer()
         self.parent_view.selected_game = self.game_name
 
-        # Highlight selected button
         for child in self.parent_view.children:
             if isinstance(child, discord.ui.Button):
                 child.style = (
@@ -36,14 +33,10 @@ class GameSelectButton(discord.ui.Button):
                     else discord.ButtonStyle.primary
                 )
 
-        # Load odds from the selected game
         game_class = GAME_REGISTRY[self.game_name]
         odds_list = getattr(game_class, "ODDS_OPTIONS", [("Odds 1", 1)])
 
-        # Update dropdown with game-specific options
         self.parent_view.update_odds_dropdown(odds_list)
-
-        # Update dropdown title to game type
         self.parent_view.odds_dropdown.placeholder = self.game_name
 
         await self.parent_view.update_message()
@@ -60,17 +53,13 @@ class OddsDropdown(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer()
-
         selected = self.values[0]
         self.parent_view.selected_odds = int(selected)
-
-        # Replace placeholder with selected game type name
         selected_label = next(
             (opt.label for opt in self.options if opt.value == selected),
             f"Odds {selected}"
         )
         self.placeholder = selected_label
-
         await self.parent_view.update_message()
 
 
@@ -85,28 +74,20 @@ class StartGameButton(discord.ui.Button):
         game_name = self.parent_view.selected_game
         game_class = GAME_REGISTRY[game_name]
 
-        # ⭐ Set summary FIRST and lock it in
         summary_embed = discord.Embed(
             title="🎮 Game Started",
             description=f"{interaction.user.mention} started **{game_name}**",
             color=discord.Color.gold()
         )
-
         self.parent_view.summary_embed = summary_embed
-
-        # Update immediately
         await self.parent_view.message.edit(embed=summary_embed)
-
-        # ⭐ Disable update_message() during gameplay
         self.parent_view.update_message = lambda *args, **kwargs: None
 
-        # Remove GUI
         try:
             await self.parent_view.message.edit(view=None)
         except:
             pass
 
-        # Start the game
         await game_class.start(
             ctx=self.parent_view.ctx,
             odds=self.parent_view.selected_odds,
@@ -125,24 +106,18 @@ class BetGUI(discord.ui.View):
         self.betvalue = betvalue
         self.balance = balance
         self.save_callback = save_callback
-
         self.selected_game = None
         self.selected_odds = 1
         self.message = None
-
-        self.summary_embed = None  # ⭐ NEW
-
+        self.summary_embed = None
         self.load_callback = ctx.cog.load_balance
 
-        # Initial dropdown says "Game Type"
         self.odds_dropdown = OddsDropdown(self, [("Odds 1", 1)])
         self.add_item(self.odds_dropdown)
 
-        # Dynamic game buttons
         for gname in GAME_REGISTRY.keys():
             self.add_item(GameSelectButton(gname, self))
 
-        # Start button
         self.start_button = StartGameButton(self)
         self.add_item(self.start_button)
 
@@ -156,17 +131,12 @@ class BetGUI(discord.ui.View):
         return True
 
     async def update_message(self):
-        # ⭐ If summary exists, DO NOT overwrite it
         if self.summary_embed:
             await self.message.edit(embed=self.summary_embed, view=self)
             return
 
-        ready = (
-            self.selected_game is not None and
-            self.selected_odds is not None
-        )
+        ready = self.selected_game is not None and self.selected_odds is not None
         self.start_button.disabled = not ready
-
         odds_display = self.odds_dropdown.placeholder
 
         embed = discord.Embed(
@@ -179,7 +149,6 @@ class BetGUI(discord.ui.View):
             ),
             color=discord.Color.gold()
         )
-
         await self.message.edit(embed=embed, view=self)
 
     async def on_timeout(self):
@@ -190,7 +159,7 @@ class BetGUI(discord.ui.View):
 
 
 # ---------------------------------------------------------
-# BET COG
+# BET COG - FIXED BALANCE LOGIC
 # ---------------------------------------------------------
 
 class Bet(commands.Cog):
@@ -210,54 +179,102 @@ class Bet(commands.Cog):
         if economy_channel is None:
             economy_channel = await category.create_text_channel(ECONOMY_CHANNEL_NAME)
 
-        pins = await economy_channel.pins()
+        # FIXED: dedupe and get newest BANK DATA pin
+        try:
+            pins = await economy_channel.pins()
+        except:
+            pins = []
+
         bank_messages = [m for m in pins if m.content.startswith("BANK DATA")]
+        
+        # Clean up duplicates - keep newest
+        if len(bank_messages) > 1:
+            bank_messages.sort(key=lambda m: m.created_at, reverse=True)
+            for dup in bank_messages[1:]:
+                try:
+                    await dup.delete()
+                except:
+                    pass
+            bank_messages = bank_messages[:1]
 
         if not bank_messages:
             new_msg = await economy_channel.send("BANK DATA\n0.00\nSTARTER:0")
-            await new_msg.pin()
+            try:
+                await new_msg.pin()
+            except:
+                pass
             return 0.00, True
 
         bank_message = bank_messages[0]
         lines = bank_message.content.splitlines()
-
-        bal = round(float(lines[1].strip()), 2)
-        starter_flag = lines[2].strip()
+        try:
+            bal = round(float(lines[1].strip()), 2)
+        except:
+            bal = 0.0
+        starter_flag = lines[2].strip() if len(lines) > 2 else "STARTER:0"
         first_time = ("STARTER:0" in starter_flag)
-
         return bal, first_time
 
     async def save_balance(self, member, new_value):
+        # Enforce loss floor
         if new_value < LOSS_FLOOR:
             new_value = LOSS_FLOOR
 
-        guild = self.bot.get_guild(HOME_SERVER_ID)
-        category = discord.utils.get(guild.categories, name=f"memory-{member.id}")
-        economy_channel = discord.utils.get(category.text_channels, name=ECONOMY_CHANNEL_NAME)
+        # FIXED: Remove the broken 0 -> -1 logic that caused cycling
+        # Only apply negative mode conversion if explicitly at exactly 0 and previous wasn't already negative
+        # Better: keep 0 as 0, let bet command handle -1 conversion
+        rounded = round(float(new_value), 2)
 
-        pins = await economy_channel.pins()
+        guild = self.bot.get_guild(HOME_SERVER_ID)
+        if guild is None:
+            return
+        category = discord.utils.get(guild.categories, name=f"memory-{member.id}")
+        if category is None:
+            return
+        economy_channel = discord.utils.get(category.text_channels, name=ECONOMY_CHANNEL_NAME)
+        if economy_channel is None:
+            return
+
+        try:
+            pins = await economy_channel.pins()
+        except:
+            pins = []
+
         bank_messages = [m for m in pins if m.content.startswith("BANK DATA")]
 
+        if len(bank_messages) > 1:
+            bank_messages.sort(key=lambda m: m.created_at, reverse=True)
+            for dup in bank_messages[1:]:
+                try:
+                    await dup.delete()
+                except:
+                    pass
+            bank_messages = bank_messages[:1]
+
         if not bank_messages:
-            new_msg = await economy_channel.send(f"BANK DATA\n{round(new_value,2)}\nSTARTER:1")
-            await new_msg.pin()
+            new_msg = await economy_channel.send(f"BANK DATA\n{rounded:.2f}\nSTARTER:1")
+            try:
+                await new_msg.pin()
+            except:
+                pass
             return
 
         bank_message = bank_messages[0]
         lines = bank_message.content.splitlines()
-        starter_flag = lines[2].strip()
+        starter_flag = lines[2].strip() if len(lines) > 2 else "STARTER:1"
 
-        rounded = round(float(new_value), 2)
-        if rounded == 0:
-            rounded = -1.00
-
-        await bank_message.edit(content=f"BANK DATA\n{rounded}\n{starter_flag}")
+        try:
+            await bank_message.edit(content=f"BANK DATA\n{rounded:.2f}\n{starter_flag}")
+        except Exception as e:
+            # If edit fails, create new one (pin may have been deleted)
+            try:
+                new_msg = await economy_channel.send(f"BANK DATA\n{rounded:.2f}\n{starter_flag}")
+                await new_msg.pin()
+            except:
+                pass
 
     @commands.command(name="bet")
     async def bet(self, ctx, betvalue=None):
-
-        # Only greet when opt_in actually enrolls a NEW user (returns True).
-        # Existing users must never get the welcome message — including bare `?bet`.
         newly_opted = await opt_in(self.bot, ctx.author)
         if newly_opted:
             await ctx.send("🎉 You've been automatically opted into the economy system.")
@@ -272,7 +289,7 @@ class Bet(commands.Cog):
             balance = -1.00
             await self.save_balance(ctx.author, balance)
             await ctx.send(
-                "⚠️ Your balance was 0, so you've been moved into negative mode.\n"
+                "⚠ Your balance was 0, so you've been moved into negative mode.\n"
                 "You may now bet up to 70 coins."
             )
 
