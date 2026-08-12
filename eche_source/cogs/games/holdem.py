@@ -3,7 +3,7 @@ from discord.ext import commands
 import random
 
 # Import showdown logic (no circular import now)
-from .showdown import do_showdown
+from .showdown import do_holdem
 
 
 SUITS = ["♠", "♥", "♦", "♣"]
@@ -20,23 +20,40 @@ def card_value(rank):
     return {"J": 11, "Q": 12, "K": 13, "A": 14}[rank]
 
 
-# ---------------------------------------------------------
-# ⭐ ODDS OPTIONS FOR BET GUI
-# ---------------------------------------------------------
-# These appear in the dropdown when the user selects "poker"
-# Format: (label, odds_value)
-ODDS_OPTIONS = [
-    ("Showdown", 1)
-]
+class HoldemGame:
+    description = "Texas Hold'em poker with 2-minute lobby and simplified showdown."
+    
+    # Odds options exposed to Bet GUI
+    ODDS_OPTIONS = [
+        ("Showdown", 1)
+    ]
+
+    @staticmethod
+    async def start(ctx, odds, betvalue, starting_balance, load_callback, save_callback, message):
+        desc = (
+            f"**Host:** {ctx.author.mention}\n"
+            f"**Entry Bet:** {betvalue}\n"
+            f"**Players Joined (1/10):**\n- {ctx.author.mention}\n"
+        )
+
+        embed = discord.Embed(
+            title="🃏 Hold'em Lobby",
+            description=desc,
+            color=discord.Color.purple()
+        )
+
+        view = HoldemLobbyView(ctx, betvalue, load_callback, save_callback, message)
+
+        await message.edit(embed=embed, view=view)
 
 
 # ---------------------------------------------------------
-# POKER LOBBY VIEW
+# HOLDEM LOBBY VIEW
 # ---------------------------------------------------------
 
-class PokerLobbyView(discord.ui.View):
+class HoldemLobbyView(discord.ui.View):
     def __init__(self, ctx, betvalue, load_callback, save_callback, message):
-        super().__init__(timeout=120)
+        super().__init__(timeout=180)
         self.ctx = ctx
         self.betvalue = betvalue
         self.load_callback = load_callback
@@ -62,7 +79,7 @@ class PokerLobbyView(discord.ui.View):
         self.add_item(self.start_button)
 
     async def interaction_check(self, interaction):
-        self.timeout = 120
+        self.timeout = 180
         return True
 
     async def join_table(self, interaction):
@@ -71,7 +88,7 @@ class PokerLobbyView(discord.ui.View):
 
         if user.id in self.players:
             return
-        if len(self.players) >= 5:
+        if len(self.players) >= 10:
             return
 
         self.players[user.id] = user
@@ -98,15 +115,15 @@ class PokerLobbyView(discord.ui.View):
         desc = (
             f"**Host:** {self.host.mention}\n"
             f"**Entry Bet:** {self.betvalue}\n"
-            f"**Players Joined ({len(self.players)}/5):**\n"
+            f"**Players Joined ({len(self.players)}/10):**\n"
         )
         for m in self.players.values():
             desc += f"- {m.mention}\n"
 
         embed = discord.Embed(
-            title="🃏 Poker Lobby",
+            title="🃏 Hold'em Lobby",
             description=desc,
-            color=discord.Color.blurple()
+            color=discord.Color.purple()
         )
         await self.message.edit(embed=embed, view=self)
 
@@ -139,7 +156,7 @@ class PokerLobbyView(discord.ui.View):
 
             await self.message.edit(
                 embed=discord.Embed(
-                    title="🃏 Poker",
+                    title="🃏 Hold'em",
                     description="Not enough players joined. Starting heads-up vs dealer.",
                     color=discord.Color.orange()
                 )
@@ -164,11 +181,14 @@ class PokerLobbyView(discord.ui.View):
             current = bal - self.betvalue
             pot += self.betvalue
 
+            # Deal two unique hole cards per player
+            hole1 = deck.pop()
+            hole2 = deck.pop()
             self.player_states[pid] = {
                 "member": member,
                 "starting_balance": bal,
                 "current_balance": current,
-                "cards": [deck.pop(), deck.pop()],
+                "cards": [hole1, hole2],
                 "active": True,
                 "is_dealer": pid == self.ctx.guild.me.id and dealer_added
             }
@@ -179,7 +199,7 @@ class PokerLobbyView(discord.ui.View):
                 continue
             try:
                 dm = await state["member"].create_dm()
-                await dm.send(f"🃏 Your poker hand:\n{state['cards'][0]} {state['cards'][1]}")
+                await dm.send(f"🃏 Your hole cards:\n{state['cards'][0]}  {state['cards'][1]}")
             except:
                 pass
 
@@ -195,51 +215,23 @@ class PokerLobbyView(discord.ui.View):
             "\n\n" +
             f"Community Cards: {' '.join(community)}\n"
             f"Pot: {pot}\n\n"
-            "Each player will be evaluated at showdown.\n"
-            "This version uses simplified hand ranking (pairs vs high card)."
+            "Hold'em gameplay begins with simplified betting rounds.\n"
+            "This version will auto-evaluate community cards at end.\n"
+            "Hole cards shown to host only as simplified version."
         )
 
         table_embed = discord.Embed(
-            title="🃏 Poker Table",
+            title="🃏 Hold'em Table",
             description=desc,
-            color=discord.Color.blue()
+            color=discord.Color.deep_red()
         )
 
         await self.message.edit(embed=table_embed)
 
         # Run showdown
-        await do_showdown(self, community, pot)
-
-
-# ---------------------------------------------------------
-# PokerGame wrapper
-# ---------------------------------------------------------
-
-class PokerGame:
-    description = "Multiplayer poker with a 2-minute lobby and simplified showdown."
-
-    # ⭐ Odds options exposed to Bet GUI
-    ODDS_OPTIONS = ODDS_OPTIONS
-
-    @staticmethod
-    async def start(ctx, odds, betvalue, starting_balance, load_callback, save_callback, message):
-        desc = (
-            f"**Host:** {ctx.author.mention}\n"
-            f"**Entry Bet:** {betvalue}\n"
-            f"**Players Joined (1/5):**\n- {ctx.author.mention}\n"
-        )
-
-        embed = discord.Embed(
-            title="🃏 Poker Lobby",
-            description=desc,
-            color=discord.Color.blurple()
-        )
-
-        view = PokerLobbyView(ctx, betvalue, load_callback, save_callback, message)
-
-        await message.edit(embed=embed, view=view)
+        await do_holdem(self, community, pot)
 
 
 # Register game
 from cogs.games.registry import register_game
-register_game("Poker", PokerGame)
+register_game("Holdem", HoldemGame)

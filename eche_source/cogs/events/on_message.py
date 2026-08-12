@@ -125,8 +125,8 @@ class OnMessage(commands.Cog):
         except Exception:
             pass
 
-        # 5. Send reply
-        await message.channel.send(reply)
+        # 5. Send reply - reply to the specific message the user is responding to
+        await message.reply(reply)
 
         # Reset override after use
         if getattr(self.bot, "next_reply_override", False):
