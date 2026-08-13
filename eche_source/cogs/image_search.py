@@ -1,4 +1,4 @@
-# image_search.py (IMAGE ONLY + SYMBOL BUTTONS + 60s TIMEOUT + BLACKOUT + QUERY FIELD + EMBED + INVOKER ONLY)
+# image_search.py (SYMBOLS + SINGLE ROW + INVOKER ONLY + EMBED)
 
 import discord
 import aiohttp
@@ -88,7 +88,7 @@ class ImageNavigator(View):
         if not self.results:
             embed = discord.Embed(
                 title="Image Search",
-                description="**search here** → click the 🔍 button below",
+                description="**search here** → click the 🔍 button",
                 color=discord.Color.blurple()
             )
             return embed
@@ -126,14 +126,8 @@ class ImageNavigator(View):
         except Exception as e:
             dprint(f">>> [ImageNavigator] Timeout edit failed: {e}")
 
-    # ---------- Top row ----------
-    @discord.ui.button(label="🔍", style=discord.ButtonStyle.success, row=0)
-    async def search_button(self, interaction: discord.Interaction, button: Button):
-        modal = SearchModal(self)
-        await interaction.response.send_modal(modal)
-
-    # ---------- Bottom row ----------
-    @discord.ui.button(label="◀️", style=discord.ButtonStyle.secondary, row=1)
+    # All buttons on the SAME row (row=0)
+    @discord.ui.button(label="◀️", style=discord.ButtonStyle.secondary, row=0)
     async def last_button(self, interaction: discord.Interaction, button: Button):
         if not self.results:
             await interaction.response.send_message("No results yet. Use 🔍 first.", ephemeral=True)
@@ -145,7 +139,7 @@ class ImageNavigator(View):
         else:
             await interaction.response.send_message("Already at the first image.", ephemeral=True)
 
-    @discord.ui.button(label="🔀", style=discord.ButtonStyle.primary, row=1)
+    @discord.ui.button(label="🔀", style=discord.ButtonStyle.primary, row=0)
     async def random_button(self, interaction: discord.Interaction, button: Button):
         if not self.results:
             await interaction.response.send_message("No results yet. Use 🔍 first.", ephemeral=True)
@@ -154,7 +148,7 @@ class ImageNavigator(View):
         self.index = random.randint(0, len(self.results) - 1)
         await self.update(interaction)
 
-    @discord.ui.button(label="▶️", style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(label="▶️", style=discord.ButtonStyle.secondary, row=0)
     async def next_button(self, interaction: discord.Interaction, button: Button):
         if not self.results:
             await interaction.response.send_message("No results yet. Use 🔍 first.", ephemeral=True)
@@ -165,6 +159,11 @@ class ImageNavigator(View):
             await self.update(interaction)
         else:
             await interaction.response.send_message("Already at the last image.", ephemeral=True)
+
+    @discord.ui.button(label="🔍", style=discord.ButtonStyle.success, row=0)
+    async def search_button(self, interaction: discord.Interaction, button: Button):
+        modal = SearchModal(self)
+        await interaction.response.send_modal(modal)
 
 
 # =========================================================
