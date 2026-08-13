@@ -1,86 +1,84 @@
-# Eche - Discord Bot Control Panel
+```markdown
+# Eche
 
 Open-source Discord bot + desktop control panel.
 
+Tokens and secrets stay on your machine. See [PRIVACY.md](PRIVACY.md).
 
 ---
 
-QUICKSTART:
+## Quick start (recommended)
 
-### 0) Install Git and Python
+### 0) Install Git and Python (Windows)
 
-Download from:
-- https://git-scm.com/downloads
-- https://www.python.org/downloads (check **Add python.exe to PATH**)
+Download:
 
-Or with winget:
+- https://git-scm.com/downloads  
+- https://www.python.org/downloads — check **Add python.exe to PATH**
+
+Or with winget (then **close and reopen** the terminal):
+
+```cmd
+winget install --id Git.Git -e --source winget --accept-package-agreements --accept-source-agreements
+winget install --id Python.Python.3.12 -e --source winget --accept-package-agreements --accept-source-agreements
 ```
-winget install --id Git.Git -e
-winget install --id Python.Python.3.12 -e
+
+### 1) Download the installer
+
+**Option A — browser**
+
+1. Download:  
+   [Eche-Installer.exe](https://github.com/sevinOG/eche/raw/main/eche_installer/final/Eche-Installer.exe)  
+2. Run it (SmartScreen may warn on unsigned builds — use this official link only → **More info** → **Run anyway**).
+3. Prefer **Install from GitHub**, pick a folder, install.
+4. When finished, open **Eche.exe** (keep the `_internal` folder next to it).
+
+**Option B — PowerShell**
+
+```powershell
+Invoke-WebRequest -Uri "https://github.com/sevinOG/eche/raw/main/eche_installer/final/Eche-Installer.exe" -OutFile "Eche-Installer.exe"
+.\Eche-Installer.exe
 ```
-Close CMD, open new CMD.
 
-### 1) Clone ONLY installer (~10MB, not whole repo)
+**Option C — sparse clone (installer only)**
 
-**CMD:**
 ```cmd
 mkdir eche-setup
 cd eche-setup
 git clone --filter=blob:none --no-checkout https://github.com/sevinOG/eche.git .
-git sparse-checkout set --no-cone prebuilt
+git sparse-checkout set --no-cone eche_installer/final
 git checkout main
-prebuilt\Eche-Installer.exe
+eche_installer\final\Eche-Installer.exe
 ```
 
-**Git Bash:**
-```bash
-git clone --filter=blob:none --no-checkout https://github.com/sevinOG/eche.git eche-setup
-cd eche-setup
-git sparse-checkout set --no-cone prebuilt
-git checkout main
-./prebuilt/Eche-Installer.exe
-```
-
-### What happens:
+### What the installer does
 
 ```
-You cloned:  prebuilt/Eche-Installer.exe (installer only, 10MB)
+Eche-Installer.exe
        ↓
-Installer fetches:  eche_source/ (bot source from GitHub)
+Fetches eche_source/ from GitHub
        ↓
-Installer auto-builds:  eche/Eche.exe (portable app)
-```
-
-### Other tiers (if you want source)
-
-**Bot + Source:**
-```cmd
-git sparse-checkout set --no-cone prebuilt eche_source
-git checkout main
-```
-
-**Full (Bot + Source + Installer Source):**
-```cmd
-git sparse-checkout set --no-cone prebuilt eche_source eche_installer_source
-git checkout main
+Builds portable app (first time ~2–3 min; needs Python on PATH)
+       ↓
+Eche.exe + _internal/  (onedir layout)
 ```
 
 ---
 
-## For Developers (Full Clone)
-
-Only if you're editing code.
+## For developers (full clone)
 
 ```cmd
 git clone https://github.com/sevinOG/eche.git
-cd eche
-cd eche_source
+cd eche\eche_source
 SETUP_AND_BUILD.bat
 cd ..\eche
 Eche.exe
 ```
 
-Run from source without building:
+Keep `_internal` next to `Eche.exe`. Do not distribute `Eche.exe` alone.
+
+### Run from source (no freeze)
+
 ```cmd
 cd eche_source
 python -m venv .venv
@@ -88,75 +86,95 @@ python -m venv .venv
 .venv\Scripts\python.exe eche_app.py
 ```
 
-Build installer:
+Or: `RUN_ECHE.bat`
+
+Optional verbose logs: set `ECHE_DEBUG=1` before launching.
+
+### Build the installer
+
 ```cmd
 cd eche_installer_source
 build.bat
 ```
 
+Output is typically under `dist\` and may be copied to `eche_installer\final\`.
+
 ---
 
-## Why onedir, not one-file
+## Why onedir (not one-file)
 
 | Mode | Issue |
-|---|---|
-| One-file | Unpacks to temp every launch, looks like dropper to Defender |
-| Onedir (we use) | `Eche.exe` + `_internal/` - normal app layout |
+|------|--------|
+| One-file | Unpacks under `%TEMP%` every launch — often flagged like a dropper |
+| Onedir (we use) | Small `Eche.exe` + `_internal/` beside it — normal app layout |
 
-Spec: `eche_source/build_exe.spec`, UPX off.
+Spec: `eche_source/build_exe.spec` · UPX off · `console=False`.
 
 ---
 
-## Repo Layout
+## Repo layout
 
 ```
 eche/
-  prebuilt/Eche-Installer.exe  <- download this, it fetches rest
-  eche/                       <- built app after installer/BUILD.bat (not in git)
-  eche_source/                <- bot source
-  eche_installer_source/      <- installer source
+  eche_installer/final/Eche-Installer.exe   ← ready-to-run installer
+  eche_installer_source/                    ← installer source + build scripts
+  eche_source/                              ← app source + BUILD.bat
+  eche/                                     ← portable app after build (local; not required in git)
 ```
+
+| Path | Role |
+|------|------|
+| `eche_installer/final/` | Prebuilt installer for end users |
+| `eche_source/` | Bot + GUI source; run `SETUP_AND_BUILD.bat` or `BUILD.bat` |
+| `eche_installer_source/` | Wizard source; run `build.bat` to produce the installer |
+| `eche/` | Output folder after a successful app freeze |
 
 ---
 
-## Common Commands (CMD)
+## Common commands
 
 | Goal | Command |
-|---|---|
-| Clone installer only | `git clone --filter=blob:none --no-checkout https://github.com/sevinOG/eche.git . && git sparse-checkout set --no-cone prebuilt && git checkout main` |
-| Run installer | `prebuilt\Eche-Installer.exe` |
+|------|---------|
+| Download installer (PowerShell) | `Invoke-WebRequest -Uri "https://github.com/sevinOG/eche/raw/main/eche_installer/final/Eche-Installer.exe" -OutFile "Eche-Installer.exe"` |
+| Sparse clone installer only | See Quick start → Option C |
 | Full clone | `git clone https://github.com/sevinOG/eche.git` |
-| Build portable | `eche_source\SETUP_AND_BUILD.bat` |
+| Build portable app | `eche_source\SETUP_AND_BUILD.bat` |
 | Build installer | `eche_installer_source\build.bat` |
+| Run from source | `eche_source\.venv\Scripts\python.exe eche_app.py` |
 
-<details>
-<summary>PowerShell version (if you must)</summary>
+---
 
-```powershell
-mkdir eche-setup; cd eche-setup
-git clone --filter=blob:none --no-checkout https://github.com/sevinOG/eche.git .
-git sparse-checkout set --no-cone prebuilt
-git checkout main
-.\prebuilt\Eche-Installer.exe
-```
+## After install / first run
 
-Or one-liner download:
-```powershell
-Invoke-WebRequest -Uri "https://raw.githubusercontent.com/sevinOG/eche/main/prebuilt/Eche-Installer.exe" -OutFile "Eche-Installer.exe"
-.\Eche-Installer.exe
-```
+1. Launch **Eche.exe** (not a random `.bat` if the EXE exists).
+2. Set your Discord bot token in Settings (stored locally).
+3. Run the bot from the control panel.
 
-</details>
+If you only have source: install Python → `SETUP_AND_BUILD.bat` once → use `..\eche\Eche.exe` or `dist\Eche\Eche.exe`.
 
 ---
 
 ## Privacy
 
-Tokens stay local except Discord, Groq, Unsplash. See PRIVACY.md.
+No Eche cloud account. Tokens stay local except what you send to Discord / optional providers (e.g. Groq, Unsplash). Details: [PRIVACY.md](PRIVACY.md).
 
-## Changelog v1.3.1
+**Never paste tokens or API keys into GitHub Issues.**
 
-- Installer now auto-builds Eche.exe (2-3 min first time, needs Python)
-- New terminal flow: clone installer only (10MB sparse checkout), installer fetches bot
-- Removed manual SETUP_AND_BUILD.bat step for new users
-- Shortcuts point directly to Eche.exe
+---
+
+## Troubleshooting
+
+| Symptom | What to try |
+|---------|-------------|
+| SmartScreen blocks installer | Official GitHub download only → More info → Run anyway |
+| No `Eche.exe` after install | Ensure Python is on PATH; re-run install or `eche_source\SETUP_AND_BUILD.bat` |
+| Black console window on launch | Run `Eche.exe` next to `_internal`, not `python` / a broken `.bat` |
+| Missing desktop shortcut | Create a shortcut to `Eche.exe` manually, or reinstall after a successful build |
+| Build fails | Close running `Eche.exe`, delete `build` and `dist` under `eche_source`, retry; prefer Python 3.12 |
+
+---
+
+## Version
+
+See root [VERSION](VERSION). Packaging notes and onedir policy are described above; installer and app versions may differ slightly until both are rebuilt from the same tag.
+```
