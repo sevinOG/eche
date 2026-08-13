@@ -1,4 +1,4 @@
-# image_search.py (IMAGE ONLY + BUTTONS + 60s TIMEOUT + BLACKOUT + QUERY FIELD)
+# image_search.py (IMAGE ONLY + BUTTONS + 60s TIMEOUT + BLACKOUT + QUERY FIELD + EMBED)
 
 import discord
 import aiohttp
@@ -45,61 +45,76 @@ class SearchModal(Modal, title="Image Search"):
         dprint(f">>> [SearchModal] New/updated query: {query}")
 
         results = await self.navigator.cog.unsplash_multi(query)
-        if not results:
-            # Keep the view alive and show a clear message
-            self.navigator.results = []
-            self.navigator.query = query
-            self.navigator.index = 0
-            await interaction.response.edit_message(
-                content="No images found for that query. Try another search.",
-                view=self.navigator
-            )
-            return
-
-        self.navigator.results = results
+        self.navigator.results = results or []
         self.navigator.query = query
         self.navigator.index = 0
 
-        url = results[0]["urls"]["regular"]
-        await interaction.response.edit_message(content=url, view=self.navigator)
+        embed = self.navigator.build_embed()
+        await interaction.response.edit_message(embed=embed, view=self.navigator)
 
 
 # =========================================================
-# IMAGE NAVIGATOR VIEW (Next / Last / Random + Search)
+# IMAGE NAVIGATOR VIEW
 # =========================================================
 class ImageNavigator(View):
     def __init__(self, cog, results, query, index=0):
-        super().__init__(timeout=60)  # <-- 1 minute timeout
+        super().__init__(timeout=60)
         self.cog = cog
         self.results = results
         self.query = query
         self.index = index
-        self.message = None  # will be set after sending
+        self.message = None
+
+    def build_embed(self) -> discord.Embed:
+        if not self.results:
+            embed = discord.Embed(
+                title="Image Search",
+                description="**search here** → click the **Search / Edit** button below",
+                color=discord.Color.blurple()
+            )
+            return embed
+
+        photo = self.results[self.index]
+        url = photo["urls"]["regular"]
+        photographer = photo.get("user", {}).get("name", "Unknown")
+        unsplash_link = photo.get("links", {}).get("html", "")
+
+        embed = discord.Embed(
+            title=f"Query: {self.query}",
+            color=discord.Color.blurple()
+        )
+        embed.set_image(url=url)
+        embed.set_footer(text=f"{self.index + 1} / {len(self.results)}  •  Photo by {photographer}")
+        if unsplash_link:
+            embed.url = unsplash_link  # makes the title clickable
+
+        return embed
 
     async def update(self, interaction: discord.Interaction):
-        if not self.results:
-            content = "No images found. Use **Search / Edit** to try a new query."
-        else:
-            content = self.results[self.index]["urls"]["regular"]
-
-        await interaction.response.edit_message(content=content, view=self)
+        embed = self.build_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
 
     async def on_timeout(self):
         dprint(">>> [ImageNavigator] Timeout reached — disabling buttons")
 
-        # Disable and darken all buttons
         for child in self.children:
             child.disabled = True
-            child.style = discord.ButtonStyle.secondary  # <-- black/gray
+            child.style = discord.ButtonStyle.secondary
 
-        # Update the message to show disabled buttons
         try:
             if self.message:
                 await self.message.edit(view=self)
         except Exception as e:
             dprint(f">>> [ImageNavigator] Timeout edit failed: {e}")
 
-    @discord.ui.button(label="Last", style=discord.ButtonStyle.secondary, row=0)
+    # ---------- Top row ----------
+    @discord.ui.button(label="Search / Edit", style=discord.ButtonStyle.success, row=0)
+    async def search_button(self, interaction: discord.Interaction, button: Button):
+        modal = SearchModal(self)
+        await interaction.response.send_modal(modal)
+
+    # ---------- Bottom row ----------
+    @discord.ui.button(label="Last", style=discord.ButtonStyle.secondary, row=1)
     async def last_button(self, interaction: discord.Interaction, button: Button):
         if not self.results:
             await interaction.response.send_message("No results yet. Use **Search / Edit** first.", ephemeral=True)
@@ -109,9 +124,9 @@ class ImageNavigator(View):
             self.index -= 1
             await self.update(interaction)
         else:
-            await interaction.response.defer()  # already at first image
+            await interaction.response.send_message("Already at the first image.", ephemeral=True)
 
-    @discord.ui.button(label="Random", style=discord.ButtonStyle.primary, row=0)
+    @discord.ui.button(label="Random", style=discord.ButtonStyle.primary, row=1)
     async def random_button(self, interaction: discord.Interaction, button: Button):
         if not self.results:
             await interaction.response.send_message("No results yet. Use **Search / Edit** first.", ephemeral=True)
@@ -120,7 +135,7 @@ class ImageNavigator(View):
         self.index = random.randint(0, len(self.results) - 1)
         await self.update(interaction)
 
-    @discord.ui.button(label="Next", style=discord.ButtonStyle.secondary, row=0)
+    @discord.ui.button(label="Next", style=discord.ButtonStyle.secondary, row=1)
     async def next_button(self, interaction: discord.Interaction, button: Button):
         if not self.results:
             await interaction.response.send_message("No results yet. Use **Search / Edit** first.", ephemeral=True)
@@ -130,12 +145,7 @@ class ImageNavigator(View):
             self.index += 1
             await self.update(interaction)
         else:
-            await interaction.response.defer()  # already at last image
-
-    @discord.ui.button(label="Search / Edit", style=discord.ButtonStyle.success, row=1)
-    async def search_button(self, interaction: discord.Interaction, button: Button):
-        modal = SearchModal(self)
-        await interaction.response.send_modal(modal)
+            await interaction.response.send_message("Already at the last image.", ephemeral=True)
 
 
 # =========================================================
@@ -183,18 +193,15 @@ class ImageSearch(commands.Cog):
             if not results:
                 await ctx.send("No images found.")
                 return
-            content = results[0]["urls"]["regular"]
         else:
-            # No query → open UI only, wait for user to enter one via the modal
             results = []
             query = ""
-            content = "Click **Search / Edit** to enter a query and find images."
 
         view = ImageNavigator(self, results, query, index=0)
+        embed = view.build_embed()
 
-        # Send message and store reference so timeout can edit it
-        msg = await ctx.send(content, view=view)
-        view.message = msg  # <-- store message reference
+        msg = await ctx.send(embed=embed, view=view)
+        view.message = msg
 
 
 async def setup(bot):
