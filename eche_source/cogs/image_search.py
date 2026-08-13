@@ -1,4 +1,4 @@
-# image_search.py (IMAGE ONLY + BUTTONS + 60s TIMEOUT + BLACKOUT + QUERY FIELD + EMBED)
+# image_search.py (IMAGE ONLY + SYMBOL BUTTONS + 60s TIMEOUT + BLACKOUT + QUERY FIELD + EMBED + INVOKER ONLY)
 
 import discord
 import aiohttp
@@ -19,7 +19,7 @@ dprint(f">>> [image_search] UNSPLASH_SECRET loaded: {bool(UNSPLASH_SECRET)}")
 
 
 # =========================================================
-# SEARCH MODAL (add / amend query)
+# SEARCH MODAL
 # =========================================================
 class SearchModal(Modal, title="Image Search"):
     query_input = TextInput(
@@ -44,7 +44,16 @@ class SearchModal(Modal, title="Image Search"):
 
         dprint(f">>> [SearchModal] New/updated query: {query}")
 
-        results = await self.navigator.cog.unsplash_multi(query)
+        try:
+            results = await self.navigator.cog.unsplash_multi(query)
+        except Exception as e:
+            dprint(f">>> [SearchModal] Search failed: {e}")
+            await interaction.response.send_message(
+                "Could not reach Unsplash right now. Please try again in a moment.",
+                ephemeral=True
+            )
+            return
+
         self.navigator.results = results or []
         self.navigator.query = query
         self.navigator.index = 0
@@ -57,19 +66,29 @@ class SearchModal(Modal, title="Image Search"):
 # IMAGE NAVIGATOR VIEW
 # =========================================================
 class ImageNavigator(View):
-    def __init__(self, cog, results, query, index=0):
+    def __init__(self, cog, results, query, author_id: int, index=0):
         super().__init__(timeout=60)
         self.cog = cog
         self.results = results
         self.query = query
+        self.author_id = author_id
         self.index = index
         self.message = None
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message(
+                "Only the person who ran the command can use these buttons.",
+                ephemeral=True
+            )
+            return False
+        return True
 
     def build_embed(self) -> discord.Embed:
         if not self.results:
             embed = discord.Embed(
                 title="Image Search",
-                description="**search here** → click the **Search / Edit** button below",
+                description="**search here** → click the 🔍 button below",
                 color=discord.Color.blurple()
             )
             return embed
@@ -80,13 +99,13 @@ class ImageNavigator(View):
         unsplash_link = photo.get("links", {}).get("html", "")
 
         embed = discord.Embed(
-            title=f"Query: {self.query}",
+            title=f"Unsplash: {self.query}",
             color=discord.Color.blurple()
         )
         embed.set_image(url=url)
         embed.set_footer(text=f"{self.index + 1} / {len(self.results)}  •  Photo by {photographer}")
         if unsplash_link:
-            embed.url = unsplash_link  # makes the title clickable
+            embed.url = unsplash_link
 
         return embed
 
@@ -108,16 +127,16 @@ class ImageNavigator(View):
             dprint(f">>> [ImageNavigator] Timeout edit failed: {e}")
 
     # ---------- Top row ----------
-    @discord.ui.button(label="Search / Edit", style=discord.ButtonStyle.success, row=0)
+    @discord.ui.button(label="🔍", style=discord.ButtonStyle.success, row=0)
     async def search_button(self, interaction: discord.Interaction, button: Button):
         modal = SearchModal(self)
         await interaction.response.send_modal(modal)
 
     # ---------- Bottom row ----------
-    @discord.ui.button(label="Last", style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(label="◀️", style=discord.ButtonStyle.secondary, row=1)
     async def last_button(self, interaction: discord.Interaction, button: Button):
         if not self.results:
-            await interaction.response.send_message("No results yet. Use **Search / Edit** first.", ephemeral=True)
+            await interaction.response.send_message("No results yet. Use 🔍 first.", ephemeral=True)
             return
 
         if self.index > 0:
@@ -126,19 +145,19 @@ class ImageNavigator(View):
         else:
             await interaction.response.send_message("Already at the first image.", ephemeral=True)
 
-    @discord.ui.button(label="Random", style=discord.ButtonStyle.primary, row=1)
+    @discord.ui.button(label="🔀", style=discord.ButtonStyle.primary, row=1)
     async def random_button(self, interaction: discord.Interaction, button: Button):
         if not self.results:
-            await interaction.response.send_message("No results yet. Use **Search / Edit** first.", ephemeral=True)
+            await interaction.response.send_message("No results yet. Use 🔍 first.", ephemeral=True)
             return
 
         self.index = random.randint(0, len(self.results) - 1)
         await self.update(interaction)
 
-    @discord.ui.button(label="Next", style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(label="▶️", style=discord.ButtonStyle.secondary, row=1)
     async def next_button(self, interaction: discord.Interaction, button: Button):
         if not self.results:
-            await interaction.response.send_message("No results yet. Use **Search / Edit** first.", ephemeral=True)
+            await interaction.response.send_message("No results yet. Use 🔍 first.", ephemeral=True)
             return
 
         if self.index < len(self.results) - 1:
@@ -171,14 +190,20 @@ class ImageSearch(commands.Cog):
             "client_id": UNSPLASH_ACCESS
         }
 
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, params=params) as resp:
-                dprint(f">>> [unsplash_multi] Status: {resp.status}")
-                if resp.status != 200:
-                    text = await resp.text()
-                    dprint(f">>> [unsplash_multi] ERROR BODY: {text}")
-                    return None
-                data = await resp.json()
+        timeout = aiohttp.ClientTimeout(total=12)
+
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(url, params=params) as resp:
+                    dprint(f">>> [unsplash_multi] Status: {resp.status}")
+                    if resp.status != 200:
+                        text = await resp.text()
+                        dprint(f">>> [unsplash_multi] ERROR BODY: {text}")
+                        return None
+                    data = await resp.json()
+        except Exception as e:
+            dprint(f">>> [unsplash_multi] Connection error: {e}")
+            raise
 
         results = data.get("results", [])
         dprint(f">>> [unsplash_multi] Found {len(results)} results")
@@ -189,7 +214,12 @@ class ImageSearch(commands.Cog):
         dprint(f">>> [image] Triggered by {ctx.author} | Query: {query}")
 
         if query:
-            results = await self.unsplash_multi(query)
+            try:
+                results = await self.unsplash_multi(query)
+            except Exception:
+                await ctx.send("Could not reach Unsplash right now. Please try again in a moment.")
+                return
+
             if not results:
                 await ctx.send("No images found.")
                 return
@@ -197,7 +227,7 @@ class ImageSearch(commands.Cog):
             results = []
             query = ""
 
-        view = ImageNavigator(self, results, query, index=0)
+        view = ImageNavigator(self, results, query, author_id=ctx.author.id, index=0)
         embed = view.build_embed()
 
         msg = await ctx.send(embed=embed, view=view)
