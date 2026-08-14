@@ -43,8 +43,8 @@ Invoke-WebRequest -Uri "https://github.com/sevinOG/eche/raw/main/eche_installer/
 **Option C — sparse clone (installer only)**
 
 ```cmd
-mkdir eche-setup
-cd eche-setup
+mkdir eche
+cd eche
 git clone --filter=blob:none --no-checkout https://github.com/sevinOG/eche.git .
 git sparse-checkout set --no-cone eche_installer/final
 git checkout main
