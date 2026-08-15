@@ -6,7 +6,8 @@ from pathlib import Path
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QLineEdit, QFileDialog, QCheckBox, QProgressBar, QTextEdit, QFrame,
-    QStackedWidget, QRadioButton, QScrollArea, QSizePolicy,
+    QStackedWidget, QRadioButton, QScrollArea, QSizePolicy, QButtonGroup,
+    QMessageBox,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
 
@@ -431,9 +432,10 @@ class EcheInstallerWindow(QMainWindow):
         layout.addWidget(src_head)
 
         src_info = QLabel(
-            "Default: download **Eche application source** from the public GitHub hub "
+            "Default: download Eche application source from the public GitHub hub "
             "(sevinOG/eche → eche_source/). "
-            "Local EXE / path options are under Advanced."
+            "Advanced options: portable EXE, a local source folder, or source recovery. "
+            "Only one install option can be selected at a time."
         )
         src_info.setObjectName("MutedLabel")
         src_info.setWordWrap(True)
@@ -479,6 +481,19 @@ class EcheInstallerWindow(QMainWindow):
         self.radio_recover.toggled.connect(self._on_source_mode_toggled)
         adv_l.addWidget(self.radio_recover)
 
+        # Radios live under different parents (card vs advanced wrap), so Qt
+        # will not auto-exclusive them. Force a single selection.
+        self.source_mode_group = QButtonGroup(self)
+        self.source_mode_group.setExclusive(True)
+        for btn in (
+            self.radio_github,
+            self.radio_exe,
+            self.radio_source,
+            self.radio_recover,
+        ):
+            btn.setAutoExclusive(False)
+            self.source_mode_group.addButton(btn)
+
         self.advanced_wrap.setVisible(False)
         radio_layout.addWidget(self.advanced_wrap)
 
@@ -498,20 +513,19 @@ class EcheInstallerWindow(QMainWindow):
         src_row.setSpacing(10)
         self.source_input = QLineEdit()
         self.source_input.setPlaceholderText(
-            str(self.source_path) if self.source_path
-            else "Browse to Eche.exe or a folder containing it"
+            "Browse to a local source folder, portable folder, or Eche.exe"
         )
         if self.source_path:
             self.source_input.setText(str(self.source_path))
         self.source_input.setMinimumHeight(44)
         src_row.addWidget(self.source_input, 1)
 
-        src_browse = QPushButton("Browse…")
-        src_browse.setObjectName("SecondaryButton")
-        src_browse.setFixedHeight(44)
-        src_browse.setMinimumWidth(100)
-        src_browse.clicked.connect(self._on_browse_source)
-        src_row.addWidget(src_browse)
+        self.src_browse = QPushButton("Browse…")
+        self.src_browse.setObjectName("SecondaryButton")
+        self.src_browse.setFixedHeight(44)
+        self.src_browse.setMinimumWidth(100)
+        self.src_browse.clicked.connect(self._on_browse_source)
+        src_row.addWidget(self.src_browse)
         layout.addLayout(src_row)
 
         layout.addSpacing(16)
@@ -735,9 +749,16 @@ class EcheInstallerWindow(QMainWindow):
 
             install_path = self.path_input.text().strip() or str(self.default_install_dir)
             source = self.source_input.text().strip()
+            mode_label = {
+                "github": "GitHub (eche_source)",
+                "source_repo": "Local source folder",
+                "exe": "Portable / Eche.exe",
+                "recover_source": "Recover source from portable app",
+            }.get(self.source_mode, self.source_mode)
 
             summary_text = (
                 f"Install location: {install_path}\n"
+                f"Install option: {mode_label}\n"
                 f"Source: {source or str(self.source_path)}\n"
                 f"Desktop shortcut: {'Yes' if self.chk_desktop.isChecked() else 'No'}\n"
                 f"Start Menu: {'Yes' if self.chk_start.isChecked() else 'No'}\n"
@@ -763,11 +784,42 @@ class EcheInstallerWindow(QMainWindow):
         if not on and hasattr(self, "radio_github"):
             self.radio_github.setChecked(True)
 
+    def _set_source_browse_enabled(self, enabled: bool) -> None:
+        if hasattr(self, "source_input"):
+            self.source_input.setEnabled(enabled)
+        if hasattr(self, "src_browse"):
+            self.src_browse.setEnabled(enabled)
+
+    def _looks_like_source_dir(self, path: Path) -> bool:
+        p = Path(path)
+        return p.is_dir() and (
+            (p / "eche_app.py").is_file()
+            or (p / "core").is_dir()
+            or (p / "BUILD.bat").is_file()
+        )
+
+    def _source_browse_start(self) -> str:
+        current = ""
+        if hasattr(self, "source_input"):
+            current = self.source_input.text().strip()
+        if current and not current.lower().startswith("github:"):
+            p = Path(current)
+            if p.is_dir():
+                return str(p)
+            if p.parent.is_dir():
+                return str(p.parent)
+        if self.default_repo and Path(self.default_repo).is_dir():
+            return str(self.default_repo)
+        return os.path.expanduser("~")
+
     def _on_source_mode_toggled(self):
+        if not hasattr(self, "source_input"):
+            return
         if getattr(self, "radio_github", None) and self.radio_github.isChecked():
             self.source_mode = "github"
-            self.source_input.setEnabled(False)
+            self._set_source_browse_enabled(False)
             self.source_input.setText("github:sevinOG/eche → eche_source")
+            self.source_input.setPlaceholderText("Downloaded automatically from GitHub")
             # Default dest for source checkout
             dest = Path(self.default_install_dir)
             if dest.name.lower() in ("eche", "eche_app"):
@@ -781,30 +833,66 @@ class EcheInstallerWindow(QMainWindow):
             self.repo_hint.show()
         elif getattr(self, "radio_recover", None) and self.radio_recover.isChecked():
             self.source_mode = "recover_source"
-            self.source_input.setEnabled(True)
-            self.source_input.setText(str(self.default_portable))
+            self._set_source_browse_enabled(True)
+            current = self.source_input.text().strip()
+            if (
+                not current
+                or current.lower().startswith("github:")
+                or current.lower().endswith(".exe")
+            ):
+                self.source_input.setText(str(self.default_portable))
+            self.source_input.setPlaceholderText(
+                "Browse to a portable app folder (contains Eche.exe)"
+            )
             self.path_input.setText(str(self.default_recover_dir))
             self.repo_hint.setText(
-                f"From portable: {self.default_portable}\n"
+                f"From portable folder: {self.default_portable}\n"
                 f"Into source: {self.default_recover_dir}"
             )
             self.repo_hint.show()
-        elif self.radio_source.isChecked():
+        elif getattr(self, "radio_source", None) and self.radio_source.isChecked():
             self.source_mode = "source_repo"
-            self.source_input.setText(str(self.default_repo))
-            self.source_input.setEnabled(False)
+            self._set_source_browse_enabled(True)
+            current = self.source_input.text().strip()
+            # Local source install is a folder, never an .exe or GitHub token
+            if (
+                not current
+                or current.lower().startswith("github:")
+                or current.lower().endswith(".exe")
+            ):
+                if self.default_repo and Path(self.default_repo).is_dir():
+                    self.source_input.setText(str(self.default_repo))
+                else:
+                    self.source_input.clear()
+            self.source_input.setPlaceholderText(
+                "Browse to a local eche_source folder (not an .exe)"
+            )
             self.path_input.setText(str(self.default_install_dir))
-            self.repo_hint.setText(f"Source tree: {self.default_repo}")
+            hint = (
+                "Select the folder that contains the Eche application source "
+                "(eche_app.py, core/, BUILD.bat) — not an executable."
+            )
+            if self.default_repo and Path(self.default_repo).is_dir():
+                hint += f"\nDetected: {self.default_repo}"
+            self.repo_hint.setText(hint)
             self.repo_hint.show()
         else:
             self.source_mode = "exe"
-            self.source_input.setEnabled(True)
+            self._set_source_browse_enabled(True)
             self.path_input.setText(str(self.default_install_dir))
+            self.source_input.setPlaceholderText(
+                "Browse to Eche.exe or a portable folder containing it"
+            )
             self.repo_hint.hide()
-            if self.source_path:
-                self.source_input.setText(str(self.source_path))
-            elif self.default_portable:
-                self.source_input.setText(str(self.default_portable / "Eche.exe"))
+            current = self.source_input.text().strip()
+            if not current or current.lower().startswith("github:"):
+                if self.source_path:
+                    self.source_input.setText(str(self.source_path))
+                elif self.default_portable:
+                    exe = Path(self.default_portable) / "Eche.exe"
+                    self.source_input.setText(
+                        str(exe if exe.is_file() else self.default_portable)
+                    )
 
     def _on_back(self):
         if self.current_step > 0:
@@ -822,12 +910,62 @@ class EcheInstallerWindow(QMainWindow):
                 return
             self.install_dir = ptxt
             if self.radio_source.isChecked():
-                if not self.default_repo.exists():
-                    self.status_label.setText(
-                        f"Source repository not found at {self.default_repo}"
+                src_text = self.source_input.text().strip()
+                if not src_text:
+                    QMessageBox.warning(
+                        self,
+                        "Source folder required",
+                        "Select a local Eche source folder (not an .exe).\n\n"
+                        "The folder should contain eche_app.py, a core/ directory, "
+                        "or BUILD.bat.",
                     )
                     return
-                self.source_input.setText(str(self.default_repo))
+                src = Path(src_text)
+                if not src.is_dir():
+                    QMessageBox.warning(
+                        self,
+                        "Source folder required",
+                        "Select a local Eche source folder (not an .exe).\n\n"
+                        "The folder should contain eche_app.py, a core/ directory, "
+                        "or BUILD.bat.",
+                    )
+                    return
+                if src.suffix.lower() == ".exe" or src.is_file():
+                    QMessageBox.warning(
+                        self,
+                        "Source folder required",
+                        "Install from local source needs a source folder, "
+                        "not an executable.",
+                    )
+                    return
+                if not self._looks_like_source_dir(src):
+                    QMessageBox.warning(
+                        self,
+                        "Does not look like Eche source",
+                        f"The folder:\n{src}\n\n"
+                        "does not look like an Eche source tree "
+                        "(expected eche_app.py, core/, or BUILD.bat).",
+                    )
+                    return
+            elif self.radio_exe.isChecked():
+                src_text = self.source_input.text().strip()
+                if not src_text or not Path(src_text).exists():
+                    QMessageBox.warning(
+                        self,
+                        "Portable source required",
+                        "Select Eche.exe or a portable folder containing it.",
+                    )
+                    return
+            elif self.radio_recover.isChecked():
+                src_text = self.source_input.text().strip()
+                src = Path(src_text) if src_text else Path(self.default_portable)
+                if not src.exists():
+                    QMessageBox.warning(
+                        self,
+                        "Portable folder required",
+                        "Select the portable app folder to recover source from.",
+                    )
+                    return
             self.current_step += 1
         elif self.current_step == 2:
             self.current_step += 1
@@ -846,11 +984,26 @@ class EcheInstallerWindow(QMainWindow):
             self.path_input.setText(dir_path)
 
     def _on_browse_source(self):
-        start = (
-            str(Path(self.source_input.text()).parent)
-            if self.source_input.text()
-            else os.path.expanduser("~")
-        )
+        if getattr(self, "radio_github", None) and self.radio_github.isChecked():
+            return
+
+        start = self._source_browse_start()
+
+        # Local source and recover both target a folder, never an .exe
+        if self.radio_source.isChecked() or self.radio_recover.isChecked():
+            caption = (
+                "Select Eche source folder"
+                if self.radio_source.isChecked()
+                else "Select portable app folder"
+            )
+            dir_path = QFileDialog.getExistingDirectory(self, caption, start)
+            if dir_path:
+                self.source_input.setText(dir_path)
+                self.source_type = (
+                    "source_dir" if self.radio_source.isChecked() else "recover_source"
+                )
+            return
+
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             "Select Eche Executable",
@@ -878,7 +1031,28 @@ class EcheInstallerWindow(QMainWindow):
             stype = "recover_source"
             self.install_dir = self.path_input.text().strip() or str(self.default_recover_dir)
         elif self.radio_source.isChecked():
-            source_text = str(self.default_repo)
+            source_text = self.source_input.text().strip() or str(self.default_repo)
+            src_path = Path(source_text)
+            if src_path.is_file() or src_path.suffix.lower() == ".exe":
+                self._log(
+                    "ERROR: Local source install needs a source folder, not an executable."
+                )
+                self.btn_install_now.setEnabled(True)
+                self.btn_back.setEnabled(True)
+                return
+            if not src_path.is_dir():
+                self._log(f"ERROR: Source folder not found: {src_path}")
+                self.btn_install_now.setEnabled(True)
+                self.btn_back.setEnabled(True)
+                return
+            if not self._looks_like_source_dir(src_path):
+                self._log(
+                    f"ERROR: {src_path} does not look like an Eche source tree "
+                    "(expected eche_app.py, core/, or BUILD.bat)."
+                )
+                self.btn_install_now.setEnabled(True)
+                self.btn_back.setEnabled(True)
+                return
             stype = "source_dir"
         elif not source_text:
             if self.source_path:
