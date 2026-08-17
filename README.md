@@ -4,9 +4,10 @@
 
 Eche is an open-source Discord bot + desktop control panel, preloaded with games and utilities.
 
-Eche can run with or without an inference engine, with inference all your context stays on discord. Without inference bot reference files and images stay stored on discord only.
+Eche can run with or without an inference engine, with inference all your context stays on discord. 
+Without inference bot reference files and images stay stored on discord only.
 
-free storage means read/write rate limtations via the discord api
+*free storage means read/write rate limtations via the discord api*
 
 Tokens and secrets stay on your machine. See [PRIVACY.md](PRIVACY.md).
 
