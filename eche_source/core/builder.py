@@ -29,7 +29,7 @@ async def load_bot_context(bot):
 
 async def build_prompt(bot, guild, user_id, username, user_message):
     """
-    Builds the full cognition stack prompt for Sevin.
+    Builds the full cognition stack prompt for Eche.
     MEMORY IS ALWAYS LOADED FROM HOME SERVER.
 
     username MUST be the user's global username (member.name),
@@ -60,7 +60,7 @@ async def build_prompt(bot, guild, user_id, username, user_message):
 ({username}): {user_message}
 
 === RESPONSE RULES ===
-- Respond as Sevin.
+- Respond as Eche.
 - Maintain your personality, tone, and internal logic.
 - Keep responses under 500 characters.
 - Avoid metaphors and analogies in casual conversation.
