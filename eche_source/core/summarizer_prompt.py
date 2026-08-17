@@ -5,36 +5,41 @@ from __future__ import annotations
 
 import os
 
-DEFAULT_SUMMARIZER_PROMPT = """You are a memory compression system for a Discord assistant.
+DEFAULT_SUMMARIZER_PROMPT = """You compress Discord chat into long-term memory for an assistant.
 
-Your job:
-- Read the conversation history.
-- Preserve important facts, preferences, relationships, goals, and long-term context.
-- Ignore small talk, filler, and one-off details that don't matter long-term.
-- Write a concise but rich long-term memory summary preserving the existing data.
-- DO NOT include the most recent few messages; those are kept verbatim elsewhere.
+Output rules (mandatory):
+- Reply with ONLY the memory summary text.
+- No titles, labels, bullet lists of instructions, or phrases like "Your job", "Conversation to summarize", "Now write".
+- Do not mention that this is a summary.
+- Do not quote or restate these rules.
+- Preserve important facts, preferences, relationships, goals, and durable context.
+- Drop small talk and one-off noise.
+- Keep it concise (prefer under 800 characters).
 
-Conversation to summarize (older context, not including the most recent turns):
+Material to compress:
 
 {combined_for_summary}
-
-Now write a single long-term memory summary that captures everything important so far.
-Do NOT mention that this is a summary. Just write the memory itself.
 """
 
-DEFAULT_CONDENSE_PROMPT = """You are a memory condensation system for a Discord assistant.
-The current long-term memory summary has grown too long.
+DEFAULT_CONDENSE_PROMPT = """Compress this long-term memory into a shorter form.
 
-Your job:
-- Read the existing summary below.
-- Condense and synthesize it into a shorter, highly compact summary that retains all critical facts, preferences, relationships, and goals.
-- Remove redundancies and minor details.
+Output rules (mandatory):
+- Reply with ONLY the condensed memory text.
+- No labels, instructions, or meta commentary.
+- Keep critical facts, preferences, relationships, and goals.
+- Prefer under 600 characters.
 
-Existing Summary:
+Existing memory:
 {existing_summary}
-
-Write the condensed summary:
 """
+
+# Prefer a live Groq model; never default to deprecated Llama 3.3 70B
+DEFAULT_SUMMARIZER_MODEL = "qwen/qwen3.6-27b"
+_DEPRECATED_MODEL_FRAGMENTS = (
+    "llama-3.3-70b-versatile",
+    "llama-3.1-8b-instant",
+    "llama-4-scout",
+)
 
 
 def _user_root() -> str:
@@ -50,11 +55,6 @@ def default_summarizer_prompt_path() -> str:
 
 
 def summarizer_prompt_path(override: str | None = None) -> str:
-    """
-    Resolve the prompt file path.
-    Settings key summarizer_prompt_path may point at a custom file;
-    blank → config/summarizer_prompt.txt in the package.
-    """
     raw = (override or os.getenv("SUMMARIZER_PROMPT_PATH") or "").strip()
     if not raw:
         try:
@@ -97,10 +97,18 @@ def ensure_summarizer_prompt_file(override_path: str | None = None) -> str:
     return path
 
 
+def _is_deprecated_model(name: str) -> bool:
+    low = (name or "").strip().lower()
+    if not low:
+        return True
+    return any(frag in low for frag in _DEPRECATED_MODEL_FRAGMENTS)
+
+
 def get_summarizer_model() -> str:
     """
     Model used only for memory summarization.
-    Falls back to main chat model (GROQ_MODEL), then default llama.
+    Order: SUMMARIZER_MODEL / settings → GROQ_MODEL → DEFAULT_SUMMARIZER_MODEL.
+    Skips deprecated Groq model ids.
     """
     raw = (os.getenv("SUMMARIZER_MODEL") or "").strip()
     if not raw:
@@ -109,19 +117,21 @@ def get_summarizer_model() -> str:
             raw = (load_all(_user_root()).get("summarizer_model") or "").strip()
         except Exception:
             raw = ""
-    if raw:
+
+    if raw and not _is_deprecated_model(raw):
         return raw
+
     chat = (os.getenv("GROQ_MODEL") or "").strip()
-    if chat and "llama-4-scout" not in chat.lower():
+    if chat and not _is_deprecated_model(chat):
         return chat
-    return "llama-3.3-70b-versatile"
+
+    return DEFAULT_SUMMARIZER_MODEL
 
 
 def build_summary_prompt(combined_for_summary: str) -> str:
     template = get_summarizer_prompt()
     if "{combined_for_summary}" in template:
         return template.replace("{combined_for_summary}", combined_for_summary)
-    # User wiped the placeholder — append data so it still works
     return template.rstrip() + "\n\n" + combined_for_summary
 
 
