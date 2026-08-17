@@ -22,7 +22,7 @@ load_dotenv()
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 OLLAMA_API_URL = "http://localhost:11434/v1/chat/completions"
 
-DEFAULT_MODEL = "qwen/qwen3.6-27b"          # change if you prefer the qwen model
+DEFAULT_MODEL = "qwen/qwen3.6-27b"
 DEFAULT_OLLAMA_MODEL = "llama3"
 
 # Legacy alias
