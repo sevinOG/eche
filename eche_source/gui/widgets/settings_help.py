@@ -80,7 +80,7 @@ FIELD_HELP: dict[str, tuple[str, str]] = {
     "groq_model": (
         "Model ID (Cloud)",
         "### Cloud (Groq)\n"
-        "The model name sent to Groq, e.g. `llama-3.3-70b-versatile`.\n\n"
+        "The model name sent to Groq, e.g. `qwen/qwen3.6-27b`.\n\n"
         "### Local Ollama\n"
         "When Ollama is selected, this text field is **hidden**. Choose a model from the "
         "**Local Ollama Model** dropdown instead. Each backend keeps its own saved model.\n\n"
