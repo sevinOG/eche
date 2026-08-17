@@ -183,28 +183,22 @@ def _missing_key_error() -> str:
 # Section parser (unchanged)
 # ---------------------------------------------------------------------------
 def parse_sections(text: str):
-    def extract(tag: str) -> str:
-        start = text.find(f"<{tag}>")
-        end = text.find(f"</{tag}>")
-
-        if start != -1 and end == -1:
-            next_tag = min(
-                [
-                    pos
-                    for pos in (
-                        text.find("<reply>", start + 1),
-                        text.find("<thoughts>", start + 1),
-                    )
-                    if pos != -1
-                ]
-                or [len(text)]
-            )
-            return text[start + len(tag) + 2 : next_tag].strip()
-
-        if start == -1 or end == -1:
-            return ""
-
-        return text[start + len(tag) + 2 : end].strip()
+    """Extract the last <reply> block (real model response) from mixed CoT + reply text."""
+    # Find the last <reply> tag
+    last_reply_start = text.rfind(f"<reply>")
+    if last_reply_start == -1:
+        return "", ""
+    # Find the closing </reply> after that position
+    last_reply_end = text.find("</reply>", last_reply_start)
+    if last_reply_end == -1:
+        return text[last_reply_start:].strip(), ""
+    
+    reply = text[last_reply_start + len("<reply>"):last_reply_end].strip()
+    # Sanitize: remove any nested <thoughts> tags within the reply
+    reply = re.sub(r"<thoughts>.*?</thoughts>", "", reply, flags=re.DOTALL)
+    # Also strip any stray <reply> tags that might have been duplicated
+    reply = re.sub(r"<reply>.*?</reply>", "", reply, flags=re.DOTALL)
+    return reply, ""
 
     reply = extract("reply")
     thoughts = extract("thoughts")
