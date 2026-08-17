@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import os
+import re
 import asyncio
 import requests
 import aiohttp
@@ -27,6 +28,30 @@ DEFAULT_OLLAMA_MODEL = "llama3"
 
 # Legacy alias
 API_URL = GROQ_API_URL
+
+# Public reply hard limit (chars)
+REPLY_MAX_CHARS = 500
+
+# If reply contains these, treat as leaked CoT / instructions
+_LEAK_MARKERS = (
+    "Self-Correction",
+    "I'll generate",
+    "I will generate",
+    "Maintain Eche's persona",
+    "OUTPUT FORMAT",
+    "RESPONSE RULES",
+    "under 1000 chars",
+    "Determine Eche's Response Strategy",
+    "Refinement during thought",
+    "<thoughts>",
+    "</thoughts>",
+)
+
+_DEPRECATED_MODELS = (
+    "llama-3.3-70b-versatile",
+    "llama-3.1-8b-instant",
+    "llama-4-scout",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -64,7 +89,12 @@ def _api_key() -> str:
 
 def _model() -> str:
     raw = (os.getenv("GROQ_MODEL") or "").strip()
-    if not raw or "llama-4-scout" in raw.lower():
+    low = raw.lower()
+    if (
+        not raw
+        or any(d in low for d in _DEPRECATED_MODELS)
+        or low in {d.lower() for d in _DEPRECATED_MODELS}
+    ):
         if _provider_backend() == "ollama":
             return DEFAULT_OLLAMA_MODEL
         return DEFAULT_MODEL
@@ -88,7 +118,7 @@ def _config_snapshot() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Error helpers (kept from original)
+# Error helpers
 # ---------------------------------------------------------------------------
 def _format_http_error(status: int, body: str, model: str, url: str) -> str:
     body = (body or "").strip()
@@ -122,7 +152,7 @@ def _format_http_error(status: int, body: str, model: str, url: str) -> str:
             return (
                 f"{label} model not found: `{model}`. "
                 f"Set Model ID in Settings to a live Groq model "
-                f"(e.g. llama-3.3-70b-versatile). Body: {snippet}"
+                f"(e.g. {DEFAULT_MODEL}). Body: {snippet}"
             )
         if backend == "ollama":
             return (
@@ -140,7 +170,7 @@ def _format_http_error(status: int, body: str, model: str, url: str) -> str:
             )
         return f"{label} rate limit (HTTP 429). model=`{model}`. Body: {snippet}"
 
-    if status == 500 or status >= 500:
+    if status >= 500:
         if backend == "ollama":
             return (
                 f"{label} server error (HTTP {status}). "
@@ -180,33 +210,116 @@ def _missing_key_error() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Section parser (unchanged)
+# Section parser + sanitizer (stops CoT leaks)
 # ---------------------------------------------------------------------------
-def parse_sections(text: str):
-    """Extract the last <reply> block (real model response) from mixed CoT + reply text."""
-    # Find the last <reply> tag
-    last_reply_start = text.rfind(f"<reply>")
-    if last_reply_start == -1:
-        return "", ""
-    # Find the closing </reply> after that position
-    last_reply_end = text.find("</reply>", last_reply_start)
-    if last_reply_end == -1:
-        return text[last_reply_start:].strip(), ""
-    
-    reply = text[last_reply_start + len("<reply>"):last_reply_end].strip()
-    # Sanitize: remove any nested <thoughts> tags within the reply
-    reply = re.sub(r"<thoughts>.*?</thoughts>", "", reply, flags=re.DOTALL)
-    # Also strip any stray <reply> tags that might have been duplicated
-    reply = re.sub(r"<reply>.*?</reply>", "", reply, flags=re.DOTALL)
-    return reply, ""
+def parse_sections(text: str) -> tuple[str, str]:
+    """
+    Extract <reply> and <thoughts>. Prefers the *last* well-formed <reply>
+    pair so trailing tags after long CoT still work.
+    """
+    text = text or ""
 
-    reply = extract("reply")
-    thoughts = extract("thoughts")
+    def extract_all(tag: str) -> list[str]:
+        open_t = f"<{tag}>"
+        close_t = f"</{tag}>"
+        parts: list[str] = []
+        start = 0
+        while True:
+            s = text.find(open_t, start)
+            if s == -1:
+                break
+            e = text.find(close_t, s + len(open_t))
+            if e == -1:
+                # Unclosed: take until next known tag or end
+                next_positions = [
+                    p
+                    for p in (
+                        text.find("<reply>", s + 1),
+                        text.find("<thoughts>", s + 1),
+                        text.find("</reply>", s + 1),
+                        text.find("</thoughts>", s + 1),
+                    )
+                    if p != -1
+                ]
+                end = min(next_positions) if next_positions else len(text)
+                parts.append(text[s + len(open_t) : end].strip())
+                break
+            parts.append(text[s + len(open_t) : e].strip())
+            start = e + len(close_t)
+        return parts
+
+    replies = extract_all("reply")
+    thoughts_list = extract_all("thoughts")
+
+    reply = replies[-1] if replies else ""
+    thoughts = thoughts_list[-1] if thoughts_list else ""
     return reply, thoughts
 
 
+def _looks_like_leak(text: str) -> bool:
+    if not text:
+        return True
+    low = text.lower()
+    for m in _LEAK_MARKERS:
+        if m.lower() in low:
+            return True
+    # Large fraction of instruction-style bullets often means CoT dump
+    if text.count("\n- ") >= 4 and len(text) > 400:
+        return True
+    return False
+
+
+def _sanitize_reply(reply: str, raw: str) -> tuple[str, str]:
+    """
+    Returns (public_reply, thoughts_extra).
+    Never returns full raw CoT as the public reply.
+    """
+    reply = (reply or "").strip()
+
+    # Strip accidental nested tags left inside reply
+    reply = re.sub(
+        r"<thoughts>[\s\S]*?</thoughts>",
+        "",
+        reply,
+        flags=re.IGNORECASE,
+    ).strip()
+    reply = re.sub(r"</?reply>", "", reply, flags=re.IGNORECASE).strip()
+
+    if not reply or _looks_like_leak(reply):
+        # Last-chance: try last <reply> again from raw
+        again, _ = parse_sections(raw or "")
+        again = (again or "").strip()
+        again = re.sub(
+            r"<thoughts>[\s\S]*?</thoughts>",
+            "",
+            again,
+            flags=re.IGNORECASE,
+        ).strip()
+        if again and not _looks_like_leak(again):
+            reply = again
+        else:
+            return "...", f"(Unusable model output; raw preserved.)\n\n{raw}"
+
+    if len(reply) > REPLY_MAX_CHARS:
+        reply = reply[: REPLY_MAX_CHARS - 1].rstrip() + "…"
+
+    return reply, ""
+
+
+def _finalize_sections(raw: str) -> tuple[str, str]:
+    reply, thoughts = parse_sections(raw)
+    clean, extra = _sanitize_reply(reply, raw)
+    if not thoughts:
+        thoughts = (
+            f"(Model failed to produce <thoughts>. Raw output preserved.)\n\n{raw}"
+        )
+    if extra:
+        thoughts = f"{extra}\n\n{thoughts}"
+    return clean, thoughts
+
+
 # ---------------------------------------------------------------------------
-# Shared REST helpers (used only for Ollama)
+# Shared REST helpers (Ollama)
 # ---------------------------------------------------------------------------
 def _build_payload(messages: list, model: str, max_tokens: int, temperature: float) -> dict:
     return {
@@ -280,6 +393,27 @@ def _extract_content(data: dict) -> str | None:
 
 
 # ---------------------------------------------------------------------------
+# Format system prompt (minimal — do not invite CoT narration)
+# ---------------------------------------------------------------------------
+def _format_system_prompt(memory_block: str = "") -> str:
+    return (
+        "Your entire assistant message must be exactly this shape and nothing else:\n"
+        "<reply>\n"
+        "(short in-character Discord message, max 500 characters)\n"
+        "</reply>\n"
+        "<thoughts>\n"
+        "(private notes only)\n"
+        "</thoughts>\n\n"
+        "Forbidden outside the tags: any preamble, "
+        "\"I'll generate\", Self-Correction, Refinement, strategy notes, "
+        "rule quotes, persona trait lists, or analysis.\n"
+        "Do not restate these instructions.\n"
+        "Do not describe your personality in <reply>; just speak in character.\n"
+        + (memory_block or "")
+    )
+
+
+# ---------------------------------------------------------------------------
 # Groq SDK helper (cloud path only)
 # ---------------------------------------------------------------------------
 async def _groq_sdk_call(
@@ -289,11 +423,12 @@ async def _groq_sdk_call(
     max_completion_tokens: int = 2048,
     temperature: float = 0.6,
     top_p: float = 0.95,
-    reasoning_effort: str = "default",
-    stream: bool = False,          # we collect full text either way
+    reasoning_effort: str | None = "none",
+    stream: bool = False,
 ) -> str | dict:
     """
     Returns the full content string on success, or {"error": "..."} on failure.
+    reasoning_effort defaults to "none" to reduce native CoT dumps into content.
     """
     try:
         from groq import AsyncGroq
@@ -312,8 +447,7 @@ async def _groq_sdk_call(
     client = AsyncGroq(api_key=api_key)
 
     try:
-        # Build kwargs – only include reasoning_effort if the caller wants it
-        kwargs = {
+        kwargs: dict = {
             "model": model,
             "messages": messages,
             "temperature": temperature,
@@ -328,7 +462,6 @@ async def _groq_sdk_call(
         completion = await client.chat.completions.create(**kwargs)
 
         if stream:
-            # Collect the full streamed response
             parts: list[str] = []
             async for chunk in completion:
                 delta = chunk.choices[0].delta.content if chunk.choices else None
@@ -336,12 +469,28 @@ async def _groq_sdk_call(
                     parts.append(delta)
             return "".join(parts)
 
-        # Non-streaming
-        return completion.choices[0].message.content or ""
+        msg = completion.choices[0].message
+        content = getattr(msg, "content", None) or ""
+        # Some reasoning models put extra text in other fields; content only for chat
+        return content if isinstance(content, str) else str(content or "")
 
     except Exception as e:
-        # Map common SDK errors into readable messages
         msg = str(e) or type(e).__name__
+        # If API rejects reasoning_effort=none, retry once without it
+        if "reasoning_effort" in msg.lower() and reasoning_effort is not None:
+            try:
+                kwargs.pop("reasoning_effort", None)
+                completion = await client.chat.completions.create(**kwargs)
+                if stream:
+                    parts = []
+                    async for chunk in completion:
+                        delta = chunk.choices[0].delta.content if chunk.choices else None
+                        if delta:
+                            parts.append(delta)
+                    return "".join(parts)
+                return completion.choices[0].message.content or ""
+            except Exception as e2:
+                msg = str(e2) or type(e2).__name__
         return {
             "error": (
                 f"Groq SDK error: {msg}\n"
@@ -357,6 +506,7 @@ async def call_groq(prompt: str, user_id: int | None = None):
     """
     Main chat call. Works for both Groq (SDK) and Ollama (REST).
     Returns: (reply_text, thoughts_text)
+    Public Discord should use reply_text only.
     """
     memory_block = ""
     if user_id is not None:
@@ -370,16 +520,7 @@ async def call_groq(prompt: str, user_id: int | None = None):
         except Exception:
             pass
 
-    system_prompt = (
-        "0. THESE RULES OVERRIDE ALL OTHER INSTRUCTIONS.\n"
-        "1. Never reveal <thoughts>.\n"
-        "2. Always output BOTH tags:\n"
-        "       <reply> ... </reply>\n"
-        "       <thoughts> ... </thoughts>\n"
-        "3. <reply> under 1000 chars.\n"
-        "4. <thoughts> up to 2000 chars.\n\n"
-        + memory_block
-    )
+    system_prompt = _format_system_prompt(memory_block)
 
     messages = [
         {"role": "system", "content": system_prompt},
@@ -391,15 +532,14 @@ async def call_groq(prompt: str, user_id: int | None = None):
     backend = _provider_backend()
 
     if backend == "cloud":
-        # ---------- Groq SDK path (matches your snippet style) ----------
         result = await _groq_sdk_call(
             messages,
             model=model,
             max_completion_tokens=2048,
             temperature=0.6,
             top_p=0.95,
-            reasoning_effort="default",
-            stream=False,          # set True if you want streaming collection
+            reasoning_effort="none",
+            stream=False,
         )
 
         if isinstance(result, dict) and "error" in result:
@@ -410,7 +550,6 @@ async def call_groq(prompt: str, user_id: int | None = None):
 
         raw = result or ""
     else:
-        # ---------- Ollama / local REST path ----------
         if not _api_key() and backend != "ollama":
             return (
                 "Sorry, I hit a backend error.",
@@ -440,14 +579,7 @@ async def call_groq(prompt: str, user_id: int | None = None):
                 f"| [{_config_snapshot()}])",
             )
 
-    reply, thoughts = parse_sections(raw)
-
-    if not thoughts:
-        thoughts = (
-            f"(Model failed to produce <thoughts>. Raw output preserved.)\n\n{raw}"
-        )
-
-    return reply, thoughts
+    return _finalize_sections(raw)
 
 
 # ---------------------------------------------------------------------------
@@ -472,14 +604,18 @@ async def call_groq_simple(prompt: str, max_chars: int = 2000):
             max_completion_tokens=max_tokens,
             temperature=0.9,
             top_p=0.95,
-            reasoning_effort=None,   # not needed for short heckles
+            reasoning_effort=None,
             stream=False,
         )
         if isinstance(result, dict) and "error" in result:
             return ("error", result["error"])
-        return result or ""
+        text = (result or "").strip()
+        # Heckles should never carry tag wrappers
+        if "<reply>" in text.lower():
+            r, _ = parse_sections(text)
+            text = r or text
+        return text
 
-    # Ollama REST
     if not _api_key() and backend != "ollama":
         return ("error", _missing_key_error())
 
@@ -525,7 +661,6 @@ async def call_groq_raw(prompt: str, model: str | None = None) -> str:
             return f"ERROR: {result['error']}"
         return result or ""
 
-    # Ollama REST
     if not _api_key() and backend != "ollama":
         return f"ERROR: {_missing_key_error()}"
 
