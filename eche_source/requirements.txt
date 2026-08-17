@@ -1,4 +1,4 @@
-# Eche runtime dependencies — install into .venv BEFORE install.bat
+# Eche runtime dependencies -- install into .venv BEFORE install.bat
 # so flash-drive / portable dist copies include every module.
 discord.py>=2.3
 PyQt6>=6.5
@@ -12,3 +12,6 @@ tzlocal>=5.0
 pytz>=2024.1
 yt-dlp>=2024.1.0
 pyinstaller>=6.0
+groq>=0.9.0
+
+# (Add any newer groq version if preferred; any recent async-supporting release is fine)

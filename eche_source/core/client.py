@@ -1,7 +1,7 @@
 # client.py
-# REST client for Cloud (Groq) and Local (Ollama / OpenAI-compatible).
+# Groq path uses the official `groq` SDK (AsyncGroq).
+# Ollama / local OpenAI-compatible path stays on raw REST (aiohttp/requests).
 # Reads provider settings at call time from env (ECHE_PROVIDER, GROQ_*, OLLAMA_*).
-# Returns clear, provider-specific errors instead of a generic "Groq REST error".
 
 from __future__ import annotations
 
@@ -22,21 +22,17 @@ load_dotenv()
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 OLLAMA_API_URL = "http://localhost:11434/v1/chat/completions"
 
-DEFAULT_MODEL = "llama-3.3-70b-versatile"
+DEFAULT_MODEL = "llama-3.3-70b-versatile"          # change if you prefer the qwen model
 DEFAULT_OLLAMA_MODEL = "llama3"
 
-# Legacy alias (older docs / Provider window)
+# Legacy alias
 API_URL = GROQ_API_URL
 
 
 # ---------------------------------------------------------------------------
-# Runtime config (always re-read — GUI may change env between calls)
+# Runtime config
 # ---------------------------------------------------------------------------
 def _provider_backend() -> str:
-    """
-    cloud  → Groq
-    ollama → local OpenAI-compatible (Ollama, LM Studio, etc.)
-    """
     raw = (
         os.getenv("ECHE_PROVIDER")
         or os.getenv("PROVIDER_BACKEND")
@@ -60,17 +56,14 @@ def _api_url() -> str:
 
 
 def _api_key() -> str:
-    """Read key at call time so GUI / DPAPI env is picked up after import."""
     key = (os.getenv("GROQ_API_KEY") or "").strip()
     if _provider_backend() == "ollama":
-        # Ollama ignores the key; OpenAI-compatible clients often still want a value
         return key or "ollama"
     return key
 
 
 def _model() -> str:
     raw = (os.getenv("GROQ_MODEL") or "").strip()
-    # Reject known-dead / empty values
     if not raw or "llama-4-scout" in raw.lower():
         if _provider_backend() == "ollama":
             return DEFAULT_OLLAMA_MODEL
@@ -86,7 +79,6 @@ def _headers() -> dict:
 
 
 def _config_snapshot() -> str:
-    """Short debug line for error messages."""
     return (
         f"backend={_provider_backend()} | "
         f"url={_api_url()} | "
@@ -96,7 +88,7 @@ def _config_snapshot() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Error formatting — provider-aware
+# Error helpers (kept from original)
 # ---------------------------------------------------------------------------
 def _format_http_error(status: int, body: str, model: str, url: str) -> str:
     body = (body or "").strip()
@@ -104,7 +96,6 @@ def _format_http_error(status: int, body: str, model: str, url: str) -> str:
     backend = _provider_backend()
     snippet = body[:400] if body else "(empty body)"
 
-    # --- Shared HTTP codes with tailored advice ---
     if status == 401:
         if backend == "ollama":
             return (
@@ -161,7 +152,6 @@ def _format_http_error(status: int, body: str, model: str, url: str) -> str:
 
 
 def _format_transport_error(exc: BaseException, url: str) -> str:
-    """Connection refused, timeout, DNS, etc."""
     label = _provider_label()
     backend = _provider_backend()
     msg = str(exc) or type(exc).__name__
@@ -190,11 +180,9 @@ def _missing_key_error() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Section parser
+# Section parser (unchanged)
 # ---------------------------------------------------------------------------
 def parse_sections(text: str):
-    """Extract <reply> and <thoughts> sections, repairing missing tags if needed."""
-
     def extract(tag: str) -> str:
         start = text.find(f"<{tag}>")
         end = text.find(f"</{tag}>")
@@ -224,7 +212,7 @@ def parse_sections(text: str):
 
 
 # ---------------------------------------------------------------------------
-# Shared request helpers
+# Shared REST helpers (used only for Ollama)
 # ---------------------------------------------------------------------------
 def _build_payload(messages: list, model: str, max_tokens: int, temperature: float) -> dict:
     return {
@@ -236,7 +224,6 @@ def _build_payload(messages: list, model: str, max_tokens: int, temperature: flo
 
 
 def _sync_post(url: str, payload: dict, headers: dict, timeout: int = 45) -> dict:
-    """Blocking POST → parsed JSON or {"error": "..." }."""
     try:
         response = requests.post(url, json=payload, headers=headers, timeout=timeout)
     except Exception as e:
@@ -264,7 +251,6 @@ def _sync_post(url: str, payload: dict, headers: dict, timeout: int = 45) -> dic
 
 
 async def _async_post(url: str, payload: dict, headers: dict, timeout: int = 45) -> dict:
-    """Async POST → parsed JSON or {"error": "..." }."""
     try:
         timeout_cfg = aiohttp.ClientTimeout(total=timeout)
         async with aiohttp.ClientSession(timeout=timeout_cfg) as session:
@@ -300,12 +286,82 @@ def _extract_content(data: dict) -> str | None:
 
 
 # ---------------------------------------------------------------------------
+# Groq SDK helper (cloud path only)
+# ---------------------------------------------------------------------------
+async def _groq_sdk_call(
+    messages: list,
+    *,
+    model: str,
+    max_completion_tokens: int = 2048,
+    temperature: float = 0.6,
+    top_p: float = 0.95,
+    reasoning_effort: str = "default",
+    stream: bool = False,          # we collect full text either way
+) -> str | dict:
+    """
+    Returns the full content string on success, or {"error": "..."} on failure.
+    """
+    try:
+        from groq import AsyncGroq
+    except ImportError:
+        return {
+            "error": (
+                "The `groq` package is not installed. "
+                "Run: pip install groq   (and add it to requirements.txt)"
+            )
+        }
+
+    api_key = _api_key()
+    if not api_key:
+        return {"error": _missing_key_error()}
+
+    client = AsyncGroq(api_key=api_key)
+
+    try:
+        # Build kwargs – only include reasoning_effort if the caller wants it
+        kwargs = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_completion_tokens": max_completion_tokens,
+            "top_p": top_p,
+            "stream": stream,
+            "stop": None,
+        }
+        if reasoning_effort is not None:
+            kwargs["reasoning_effort"] = reasoning_effort
+
+        completion = await client.chat.completions.create(**kwargs)
+
+        if stream:
+            # Collect the full streamed response
+            parts: list[str] = []
+            async for chunk in completion:
+                delta = chunk.choices[0].delta.content if chunk.choices else None
+                if delta:
+                    parts.append(delta)
+            return "".join(parts)
+
+        # Non-streaming
+        return completion.choices[0].message.content or ""
+
+    except Exception as e:
+        # Map common SDK errors into readable messages
+        msg = str(e) or type(e).__name__
+        return {
+            "error": (
+                f"Groq SDK error: {msg}\n"
+                f"model=`{model}` | [{_config_snapshot()}]"
+            )
+        }
+
+
+# ---------------------------------------------------------------------------
 # MAIN MODEL CALL — normal Discord replies
 # ---------------------------------------------------------------------------
 async def call_groq(prompt: str, user_id: int | None = None):
     """
-    Main chat call (name kept for compatibility).
-    Works for both Groq and Ollama based on ECHE_PROVIDER.
+    Main chat call. Works for both Groq (SDK) and Ollama (REST).
     Returns: (reply_text, thoughts_text)
     """
     memory_block = ""
@@ -338,36 +394,57 @@ async def call_groq(prompt: str, user_id: int | None = None):
     ]
 
     model = _model()
-    url = _api_url()
     backend = _provider_backend()
 
-    if not _api_key() and backend != "ollama":
-        return (
-            "Sorry, I hit a backend error.",
-            f"({_missing_key_error()})",
+    if backend == "cloud":
+        # ---------- Groq SDK path (matches your snippet style) ----------
+        result = await _groq_sdk_call(
+            messages,
+            model=model,
+            max_completion_tokens=2048,
+            temperature=0.6,
+            top_p=0.95,
+            reasoning_effort="default",
+            stream=False,          # set True if you want streaming collection
         )
 
-    payload = _build_payload(messages, model, max_tokens=1024, temperature=0.7)
-    loop = asyncio.get_event_loop()
-    data = await loop.run_in_executor(
-        None, lambda: _sync_post(url, payload, _headers(), timeout=90 if backend == "ollama" else 45)
-    )
+        if isinstance(result, dict) and "error" in result:
+            return (
+                "Sorry, I hit a backend error.",
+                f"({_provider_label()} error: {result['error']})",
+            )
 
-    if "error" in data:
-        err = data["error"]
-        return (
-            "Sorry, I hit a backend error.",
-            f"({_provider_label()} error: {err})",
+        raw = result or ""
+    else:
+        # ---------- Ollama / local REST path ----------
+        if not _api_key() and backend != "ollama":
+            return (
+                "Sorry, I hit a backend error.",
+                f"({_missing_key_error()})",
+            )
+
+        url = _api_url()
+        payload = _build_payload(messages, model, max_tokens=1024, temperature=0.7)
+        loop = asyncio.get_event_loop()
+        data = await loop.run_in_executor(
+            None,
+            lambda: _sync_post(url, payload, _headers(), timeout=90),
         )
 
-    raw = _extract_content(data)
-    if raw is None:
-        return (
-            "Sorry, I hit a backend error.",
-            f"({_provider_label()} bad response shape — no choices[0].message.content. "
-            f"keys={list(data.keys()) if isinstance(data, dict) else type(data)} "
-            f"| [{_config_snapshot()}])",
-        )
+        if "error" in data:
+            return (
+                "Sorry, I hit a backend error.",
+                f"({_provider_label()} error: {data['error']})",
+            )
+
+        raw = _extract_content(data)
+        if raw is None:
+            return (
+                "Sorry, I hit a backend error.",
+                f"({_provider_label()} bad response shape — no choices[0].message.content. "
+                f"keys={list(data.keys()) if isinstance(data, dict) else type(data)} "
+                f"| [{_config_snapshot()}])",
+            )
 
     reply, thoughts = parse_sections(raw)
 
@@ -390,22 +467,31 @@ async def call_groq_simple(prompt: str, max_chars: int = 2000):
     """
     max_tokens = max(10, max_chars // 4)
     model = _model()
-    url = _api_url()
     backend = _provider_backend()
 
+    messages = [{"role": "user", "content": prompt}]
+
+    if backend == "cloud":
+        result = await _groq_sdk_call(
+            messages,
+            model=model,
+            max_completion_tokens=max_tokens,
+            temperature=0.9,
+            top_p=0.95,
+            reasoning_effort=None,   # not needed for short heckles
+            stream=False,
+        )
+        if isinstance(result, dict) and "error" in result:
+            return ("error", result["error"])
+        return result or ""
+
+    # Ollama REST
     if not _api_key() and backend != "ollama":
         return ("error", _missing_key_error())
 
-    payload = _build_payload(
-        [{"role": "user", "content": prompt}],
-        model,
-        max_tokens=max_tokens,
-        temperature=0.9,
-    )
-
-    data = await _async_post(
-        url, payload, _headers(), timeout=90 if backend == "ollama" else 45
-    )
+    url = _api_url()
+    payload = _build_payload(messages, model, max_tokens=max_tokens, temperature=0.9)
+    data = await _async_post(url, payload, _headers(), timeout=90)
 
     if "error" in data:
         return ("error", data["error"])
@@ -428,22 +514,30 @@ async def call_groq_raw(prompt: str, model: str | None = None) -> str:
     Optional model= overrides the chat model (memory summarizer).
     """
     use_model = (model or "").strip() or _model()
-    url = _api_url()
     backend = _provider_backend()
+    messages = [{"role": "user", "content": prompt}]
 
+    if backend == "cloud":
+        result = await _groq_sdk_call(
+            messages,
+            model=use_model,
+            max_completion_tokens=1024,
+            temperature=0.4,
+            top_p=0.95,
+            reasoning_effort=None,
+            stream=False,
+        )
+        if isinstance(result, dict) and "error" in result:
+            return f"ERROR: {result['error']}"
+        return result or ""
+
+    # Ollama REST
     if not _api_key() and backend != "ollama":
         return f"ERROR: {_missing_key_error()}"
 
-    payload = _build_payload(
-        [{"role": "user", "content": prompt}],
-        use_model,
-        max_tokens=1024,
-        temperature=0.4,
-    )
-
-    data = await _async_post(
-        url, payload, _headers(), timeout=90 if backend == "ollama" else 45
-    )
+    url = _api_url()
+    payload = _build_payload(messages, use_model, max_tokens=1024, temperature=0.4)
+    data = await _async_post(url, payload, _headers(), timeout=90)
 
     if "error" in data:
         return f"ERROR: {data['error']}"

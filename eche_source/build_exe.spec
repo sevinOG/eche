@@ -51,6 +51,7 @@ _extra_hidden = [
     "urllib3",
     "psutil",
     "dotenv",
+    "groq",
 ]
 
 if collect_all is not None:
@@ -62,6 +63,7 @@ if collect_all is not None:
         "yt_dlp",
         "aiohttp",
         "certifi",
+        "groq",
     ):
         try:
             d, b, h = collect_all(pkg)
