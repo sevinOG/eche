@@ -546,9 +546,12 @@ async def call_groq(prompt: str, user_id: int | None = None):
         )
 
         if isinstance(result, dict) and "error" in result:
+            error_msg = result["error"]
+            if "rate limit" in error_msg.lower():
+                return ("sorry, i'm being rate limited, check back later", "")
             return (
                 "Sorry, I hit a backend error.",
-                f"({_provider_label()} error: {result['error']})",
+                f"({_provider_label()} error: {error_msg})",
             )
 
         raw = result or ""
