@@ -583,6 +583,13 @@ class MainWindow(QMainWindow):
         self._tb_buffer.clear()
         self._tb_active = False
 
+        # Hide console window on Windows
+        startupinfo = None
+        if sys.platform == "win32":
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startupinfo.wShowWindow = subprocess.SW_HIDE
+
         try:
             self.bot_process = subprocess.Popen(
                 bot_cmd,
@@ -593,6 +600,7 @@ class MainWindow(QMainWindow):
                 stdin=subprocess.PIPE,
                 text=True,
                 bufsize=1,
+                startupinfo=startupinfo,
             )
             self.append_log(f"[INFO] Bot process started with PID: {self.bot_process.pid}")
             self.set_loading(True, "Bot starting…")

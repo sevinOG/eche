@@ -126,6 +126,9 @@ def _format_http_error(status: int, body: str, model: str, url: str) -> str:
     backend = _provider_backend()
     snippet = body[:400] if body else "(empty body)"
 
+    def _is_rate_limit() -> bool:
+        return status == 429 or "rate limit" in body.lower() or "rate_limit" in body.lower()
+
     if status == 401:
         if backend == "ollama":
             return (
@@ -162,7 +165,7 @@ def _format_http_error(status: int, body: str, model: str, url: str) -> str:
             )
         return f"{label} HTTP 404. model=`{model}` URL={url}. Body: {snippet}"
 
-    if status == 429:
+    if status == 429 or _is_rate_limit():
         if backend == "ollama":
             return (
                 f"{label} overloaded / rate limited (HTTP 429). "
