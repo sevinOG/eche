@@ -34,7 +34,7 @@ Existing memory:
 """
 
 # Prefer a live Groq model; never default to deprecated Llama 3.3 70B
-DEFAULT_SUMMARIZER_MODEL = "qwen/qwen3.6-27b"
+DEFAULT_SUMMARIZER_MODEL = "groq/compound-mini"
 _DEPRECATED_MODEL_FRAGMENTS = (
     "llama-3.3-70b-versatile",
     "llama-3.1-8b-instant",
@@ -107,9 +107,13 @@ def _is_deprecated_model(name: str) -> bool:
 def get_summarizer_model() -> str:
     """
     Model used only for memory summarization.
-    Order: SUMMARIZER_MODEL / settings → GROQ_MODEL → DEFAULT_SUMMARIZER_MODEL.
+    Order: GROQ_MODEL (conversation model) → settings → DEFAULT_SUMMARIZER_MODEL.
     Skips deprecated Groq model ids.
     """
+    chat = (os.getenv("GROQ_MODEL") or "").strip()
+    if chat and not _is_deprecated_model(chat):
+        return chat
+
     raw = (os.getenv("SUMMARIZER_MODEL") or "").strip()
     if not raw:
         try:
@@ -120,10 +124,6 @@ def get_summarizer_model() -> str:
 
     if raw and not _is_deprecated_model(raw):
         return raw
-
-    chat = (os.getenv("GROQ_MODEL") or "").strip()
-    if chat and not _is_deprecated_model(chat):
-        return chat
 
     return DEFAULT_SUMMARIZER_MODEL
 

@@ -23,7 +23,7 @@ load_dotenv()
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 OLLAMA_API_URL = "http://localhost:11434/v1/chat/completions"
 
-DEFAULT_MODEL = "qwen/qwen3.6-27b"
+DEFAULT_MODEL = "groq/compound-mini"
 DEFAULT_OLLAMA_MODEL = "llama3"
 
 # Legacy alias
@@ -543,8 +543,14 @@ async def call_groq(prompt: str, user_id: int | None = None):
         )
 
         if isinstance(result, dict) and "error" in result:
+            err = result["error"]
+            if "rate_limit" in str(err).lower() or "429" in str(err):
+                return (
+                    "Error 429 Rate Limit: Sorry, I've hit my rate limit, try again later.",
+                    f"({_provider_label()} error: {result['error']})",
+                )
             return (
-                "Sorry, I hit a backend error.",
+                f"Error 500 Server Error: Something went wrong on {_provider_label()}.",
                 f"({_provider_label()} error: {result['error']})",
             )
 
@@ -552,7 +558,7 @@ async def call_groq(prompt: str, user_id: int | None = None):
     else:
         if not _api_key() and backend != "ollama":
             return (
-                "Sorry, I hit a backend error.",
+                f"Error 401 Missing Key: {_missing_key_error()}",
                 f"({_missing_key_error()})",
             )
 
@@ -565,16 +571,21 @@ async def call_groq(prompt: str, user_id: int | None = None):
         )
 
         if "error" in data:
+            err = data["error"]
+            if "rate_limit" in str(err).lower() or "429" in str(err):
+                return (
+                    "Error 429 Rate Limit: Sorry, I've hit my rate limit, try again later.",
+                    f"({_provider_label()} error: {data['error']})",
+                )
             return (
-                "Sorry, I hit a backend error.",
+                f"Error 500 Server Error: Something went wrong on {_provider_label()}.",
                 f"({_provider_label()} error: {data['error']})",
             )
 
         raw = _extract_content(data)
         if raw is None:
             return (
-                "Sorry, I hit a backend error.",
-                f"({_provider_label()} bad response shape — no choices[0].message.content. "
+                f"Error 400 Bad Response: {_provider_label()} bad response shape — no choices[0].message.content. "
                 f"keys={list(data.keys()) if isinstance(data, dict) else type(data)} "
                 f"| [{_config_snapshot()}])",
             )
@@ -608,7 +619,7 @@ async def call_groq_simple(prompt: str, max_chars: int = 2000):
             stream=False,
         )
         if isinstance(result, dict) and "error" in result:
-            return ("error", result["error"])
+            return ("error", f"ERROR: {result['error']}")
         text = (result or "").strip()
         # Heckles should never carry tag wrappers
         if "<reply>" in text.lower():
@@ -624,7 +635,7 @@ async def call_groq_simple(prompt: str, max_chars: int = 2000):
     data = await _async_post(url, payload, _headers(), timeout=90)
 
     if "error" in data:
-        return ("error", data["error"])
+        return ("error", f"ERROR: {data['error']}")
 
     content = _extract_content(data)
     if content is None:

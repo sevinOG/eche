@@ -40,7 +40,7 @@ from gui.widgets.settings_workers import UpdateWorker
 UNSPLASH_DEV_URL = "https://unsplash.com/developers"
 UNSPLASH_APPS_URL = "https://unsplash.com/oauth/applications"
 
-_CLOUD_DEFAULT = "qwen/qwen3.6-27b"
+_CLOUD_DEFAULT = "groq/compound-mini"
 _OLLAMA_DEFAULT = "llama3"
 _OLLAMA_PLACEHOLDER_PREFIXES = ("Fetching", "Ollama not", "No local")
 

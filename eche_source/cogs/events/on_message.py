@@ -105,6 +105,14 @@ class OnMessage(commands.Cog):
         # 4. Call Groq (REST)
         reply, thoughts = await call_groq(prompt, user_id=message.author.id)
 
+        # Skip sending error messages to Discord and memory, but react with :x:
+        if reply.startswith("Error"):
+            try:
+                await message.add_reaction("❌")  # Use unicode emoji instead of discord name
+            except Exception as e:
+                dprint(f"[on_message] Failed to add reaction: {e}")
+            return
+
         # Enforce character limit
         reply = reply[:max_chars]
 
