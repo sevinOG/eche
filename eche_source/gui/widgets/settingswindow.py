@@ -220,10 +220,6 @@ class SettingsWindow(QWidget):
             "Home Server ID", "Guild used for memory / context home",
             secret=False, key="home_server_id", help_key="home_server_id",
         ))
-        body.addLayout(self._field_block(
-            "Thoughts Thread ID", "Optional thread for internal thoughts",
-            secret=False, key="thoughts_thread_id", help_key="thoughts_thread_id",
-        ))
         self.show_secrets = QCheckBox("Show secrets (all pages)")
         self.show_secrets.toggled.connect(self._toggle_secret_visibility)
         body.addWidget(self.show_secrets)

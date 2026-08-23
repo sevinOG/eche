@@ -115,6 +115,7 @@ class OnMessage(commands.Cog):
         try:
             from core.gui_bridge import chat as gui_chat, log as gui_log
             gui_chat(f"Bot: {reply}")
+            gui_log(f"Replied to {message.author.display_name}", channel="chat")
         except Exception:
             pass
 
