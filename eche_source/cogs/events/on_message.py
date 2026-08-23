@@ -111,17 +111,10 @@ class OnMessage(commands.Cog):
         if not reply or not reply.strip():
             return
 
-        # Mirror reply + thoughts into GUI panels
+        # Mirror reply into GUI panels
         try:
-            from core.gui_bridge import (
-                chat as gui_chat,
-                subconscious,
-                log as gui_log,
-            )
+            from core.gui_bridge import chat as gui_chat, log as gui_log
             gui_chat(f"Bot: {reply}")
-            if thoughts:
-                subconscious(thoughts)
-            gui_log(f"Replied to {message.author.display_name}", channel="chat")
         except Exception:
             pass
 

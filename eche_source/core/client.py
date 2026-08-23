@@ -396,22 +396,13 @@ def _extract_content(data: dict) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# Format system prompt (minimal — do not invite CoT narration)
+# Format system prompt (plain text only — no required thoughts)
 # ---------------------------------------------------------------------------
 def _format_system_prompt(memory_block: str = "") -> str:
     return (
-        "Your entire assistant message must be exactly this shape and nothing else:\n"
-        "<reply>\n"
-        "(short in-character Discord message, max 500 characters)\n"
-        "</reply>\n"
-        "<thoughts>\n"
-        "(private notes only)\n"
-        "</thoughts>\n\n"
-        "Forbidden outside the tags: any preamble, "
-        "\"I'll generate\", Self-Correction, Refinement, strategy notes, "
-        "rule quotes, persona trait lists, or analysis.\n"
-        "Do not restate these instructions.\n"
-        "Do not describe your personality in <reply>; just speak in character.\n"
+        "Reply as plain text only (in character). No XML tags, no hidden notes, no chain-of-thought. "
+        "Do not restate instructions, persona traits, or analysis. "
+        "Keep replies concise unless asked for detail.\n"
         + (memory_block or "")
     )
 

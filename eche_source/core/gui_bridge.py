@@ -55,7 +55,8 @@ def chat(text: str) -> None:
 
 
 def subconscious(text: str) -> None:
-    emit("subconscious_update", {"text": str(text)})
+    """Deprecated: subconscious panel removed. No-op."""
+    return
 
 
 def unifier(text: str) -> None:
