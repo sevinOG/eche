@@ -228,19 +228,17 @@ class MainWindow(QMainWindow):
         accent.setFixedHeight(2)
         main_layout.addWidget(accent)
 
-        # Main panels: Chat, Subconscious, Logs — balanced split
+        # Main panels: Chat | Local | Logs — balanced split
         splitter_vertical = QSplitter(Qt.Orientation.Vertical)
         splitter_top = QSplitter(Qt.Orientation.Horizontal)
 
         self.chat_output = QTextEdit()
         self.chat_output.setReadOnly(True)
-        self.sub_output = QTextEdit()
-        self.sub_output.setReadOnly(True)
         self.log_output = QTextEdit()
         self.log_output.setReadOnly(True)
 
         splitter_top.addWidget(self._panel("Chat", self.chat_output))
-        splitter_top.addWidget(self._panel("Subconscious", self.sub_output))
+        splitter_top.addWidget(self._build_local_panel())
         splitter_top.setStretchFactor(0, 1)
         splitter_top.setStretchFactor(1, 1)
         splitter_top.setSizes([560, 560])
@@ -252,6 +250,9 @@ class MainWindow(QMainWindow):
         splitter_vertical.setSizes([520, 200])
 
         main_layout.addWidget(splitter_vertical, stretch=1)
+
+        self._local_worker = None
+        self._reload_local_transcript()
 
         # Out-of-the-way donate (bottom strip)
         footer = QHBoxLayout()
