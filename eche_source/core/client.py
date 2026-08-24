@@ -117,6 +117,14 @@ def _config_snapshot() -> str:
     )
 
 
+def _public_error(msg: str, limit: int = 180) -> str:
+    """Short error string safe to show in Discord / Local chat."""
+    one = " ".join(str(msg or "").split())
+    if len(one) > limit:
+        one = one[: limit - 1].rstrip() + "…"
+    return f"Sorry, I hit a backend error: {one}"
+
+
 # ---------------------------------------------------------------------------
 # Error helpers
 # ---------------------------------------------------------------------------
@@ -213,12 +221,12 @@ def _missing_key_error() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Section parser + sanitizer (stops CoT leaks)
+# Section parser + sanitizer (stops CoT leaks; allows plain text)
 # ---------------------------------------------------------------------------
 def parse_sections(text: str) -> tuple[str, str]:
     """
-    Extract <reply> and <thoughts>. Prefers the *last* well-formed <reply>
-    pair so trailing tags after long CoT still work.
+    Extract <reply> and <thoughts> if present.
+    Prefers the last well-formed <reply> pair.
     """
     text = text or ""
 
@@ -233,7 +241,6 @@ def parse_sections(text: str) -> tuple[str, str]:
                 break
             e = text.find(close_t, s + len(open_t))
             if e == -1:
-                # Unclosed: take until next known tag or end
                 next_positions = [
                     p
                     for p in (
@@ -266,7 +273,6 @@ def _looks_like_leak(text: str) -> bool:
     for m in _LEAK_MARKERS:
         if m.lower() in low:
             return True
-    # Large fraction of instruction-style bullets often means CoT dump
     if text.count("\n- ") >= 4 and len(text) > 400:
         return True
     return False
@@ -275,11 +281,10 @@ def _looks_like_leak(text: str) -> bool:
 def _sanitize_reply(reply: str, raw: str) -> tuple[str, str]:
     """
     Returns (public_reply, thoughts_extra).
-    Never returns full raw CoT as the public reply.
+    Accepts plain text when no <reply> tags are present.
     """
     reply = (reply or "").strip()
 
-    # Strip accidental nested tags left inside reply
     reply = re.sub(
         r"<thoughts>[\s\S]*?</thoughts>",
         "",
@@ -289,7 +294,6 @@ def _sanitize_reply(reply: str, raw: str) -> tuple[str, str]:
     reply = re.sub(r"</?reply>", "", reply, flags=re.IGNORECASE).strip()
 
     if not reply or _looks_like_leak(reply):
-        # Last-chance: try last <reply> again from raw
         again, _ = parse_sections(raw or "")
         again = (again or "").strip()
         again = re.sub(
@@ -301,7 +305,18 @@ def _sanitize_reply(reply: str, raw: str) -> tuple[str, str]:
         if again and not _looks_like_leak(again):
             reply = again
         else:
-            return "...", f"(Unusable model output; raw preserved.)\n\n{raw}"
+            raw_s = (raw or "").strip()
+            raw_s = re.sub(
+                r"<thoughts>[\s\S]*?</thoughts>",
+                "",
+                raw_s,
+                flags=re.IGNORECASE,
+            ).strip()
+            raw_s = re.sub(r"</?reply>", "", raw_s, flags=re.IGNORECASE).strip()
+            if raw_s and not _looks_like_leak(raw_s):
+                reply = raw_s
+            else:
+                return "...", f"(Unusable model output; raw preserved.)\n\n{raw}"
 
     if len(reply) > REPLY_MAX_CHARS:
         reply = reply[: REPLY_MAX_CHARS - 1].rstrip() + "…"
@@ -310,14 +325,28 @@ def _sanitize_reply(reply: str, raw: str) -> tuple[str, str]:
 
 
 def _finalize_sections(raw: str) -> tuple[str, str]:
+    """
+    Prefer <reply> if present; otherwise use full model output as the public reply.
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return "...", "(empty model output)"
+
     reply, thoughts = parse_sections(raw)
+
+    # Plain-text models: no <reply> tags — use whole message
+    if not (reply or "").strip():
+        reply = raw
+
     clean, extra = _sanitize_reply(reply, raw)
+
+    if clean.strip() in ("", "...") and raw and not _looks_like_leak(raw):
+        clean = raw[:REPLY_MAX_CHARS]
+
     if not thoughts:
-        thoughts = (
-            f"(Model failed to produce <thoughts>. Raw output preserved.)\n\n{raw}"
-        )
+        thoughts = ""
     if extra:
-        thoughts = f"{extra}\n\n{thoughts}"
+        thoughts = f"{extra}\n\n{thoughts}".strip()
     return clean, thoughts
 
 
@@ -396,12 +425,12 @@ def _extract_content(data: dict) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# Format system prompt (plain text only — no required thoughts)
+# Format system prompt (plain text — no required thoughts tags)
 # ---------------------------------------------------------------------------
 def _format_system_prompt(memory_block: str = "") -> str:
     return (
-        "Reply as plain text only (in character). No XML tags, no hidden notes, no chain-of-thought. "
-        "Do not restate instructions, persona traits, or analysis. "
+        "Reply as plain text only (in character). No XML tags, no hidden notes, "
+        "no chain-of-thought. Do not restate instructions, persona traits, or analysis. "
         "Keep replies concise unless asked for detail.\n"
         + (memory_block or "")
     )
@@ -465,12 +494,10 @@ async def _groq_sdk_call(
 
         msg = completion.choices[0].message
         content = getattr(msg, "content", None) or ""
-        # Some reasoning models put extra text in other fields; content only for chat
         return content if isinstance(content, str) else str(content or "")
 
     except Exception as e:
         msg = str(e) or type(e).__name__
-        # If API rejects reasoning_effort=none, retry once without it
         if "reasoning_effort" in msg.lower() and reasoning_effort is not None:
             try:
                 kwargs.pop("reasoning_effort", None)
@@ -494,13 +521,13 @@ async def _groq_sdk_call(
 
 
 # ---------------------------------------------------------------------------
-# MAIN MODEL CALL — normal Discord replies
+# MAIN MODEL CALL — Discord + local chat
 # ---------------------------------------------------------------------------
 async def call_groq(prompt: str, user_id: int | None = None):
     """
     Main chat call. Works for both Groq (SDK) and Ollama (REST).
-    Returns: (reply_text, thoughts_text)
-    Public Discord should use reply_text only.
+    Returns: (reply_text, detail_text)
+    Public Discord / Local should use reply_text.
     """
     memory_block = ""
     if user_id is not None:
@@ -540,18 +567,13 @@ async def call_groq(prompt: str, user_id: int | None = None):
             error_msg = result["error"]
             if "rate limit" in error_msg.lower():
                 return ("sorry, i'm being rate limited, check back later", "")
-            return (
-                "Sorry, I hit a backend error.",
-                f"({_provider_label()} error: {error_msg})",
-            )
+            return (_public_error(error_msg), f"({_provider_label()} error: {error_msg})")
 
         raw = result or ""
     else:
         if not _api_key() and backend != "ollama":
-            return (
-                "Sorry, I hit a backend error.",
-                f"({_missing_key_error()})",
-            )
+            err = _missing_key_error()
+            return (_public_error(err), f"({err})")
 
         url = _api_url()
         payload = _build_payload(messages, model, max_tokens=1024, temperature=0.7)
@@ -562,19 +584,17 @@ async def call_groq(prompt: str, user_id: int | None = None):
         )
 
         if "error" in data:
-            return (
-                "Sorry, I hit a backend error.",
-                f"({_provider_label()} error: {data['error']})",
-            )
+            error_msg = data["error"]
+            return (_public_error(error_msg), f"({_provider_label()} error: {error_msg})")
 
         raw = _extract_content(data)
         if raw is None:
-            return (
-                "Sorry, I hit a backend error.",
-                f"({_provider_label()} bad response shape — no choices[0].message.content. "
+            error_msg = (
+                f"{_provider_label()} bad response shape — no choices[0].message.content. "
                 f"keys={list(data.keys()) if isinstance(data, dict) else type(data)} "
-                f"| [{_config_snapshot()}])",
+                f"| [{_config_snapshot()}]"
             )
+            return (_public_error(error_msg), f"({error_msg})")
 
     return _finalize_sections(raw)
 
@@ -607,7 +627,6 @@ async def call_groq_simple(prompt: str, max_chars: int = 2000):
         if isinstance(result, dict) and "error" in result:
             return ("error", result["error"])
         text = (result or "").strip()
-        # Heckles should never carry tag wrappers
         if "<reply>" in text.lower():
             r, _ = parse_sections(text)
             text = r or text
