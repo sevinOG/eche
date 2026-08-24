@@ -9,11 +9,9 @@ from core.local_chat_memory import load_turns
 
 def _strip_tags(text: str) -> str:
     text = text or ""
-    # Remove XML tags completely
-    text = re.sub(r'<[^>]+>', '', text)
-    # Also remove any lingering formatting artifacts
-    text = re.sub(r'\s+', ' ', text)
-    text = text.strip().strip('[]')  # Remove potential square brackets from sanitization
+    text = re.sub(r"<[^>]+>", "", text)
+    text = re.sub(r"\s+", " ", text)
+    text = text.strip().strip("[]")
     return text
 
 
@@ -40,9 +38,9 @@ async def reply_local(user_text: str) -> str:
 
     flat = (
         _system_prompt()
-        "\n\n=== LOCAL HISTORY ===\n"
-        "\n".join(history_lines)
-        f"\n\nUSER: {user_text}\n\nReply as Eche (plain text only):\n"
+        + "\n\n=== LOCAL HISTORY ===\n"
+        + "\n".join(history_lines)
+        + f"\n\nUSER: {user_text}\n\nReply as Eche (plain text only):\n"
     )
 
     try:
