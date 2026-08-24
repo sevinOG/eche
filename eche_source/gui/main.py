@@ -8,7 +8,7 @@ import time
 import subprocess
 import psutil
 import atexit
-import traceback # Import traceback for detailed error logging
+import traceback
 
 from gui.watchdog import ensure_single_gui_instance, cleanup_lockfile
 
@@ -29,6 +29,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QPushButton,
     QTextEdit,
+    QPlainTextEdit,
     QLabel,
     QSplitter,
     QFrame,
@@ -52,51 +53,37 @@ from gui.widgets.dialogs import (
 # Tip jar (Cash App + on-chain Bitcoin)
 CASHAPP_TAG = "$reshi7"
 CASHAPP_URL = "https://cash.app/$reshi7"
-# Native SegWit-style / multi-path bitcoin address provided by the maintainer
 BTC_ADDRESS = "bc1qp989v95u54zpnmw9j75azwp9hrqnd0k6d7jp3lvv6z3yywpfdutszkkhg6"
 
 # --- Path Resolution Logic ---
 try:
-    # Attempt to import from core.paths first (standard in packaged apps)
     from core.paths import is_frozen, user_dir, ensure_user_layout, bundle_file
 except ImportError:
-    # Fallback definitions if core.paths fails to import
     print("WARNING: core.paths module not found. Using fallback path resolution.")
 
     def is_frozen():
-        # Check if running as a frozen executable
         return bool(getattr(sys, "frozen", False))
 
     def user_dir_fallback():
-        # Get the directory of the current script
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        # gui/main.py -> package root (eche/)
         return os.path.abspath(os.path.join(script_dir, ".."))
 
     def ensure_user_layout_fallback():
         root = user_dir_fallback()
-        # Ensure config directory exists
         os.makedirs(os.path.join(root, "config"), exist_ok=True)
         return root
 
-    # Assign fallback functions
     is_frozen = is_frozen
     ensure_user_layout = ensure_user_layout_fallback
 # --- End Path Resolution Logic ---
 
-# Determine PROJECT_ROOT based on resolved logic
 PROJECT_ROOT = ensure_user_layout()
 CONFIG_PATH = os.path.join(PROJECT_ROOT, "config", "settings.json")
 LOG_DIR = os.path.join(PROJECT_ROOT, "logs")
 LOG_FILE_PATH = os.path.join(LOG_DIR, "gui_log.txt")
 
-# Ensure log directory exists
 os.makedirs(LOG_DIR, exist_ok=True)
 
-# Define global builder.py path.
-# In source this is PROJECT_ROOT/core/builder.py; in frozen builds the bot code
-# is bundled under <bundle>/_internal/core/builder.py, so we
-# resolve it via core.paths.bundle_file() and fall back to the source layout.
 try:
     from core.paths import bundle_file as _bundle_file
     _resolved_builder = _bundle_file("core", "builder.py")
@@ -124,16 +111,36 @@ class BotReaderThread(QThread):
     def run(self):
         while self._running and self.process.poll() is None:
             try:
-                # Read line from stdout
                 line = self.process.stdout.readline()
                 if line:
                     self.line_received.emit(line.rstrip("\n"))
             except Exception as e:
                 print(f"Error reading from bot process stdout: {e}")
-                break # Exit loop on error
+                break
 
     def stop(self):
         self._running = False
+
+
+class LocalChatWorker(QThread):
+    finished_ok = pyqtSignal(str)
+    finished_err = pyqtSignal(str)
+
+    def __init__(self, user_text: str, parent=None):
+        super().__init__(parent)
+        self.user_text = user_text
+
+    def run(self):
+        try:
+            from core.local_chat import reply_local_sync
+            self.finished_ok.emit(reply_local_sync(self.user_text) or "")
+        except Exception as e:
+            try:
+                import asyncio
+                from core.local_chat import reply_local
+                self.finished_ok.emit(asyncio.run(reply_local(self.user_text)) or "")
+            except Exception as e2:
+                self.finished_err.emit(str(e2) or str(e))
 
 
 class MainWindow(QMainWindow):
@@ -145,7 +152,6 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(900, 560)
         self.move(80, 60)
 
-        # Same brand icon as the app (assets/icon.png)
         try:
             from gui.theme import brand_icon
             icon = brand_icon()
@@ -163,18 +169,16 @@ class MainWindow(QMainWindow):
         self.cog_manager_window = None
         self.settings_window = None
         self.bot_memory_window = None
-        # Accumulate multi-line Python tracebacks from the bot child process
         self._tb_buffer: list[str] = []
         self._tb_active = False
+        self._local_worker = None
 
-        # --- GUI Layout Setup ---
         central = QWidget()
         self.setCentralWidget(central)
         main_layout = QVBoxLayout(central)
         main_layout.setContentsMargins(16, 16, 16, 16)
         main_layout.setSpacing(12)
 
-        # Toolbar: brand | status | balanced action cluster
         toolbar = QFrame()
         toolbar.setObjectName("Toolbar")
         tb = QHBoxLayout(toolbar)
@@ -191,11 +195,9 @@ class MainWindow(QMainWindow):
         brand.addWidget(sub)
         tb.addLayout(brand, stretch=1)
 
-        # Single status chip (spinner while busy → "Bot online" when ready)
         self.loading = LoadingIndicator()
         tb.addWidget(self.loading)
 
-        # Action buttons — Unifier lives in Settings → Memory only
         self.run_button = QPushButton("Run Bot")
         self.run_button.setObjectName("run")
         self.stop_button = QPushButton("Kill Bot")
@@ -228,7 +230,7 @@ class MainWindow(QMainWindow):
         accent.setFixedHeight(2)
         main_layout.addWidget(accent)
 
-        # Main panels: Chat | Local | Logs — balanced split
+        # Chat (Discord mirror) | Local | Logs
         splitter_vertical = QSplitter(Qt.Orientation.Vertical)
         splitter_top = QSplitter(Qt.Orientation.Horizontal)
 
@@ -251,10 +253,8 @@ class MainWindow(QMainWindow):
 
         main_layout.addWidget(splitter_vertical, stretch=1)
 
-        self._local_worker = None
         self._reload_local_transcript()
 
-        # Out-of-the-way donate (bottom strip)
         footer = QHBoxLayout()
         footer.setContentsMargins(0, 0, 0, 0)
         footer.addStretch()
@@ -269,22 +269,15 @@ class MainWindow(QMainWindow):
         self.set_status("offline")
         self.append_log(f"[INFO] {APP_TITLE} GUI started.")
         self.append_log("[INFO] Open Settings to manage tokens, then Run Bot.")
-        # --- End GUI Layout Setup ---
 
     def set_loading(self, busy: bool, message: str = "Working…"):
-        """Shared busy indicator — only spins when not already online."""
         try:
             if busy:
                 self.loading.set_state("busy", message)
-            # When clearing busy, leave online/offline alone (set_status owns that)
         except Exception:
             pass
 
     def _warn_no_provider(self, settings: dict) -> bool:
-        """
-        Warn that chat AI will not work without a provider key.
-        Returns False if the user cancelled Run Bot.
-        """
         from PyQt6.QtWidgets import (
             QDialog,
             QVBoxLayout,
@@ -388,7 +381,6 @@ class MainWindow(QMainWindow):
         sub.setWordWrap(True)
         lay.addWidget(sub)
 
-        # Cash App
         cash = QFrame()
         cash.setObjectName("Card")
         cl = QVBoxLayout(cash)
@@ -417,13 +409,17 @@ class MainWindow(QMainWindow):
         cl.addLayout(crow)
         lay.addWidget(cash)
 
-        # Bitcoin
         btc = QFrame()
         btc.setObjectName("Card")
         bl = QVBoxLayout(btc)
         bl.setContentsMargins(14, 12, 14, 12)
         bl.addWidget(self._donate_section_title("Bitcoin (on-chain)"))
-        bl.addWidget(QLabel("Send BTC to this address from any wallet (Electrum, BlueWallet, Sparrow, mobile apps, exchange withdraw):"))
+        bl.addWidget(
+            QLabel(
+                "Send BTC to this address from any wallet "
+                "(Electrum, BlueWallet, Sparrow, mobile apps, exchange withdraw):"
+            )
+        )
         addr = QLineEdit(BTC_ADDRESS)
         addr.setReadOnly(True)
         addr.setMinimumHeight(34)
@@ -453,6 +449,119 @@ class MainWindow(QMainWindow):
         lab.setObjectName("CardTitle")
         return lab
 
+    def _build_local_panel(self) -> QFrame:
+        frame = QFrame()
+        frame.setObjectName("Panel")
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(12, 10, 12, 12)
+        layout.setSpacing(8)
+
+        title_row = QHBoxLayout()
+        label = QLabel("LOCAL")
+        label.setObjectName("PanelTitle")
+        title_row.addWidget(label)
+        title_row.addStretch()
+        self.local_clear_btn = QPushButton("Clear")
+        self.local_clear_btn.setObjectName("ghost")
+        self.local_clear_btn.clicked.connect(self._on_local_clear)
+        title_row.addWidget(self.local_clear_btn)
+        layout.addLayout(title_row)
+
+        self.local_output = QTextEdit()
+        self.local_output.setReadOnly(True)
+        self.local_output.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+        layout.addWidget(self.local_output, stretch=1)
+
+        self.local_input = QPlainTextEdit()
+        self.local_input.setPlaceholderText("Local chat — not Discord.")
+        self.local_input.setFixedHeight(72)
+        layout.addWidget(self.local_input)
+
+        row = QHBoxLayout()
+        row.addStretch()
+        self.local_send_btn = QPushButton("Send")
+        self.local_send_btn.setObjectName("primary")
+        self.local_send_btn.clicked.connect(self._on_local_send)
+        row.addWidget(self.local_send_btn)
+        layout.addLayout(row)
+        return frame
+
+    def _reload_local_transcript(self) -> None:
+        if not hasattr(self, "local_output") or self.local_output is None:
+            return
+        self.local_output.clear()
+        try:
+            from core.local_chat_memory import load_turns
+            turns = load_turns()
+        except Exception as e:
+            self.local_output.append(f"(could not load local history: {e})")
+            return
+        for t in turns:
+            role = (t.get("role") or "user").lower()
+            content = (t.get("content") or "").strip()
+            if not content:
+                continue
+            who = "You" if role == "user" else "Eche"
+            self.local_output.append(f"{who}: {content}")
+        sb = self.local_output.verticalScrollBar()
+        if sb is not None:
+            sb.setValue(sb.maximum())
+
+    def _on_local_send(self) -> None:
+        text = self.local_input.toPlainText().strip()
+        if not text:
+            return
+        if self._local_worker is not None and self._local_worker.isRunning():
+            return
+
+        self.local_input.clear()
+        self.local_output.append(f"You: {text}")
+        try:
+            from core.local_chat_memory import append_turn
+            append_turn("user", text)
+        except Exception as e:
+            self.local_output.append(f"(save user turn failed: {e})")
+
+        self.local_send_btn.setEnabled(False)
+        self.local_input.setEnabled(False)
+
+        self._local_worker = LocalChatWorker(text, self)
+        self._local_worker.finished_ok.connect(self._on_local_reply)
+        self._local_worker.finished_err.connect(self._on_local_err)
+        self._local_worker.finished.connect(self._on_local_worker_done)
+        self._local_worker.start()
+
+    def _on_local_reply(self, reply: str) -> None:
+        reply = (reply or "").strip() or "(empty)"
+        self.local_output.append(f"Eche: {reply}")
+        try:
+            from core.local_chat_memory import append_turn
+            append_turn("assistant", reply)
+        except Exception as e:
+            self.local_output.append(f"(save assistant turn failed: {e})")
+        sb = self.local_output.verticalScrollBar()
+        if sb is not None:
+            sb.setValue(sb.maximum())
+
+    def _on_local_err(self, err: str) -> None:
+        self.local_output.append(f"(local error: {err})")
+
+    def _on_local_worker_done(self) -> None:
+        self.local_send_btn.setEnabled(True)
+        self.local_input.setEnabled(True)
+        self._local_worker = None
+
+    def _on_local_clear(self) -> None:
+        try:
+            from core.local_chat_memory import clear_turns
+            clear_turns()
+        except Exception as e:
+            self.local_output.append(f"(clear failed: {e})")
+            return
+        self.local_output.clear()
+
     def _panel(self, title: str, body: QTextEdit) -> QFrame:
         frame = QFrame()
         frame.setObjectName("Panel")
@@ -467,7 +576,6 @@ class MainWindow(QMainWindow):
         return frame
 
     def set_status(self, state: str, text: str | None = None):
-        """Drive the single toolbar status chip (offline / busy / online / error)."""
         labels = {
             "offline": "Offline",
             "online": "Bot online",
@@ -476,7 +584,6 @@ class MainWindow(QMainWindow):
             "busy": "Working…",
         }
         msg = text or labels.get(state, state)
-        # Strip leading bullet if callers still pass old style
         if msg.startswith("● "):
             msg = msg[2:]
         try:
@@ -491,7 +598,6 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-    # --- Bot Control Methods ---
     def on_run_clicked(self):
         global BOT_STARTED
 
@@ -538,7 +644,6 @@ class MainWindow(QMainWindow):
             self.append_log("[ERROR] HOME_SERVER_ID not set.")
             return
 
-        # Provider key optional — warn once (unless suppressed)
         provider_key = (settings.get("inf_api_key") or "").strip() or (
             os.environ.get("GROQ_API_KEY") or ""
         ).strip()
@@ -547,7 +652,7 @@ class MainWindow(QMainWindow):
                 "1", "true", "yes", "on",
             )
             if not suppress and not self._warn_no_provider(settings):
-                return  # user cancelled
+                return
 
         env = os.environ.copy()
         from core.secrets import ENV_MAP
@@ -584,7 +689,6 @@ class MainWindow(QMainWindow):
         self._tb_buffer.clear()
         self._tb_active = False
 
-        # Hide console window on Windows
         startupinfo = None
         if sys.platform == "win32":
             startupinfo = subprocess.STARTUPINFO()
@@ -626,45 +730,45 @@ class MainWindow(QMainWindow):
         global BOT_STARTED
         self.append_log("[INFO] Stopping bot...")
 
-        # Safely stop the reader thread
         if self.reader_thread:
             try:
                 self.reader_thread.stop()
-                self.reader_thread.wait(2000) # Wait a bit for it to finish
+                self.reader_thread.wait(2000)
             except Exception as e:
                 self.append_log(f"[WARN] Error stopping reader thread: {e}")
             self.reader_thread = None
 
-        # Stop the bot process
         if self.bot_process and self.bot_process.poll() is None:
             try:
-                self.bot_process.terminate() # Send SIGTERM
+                self.bot_process.terminate()
             except Exception as e:
                 self.append_log(f"[WARN] Error terminating bot process: {e}")
             try:
-                self.bot_process.wait(timeout=5) # Wait for process to exit
+                self.bot_process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 self.append_log("[WARN] Bot process did not terminate, killing...")
                 try:
-                    self.bot_process.kill() # Force kill if terminate failed
+                    self.bot_process.kill()
                 except Exception as e:
                     self.append_log(f"[WARN] Error killing bot process: {e}")
 
-        # Clean up any remaining bot processes potentially spawned by the bot itself
         bot_markers = (
             "-m core.eche", "core\\eche.py", "core/eche.py",
             "run\\run_bot.py", "run/run_bot.py", "--bot", "Eche.exe", "Eche_app.exe"
         )
         for proc in psutil.process_iter(["pid", "name", "cmdline"]):
             try:
-                if proc.pid == os.getpid(): continue # Skip self
+                if proc.pid == os.getpid():
+                    continue
                 cmd = proc.info["cmdline"]
-                if not cmd: continue
+                if not cmd:
+                    continue
                 cmd_str = " ".join(cmd).lower()
-                name = (proc.info.get("name") or "").lower()
                 is_bot_cmd = any(marker in cmd_str for marker in bot_markers)
                 if is_bot_cmd:
-                    self.append_log(f"[INFO] Killing stray bot process PID: {proc.pid} ({' '.join(cmd)})")
+                    self.append_log(
+                        f"[INFO] Killing stray bot process PID: {proc.pid} ({' '.join(cmd)})"
+                    )
                     proc.kill()
             except Exception as e:
                 self.append_log(f"[WARN] Could not kill process PID {proc.pid}: {e}")
@@ -675,12 +779,6 @@ class MainWindow(QMainWindow):
         self.append_log("[INFO] Bot stopped.")
 
     def prepare_for_update(self):
-        """Called by Settings before running the updater.
-
-        Stops the running bot (and its reader thread) so the update can
-        overwrite Eche.exe cleanly. Opens the TerminalWindow output window
-        and keeps it alive while closing the Settings window.
-        """
         global BOT_STARTED
         self._bot_was_running_before_update = bool(
             self.bot_process and self.bot_process.poll() is None
@@ -692,7 +790,6 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self.append_log(f"[WARN] Error stopping bot before update: {e}")
 
-        # Open TerminalWindow and keep a reference on main window so it doesn't get garbage collected
         try:
             from gui.widgets.terminalwindow import TerminalWindow
             self.term_win = TerminalWindow(title="Eche Updater & Builder")
@@ -703,7 +800,6 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self.append_log(f"[WARN] Could not open terminal window: {e}")
 
-        # Close settings window so it releases file locks
         try:
             if self.settings_window:
                 self.settings_window.close()
@@ -725,17 +821,12 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-        # Also hide / close the main window so that Eche.exe itself isn't locked by the GUI process
         try:
             self.hide()
         except Exception:
             pass
 
     def finish_update_restart(self):
-        """Called by Settings after a successful update.
-
-        Restarts the bot only if it was running before the update.
-        """
         if getattr(self, "_bot_was_running_before_update", False):
             self.append_log("[INFO] Update complete: restarting bot.")
             try:
@@ -746,13 +837,9 @@ class MainWindow(QMainWindow):
             self.append_log("[INFO] Update complete (bot was not running).")
 
     def handle_bot_output(self, line: str):
-        """Handle one line of bot stdout. Lines are either gui_bridge JSON
-        events ({"event": ..., "data": {...}}) or plain-text prints.
-        Must never raise: it runs from a Qt signal and would crash the GUI."""
         try:
             raw = "" if line is None else str(line).rstrip("\n")
             if not raw.strip():
-                # blank line may end a traceback block
                 if self._tb_active:
                     self._flush_traceback_buffer()
                 return
@@ -783,7 +870,6 @@ class MainWindow(QMainWindow):
                     present_failure(self, str(msg), log_fn=None)
             elif event == "fatal":
                 msg = str(data.get("message") or "Bot failed to start")
-                code = str(data.get("code") or "config")
                 self.append_log(f"[FATAL] {msg}")
                 self.set_status("error")
                 self.set_loading(False)
@@ -792,17 +878,23 @@ class MainWindow(QMainWindow):
                 user = data.get("user", "")
                 label = f"Bot online · {user}" if user else "Bot online"
                 self.set_status("online", label)
-                self.append_log(f"[INFO] Bot ready as {user}." if user else "[INFO] Bot ready.")
+                self.append_log(
+                    f"[INFO] Bot ready as {user}." if user else "[INFO] Bot ready."
+                )
             elif event == "chat":
                 self._append_panel(self.chat_output, data.get("text", ""))
             elif event in ("cog_list", "status"):
                 loaded = data.get("loaded")
-                if loaded is not None and self.cog_manager_window and hasattr(self.cog_manager_window, "apply_cog_list"):
+                if (
+                    loaded is not None
+                    and self.cog_manager_window
+                    and hasattr(self.cog_manager_window, "apply_cog_list")
+                ):
                     self.cog_manager_window.apply_cog_list(loaded)
-            elif event == "subconscious_update":
-                self._append_panel(self.sub_output, data.get("text", ""))
             elif event == "unifier_update":
-                self._append_panel(self.chat_output, f"[unifier] {data.get('text', '')}")
+                self._append_panel(
+                    self.chat_output, f"[unifier] {data.get('text', '')}"
+                )
             else:
                 self.append_log(raw)
         except Exception as e:
@@ -812,7 +904,6 @@ class MainWindow(QMainWindow):
                 pass
 
     def _handle_plain_line(self, raw: str) -> None:
-        """Log plain stdout; assemble multi-line tracebacks into one dialog."""
         if raw.startswith("Traceback (most recent call last)"):
             self._tb_active = True
             self._tb_buffer = [raw]
@@ -822,8 +913,6 @@ class MainWindow(QMainWindow):
         if self._tb_active:
             self._tb_buffer.append(raw)
             self.append_log(raw)
-            # End of traceback: line that looks like ExceptionName: message
-            # and does not start with whitespace/File
             stripped = raw.strip()
             if (
                 stripped
@@ -842,7 +931,6 @@ class MainWindow(QMainWindow):
             return
 
         self.append_log(raw)
-        # Single-line config fatals without JSON (belt and suspenders)
         if "HOME_SERVER_ID is not set" in raw or "DISCORD_TOKEN missing" in raw:
             present_failure(self, raw, log_fn=None)
 
@@ -854,12 +942,9 @@ class MainWindow(QMainWindow):
         self._tb_buffer.clear()
         self._tb_active = False
         self.set_status("error")
-        # Already logged line-by-line; show themed traceback window
         present_failure(self, text, log_fn=None, default_title="Code error")
 
     def _append_panel(self, widget, text: str):
-        """Append a line to a side panel (Chat / Subconscious) with a
-        timestamp, scrub secrets, and auto-scroll to the newest line."""
         if widget is None or text is None:
             return
         try:
@@ -877,7 +962,6 @@ class MainWindow(QMainWindow):
             sb.setValue(sb.maximum())
 
     def _on_reader_finished(self):
-        """Callback when the bot output reader thread finishes."""
         global BOT_STARTED
         if self._tb_active:
             self._flush_traceback_buffer()
@@ -892,7 +976,6 @@ class MainWindow(QMainWindow):
             self.append_log("[INFO] Bot output reader finished.")
             self.set_loading(False)
 
-    # --- Secondary Windows ---
     def on_settings_clicked(self):
         self.settings_window = SettingsWindow(main_window=self)
         self.settings_window.show()
@@ -900,7 +983,6 @@ class MainWindow(QMainWindow):
         self.settings_window.activateWindow()
 
     def on_unifier_clicked(self):
-        """Opens Unifier (builder.py) from Settings — package core file."""
         try:
             from core.paths import readable_core_file
             path = readable_core_file("builder.py")
@@ -918,7 +1000,6 @@ class MainWindow(QMainWindow):
             present_failure(self, error_msg, log_fn=None)
 
     def on_cog_manager_clicked(self):
-        # Cog browser works offline for disk scan; toggles need a running bot.
         if not self.cog_manager_window:
             self.cog_manager_window = CogManagerWindow(
                 bot_process=self.bot_process,
@@ -928,7 +1009,9 @@ class MainWindow(QMainWindow):
             self.cog_manager_window.set_bot_process(self.bot_process)
 
         if not self.bot_process or self.bot_process.poll() is not None:
-            self.append_log("[INFO] Cog browser opened (bot offline — toggles disabled until Run Bot).")
+            self.append_log(
+                "[INFO] Cog browser opened (bot offline — toggles disabled until Run Bot)."
+            )
 
         self.cog_manager_window.show()
         self.cog_manager_window.raise_()
@@ -949,34 +1032,30 @@ class MainWindow(QMainWindow):
         self.user_context_window.raise_()
         self.user_context_window.activateWindow()
 
-    # Method to handle the content saved signal from UnifierPanel
     def on_unifier_content_saved(self, path: str, content: str):
         self.append_log(f"[INFO] Content saved to: {path}")
         if path == BUILDER_FILE_PATH:
-            self.append_log("[INFO] Builder file updated. Bot may need to be restarted for changes to take effect.")
+            self.append_log(
+                "[INFO] Builder file updated. Bot may need to be restarted for changes to take effect."
+            )
 
-    # --- Logging and File Handling ---
     def append_log(self, text: str):
-        """Appends text to the GUI log output and to the persistent log file."""
         try:
             from core.secrets import scrub_text
             text = scrub_text(str(text), PROJECT_ROOT)
         except Exception:
-            pass # Ignore scrubbing errors, just log original text
+            pass
 
-        self.log_output.append(text) # Append to GUI log
+        self.log_output.append(text)
 
-        # Append to persistent log file
         try:
             with open(LOG_FILE_PATH, "a", encoding="utf-8") as f:
                 f.write(text + "\n")
         except Exception as e:
             print(f"FATAL ERROR: Could not write to log file {LOG_FILE_PATH}: {e}")
-            # If we can't even write to log file, print to stderr as a last resort
             print(f"Log write failure: {text}", file=sys.stderr)
 
     def save_logs_to_file(self):
-        """Saves the current content of the log_output QTextEdit to the persistent log file."""
         log_content = self.log_output.toPlainText()
         try:
             with open(LOG_FILE_PATH, "w", encoding="utf-8") as f:
@@ -985,25 +1064,25 @@ class MainWindow(QMainWindow):
         except Exception as e:
             print(f"FATAL ERROR: Could not save GUI logs to {LOG_FILE_PATH}: {e}")
 
-    # --- Event Handling ---
     def closeEvent(self, event):
-        """Handles the window closing event."""
         self.append_log("[INFO] GUI closing...")
         try:
-            self.save_logs_to_file() # Save logs before closing
-            self.on_stop_clicked()   # Attempt to stop the bot process
+            self.save_logs_to_file()
+            self.on_stop_clicked()
         except Exception as e:
-            self.append_log(f"[ERROR] Error during closeEvent: {e}\n{traceback.format_exc()}")
-        event.accept() # Accept the close event
+            self.append_log(
+                f"[ERROR] Error during closeEvent: {e}\n{traceback.format_exc()}"
+            )
+        event.accept()
 
 
 def launch_gui():
     """Initializes and runs the PyQt application."""
     app = QApplication(sys.argv)
-    apply_theme(app) # Apply application theme
+    apply_theme(app)
     window = MainWindow()
     window.show()
-    sys.exit(app.exec()) # Start the application event loop
+    sys.exit(app.exec())
 
 
 if __name__ == "__main__":
