@@ -644,10 +644,13 @@ class MainWindow(QMainWindow):
             self.append_log("[ERROR] HOME_SERVER_ID not set.")
             return
 
+        backend = (settings.get("provider_backend") or "cloud").strip().lower()
         provider_key = (settings.get("inf_api_key") or "").strip() or (
             os.environ.get("GROQ_API_KEY") or ""
         ).strip()
-        if not provider_key:
+
+        # Ollama does not need a cloud API key
+        if backend != "ollama" and not provider_key:
             suppress = (settings.get("suppress_no_provider_warn") or "").strip() in (
                 "1", "true", "yes", "on",
             )
@@ -660,6 +663,22 @@ class MainWindow(QMainWindow):
             val = (settings.get(key) or "").strip()
             if val:
                 env[env_name] = val
+
+        # Force backend + model explicitly (after the ENV_MAP loop)
+        env["ECHE_PROVIDER"] = "ollama" if backend == "ollama" else "cloud"
+        if backend == "ollama":
+            env["GROQ_MODEL"] = (
+                settings.get("ollama_model")
+                or settings.get("groq_model")
+                or "llama3"
+            ).strip()
+            env.setdefault("GROQ_API_KEY", "ollama")
+        else:
+            env["GROQ_MODEL"] = (
+                settings.get("cloud_model")
+                or settings.get("groq_model")
+                or ""
+            ).strip()
 
         env["DISCORD_TOKEN"] = token
         env["HOME_SERVER_ID"] = home
