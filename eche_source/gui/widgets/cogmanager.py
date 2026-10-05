@@ -328,7 +328,7 @@ class CogManagerWindow(QMainWindow):
 
         info_btn = QPushButton("ℹ")
         info_btn.setObjectName("info")
-        info_btn.setFixedSize(32, 32)
+        info_btn.setFixedSize(20, 20)
         info_btn.setToolTip("How to format games & utility cogs")
         info_btn.clicked.connect(self._show_format_help)
         head_row.addWidget(info_btn, alignment=Qt.AlignmentFlag.AlignTop)

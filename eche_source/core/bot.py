@@ -289,8 +289,17 @@ class Eche(commands.Bot):
 # BOT ENTRY POINT
 # ---------------------------------------------------------
 def run_bot():
+    # Force voice deps early so frozen builds don't hit "davey library" error
+    try:
+        import nacl
+        import nacl.secret
+        import nacl.public
+        import discord.voice_client
+        import discord.opus
+    except Exception:
+        pass
     bot = Eche()
-    token = os.getenv("DISCORD_TOKEN")
+    token = (os.getenv("DISCORD_TOKEN") or "").strip().replace("\n", "").replace("\r", "")
     bot.run(token)
 
 

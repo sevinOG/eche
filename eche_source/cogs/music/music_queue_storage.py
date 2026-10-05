@@ -1,16 +1,24 @@
 import discord
 from core.context_manager import get_home_guild
 
-QUEUE_CHANNEL_ID = 1503819397255532684
+QUEUE_CHANNEL_NAME = "music-queue"
 QUEUE_HEADER = "Queue:\n"
 
 
-async def ensure_queue_message(bot):
-    home = get_home_guild(bot)
-    channel = home.get_channel(QUEUE_CHANNEL_ID)
+async def ensure_queue_message(bot, guild_id: int | None = None):
+    guild = get_home_guild(bot)
+    if guild_id:
+        g = bot.get_guild(guild_id)
+        if g:
+            guild = g
 
+    # find or create channel
+    channel = discord.utils.get(guild.text_channels, name=QUEUE_CHANNEL_NAME)
     if channel is None:
-        raise RuntimeError(f"Queue channel {QUEUE_CHANNEL_ID} not found.")
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(send_messages=False)
+        }
+        channel = await guild.create_text_channel(QUEUE_CHANNEL_NAME, overwrites=overwrites)
 
     pins = await channel.pins()
     if pins:
@@ -22,7 +30,7 @@ async def ensure_queue_message(bot):
 
 
 async def load_queue(bot, guild_id):
-    channel, pinned = await ensure_queue_message(bot)
+    channel, pinned = await ensure_queue_message(bot, guild_id)
     content = pinned.content or ""
 
     if not content.startswith("Queue:"):
@@ -57,7 +65,7 @@ async def load_queue(bot, guild_id):
 
 
 async def save_queue(bot, guild_id, queue_list):
-    channel, pinned = await ensure_queue_message(bot)
+    channel, pinned = await ensure_queue_message(bot, guild_id)
 
     lines = []
     for entry in queue_list:

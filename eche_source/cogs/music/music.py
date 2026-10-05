@@ -2,12 +2,24 @@ import discord
 from discord.ext import commands
 import asyncio
 import re
+import os
+from core.paths import ensure_user_layout
 from cogs.music.music_queue_storage import load_queue, save_queue
 
 try:
     import yt_dlp
-except ImportError:  # portable build missing optional dep — cog still loads
+except ImportError:
     yt_dlp = None
+
+try:
+    import nacl
+    import nacl.secret
+    import nacl.public
+    import discord.voice_client
+    import discord.opus
+    import discord.player
+except ImportError:
+    pass
 
 
 PIPED_BASE = "https://piped.video"
@@ -21,6 +33,7 @@ YDL_OPTIONS = {
     "ignoreerrors": True,
     "geo_bypass": True,
     "nocheckcertificate": True,
+    "cookiefile": os.path.join(ensure_user_layout(), "cookies", "ytcookies.txt"),
 }
 
 FFMPEG_OPTIONS = {

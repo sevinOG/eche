@@ -166,17 +166,17 @@ QPushButton#ghost:hover {{
     border-color: {ACCENT};
 }}
 QPushButton#info {{
-    background-color: #252733;
+    background-color: transparent;
     border: 1px solid {ACCENT};
-    border-radius: 16px;
+    border-radius: 10px;
     color: {ACCENT_SOFT};
-    font-size: 14px;
+    font-size: 12px;
     font-weight: 700;
     padding: 0;
-    min-width: 32px;
-    max-width: 32px;
-    min-height: 32px;
-    max-height: 32px;
+    min-width: 20px;
+    max-width: 20px;
+    min-height: 20px;
+    max-height: 20px;
 }}
 QPushButton#info:hover {{
     background-color: {ACCENT};
@@ -324,7 +324,7 @@ QScrollBar::handle:horizontal {{
     min-width: 24px;
 }}
 QFrame#Card, QFrame#Panel {{
-    background-color: {BG_ELEVATED};
+    background-color: transparent;
     border: 1px solid {BORDER};
     border-radius: 12px;
 }}

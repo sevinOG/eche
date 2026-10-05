@@ -12,10 +12,31 @@ except NameError:
 
 # Pull in packages PyInstaller often misses for frozen bot builds
 try:
-    from PyInstaller.utils.hooks import collect_all, collect_submodules
+    from PyInstaller.utils.hooks import collect_all, collect_submodules, collect_dynamic_libs
 except Exception:
     collect_all = None
     collect_submodules = None
+    collect_dynamic_libs = None
+
+import os, glob
+try:
+    import nacl
+    nacl_dir = os.path.dirname(nacl.__file__)
+    for fname in os.listdir(nacl_dir):
+        if fname.lower().endswith((".dll", ".so", ".dylib")):
+            _extra_binaries.append((os.path.join(nacl_dir, fname), "."))
+    # Explicitly grab libsodium (the actual native lib PyNaCl needs)
+    for pattern in ("libsodium*.dll", "libsodium*.so*", "libsodium*.dylib"):
+        for p in glob.glob(os.path.join(nacl_dir, pattern)):
+            _extra_binaries.append((p, "."))
+    # Walk the whole nacl package for any native libs (libsodium etc)
+    for root, dirs, files in os.walk(nacl_dir):
+        for f in files:
+            if f.lower().endswith((".dll", ".so", ".dylib")) or "sodium" in f.lower():
+                full = os.path.join(root, f)
+                _extra_binaries.append((full, "."))
+except Exception:
+    pass
 
 _extra_datas = []
 _extra_binaries = []
@@ -39,6 +60,26 @@ _extra_hidden = [
     "zoneinfo",
     # music / voice stack (must ship in flash-drive portable builds)
     "yt_dlp",
+    "nacl",
+    "nacl.encoding",
+    "nacl.signing",
+    "nacl.secret",
+    "nacl.public",
+    "nacl._sodium",
+    "PyNaCl",
+    "discord.opus",
+    "discord.player",
+    "discord.voice_client",
+    "cogs.music",
+    "cogs.music.music",
+    "cogs.music.music_player",
+    "cogs.music.music_queue_storage",
+    "discord.opus",
+    "cffi",
+    "_cffi_backend",
+    "cogs.music.music",
+    "cogs.music.music_queue_storage",
+    "cogs.music.music_player",
     "yt_dlp.utils",
     "yt_dlp.extractor",
     "yt_dlp.downloader",
@@ -64,6 +105,9 @@ if collect_all is not None:
         "aiohttp",
         "certifi",
         "groq",
+        "PyNaCl",
+        "nacl",
+        "discord",
     ):
         try:
             d, b, h = collect_all(pkg)
@@ -76,6 +120,14 @@ if collect_submodules is not None:
     for pkg in ("dateparser", "yt_dlp"):
         try:
             _extra_hidden += collect_submodules(pkg)
+        except Exception:
+            pass
+
+# Force collection of PyNaCl / nacl native libraries (libsodium etc.)
+if collect_dynamic_libs is not None:
+    for pkg in ("nacl", "PyNaCl"):
+        try:
+            _extra_binaries += collect_dynamic_libs(pkg)
         except Exception:
             pass
 

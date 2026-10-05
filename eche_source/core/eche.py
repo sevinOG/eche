@@ -81,7 +81,7 @@ def main() -> None:
     project_root = _bootstrap_paths()
     _load_env(project_root)
 
-    token = os.getenv("DISCORD_TOKEN")
+    token = (os.getenv("DISCORD_TOKEN") or "").strip().replace("\n", "").replace("\r", "")
     if not token:
         _emit_fatal(
             "DISCORD_TOKEN missing — set it in Settings (secure store) or .env"

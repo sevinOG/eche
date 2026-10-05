@@ -63,3 +63,17 @@ class _LegacyAliasFinder(importlib.abc.MetaPathFinder):
 
 if not any(isinstance(f, _LegacyAliasFinder) for f in sys.meta_path):
     sys.meta_path.insert(0, _LegacyAliasFinder())
+
+# Force PyNaCl / voice support in frozen builds
+if getattr(sys, "frozen", False) or hasattr(sys, "_MEIPASS"):
+    try:
+        import nacl
+        import nacl.secret
+        import nacl.public
+        import nacl.encoding
+        import nacl.signing
+        import discord.voice_client
+        import discord.opus
+        import discord.player
+    except Exception:
+        pass

@@ -40,7 +40,7 @@ from gui.widgets.settings_workers import UpdateWorker
 UNSPLASH_DEV_URL = "https://unsplash.com/developers"
 UNSPLASH_APPS_URL = "https://unsplash.com/oauth/applications"
 
-_CLOUD_DEFAULT = "groq/compound-mini"
+_CLOUD_DEFAULT = "qwen/qwen3.8-27b"
 _OLLAMA_DEFAULT = "llama3"
 _OLLAMA_PLACEHOLDER_PREFIXES = ("Fetching", "Ollama not", "No local")
 
@@ -221,6 +221,7 @@ class SettingsWindow(QWidget):
             secret=False, key="home_server_id", help_key="home_server_id",
         ))
         self.show_secrets = QCheckBox("Show secrets (all pages)")
+        self.show_secrets.setMinimumHeight(28)
         self.show_secrets.toggled.connect(self._toggle_secret_visibility)
         body.addWidget(self.show_secrets)
         layout.addWidget(self._card(
@@ -243,7 +244,7 @@ class SettingsWindow(QWidget):
         self._ollama_only = []
 
         be_block = QVBoxLayout()
-        be_block.setSpacing(4)
+        be_block.setSpacing(8)
         be_top = QHBoxLayout()
         be_lab = QLabel("Provider backend")
         be_lab.setObjectName("FieldLabel")
@@ -296,7 +297,7 @@ class SettingsWindow(QWidget):
         ol_wrap = QWidget()
         ol_l = QVBoxLayout(ol_wrap)
         ol_l.setContentsMargins(0, 0, 0, 0)
-        ol_l.setSpacing(6)
+        ol_l.setSpacing(12)
         ol_top = QHBoxLayout()
         ol_lab = QLabel("Local Ollama Model")
         ol_lab.setObjectName("FieldLabel")
@@ -661,7 +662,7 @@ class SettingsWindow(QWidget):
     def _info_button(self, help_key: str) -> QPushButton:
         btn = QPushButton("ℹ")
         btn.setObjectName("info")
-        btn.setFixedSize(32, 32)
+        btn.setFixedSize(20, 20)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.setToolTip("What is this? (learn how it works)")
         btn.clicked.connect(lambda _=False, k=help_key: self._show_help(k))
@@ -679,8 +680,8 @@ class SettingsWindow(QWidget):
         card.setObjectName("Card")
         card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(16, 14, 16, 16)
-        layout.setSpacing(10)
+        layout.setContentsMargins(16, 16, 20, 16)
+        layout.setSpacing(12)
         t = QLabel(title)
         t.setObjectName("CardTitle")
         layout.addWidget(t)
@@ -703,13 +704,15 @@ class SettingsWindow(QWidget):
         block = QVBoxLayout()
         block.setSpacing(4)
         top = QHBoxLayout()
-        top.setSpacing(6)
+        top.setSpacing(8)
+        top.setContentsMargins(0, 6, 0, 2)
         lab = QLabel(label)
         lab.setObjectName("FieldLabel")
         top.addWidget(lab)
         top.addStretch()
         if help_key and help_key in FIELD_HELP:
-            top.addWidget(self._info_button(help_key))
+            btn = self._info_button(help_key)
+            top.addWidget(btn, alignment=Qt.AlignmentFlag.AlignTop)
         block.addLayout(top)
         if hint:
             h = QLabel(hint)

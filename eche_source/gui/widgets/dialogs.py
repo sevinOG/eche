@@ -235,12 +235,12 @@ _CONFIG_HINTS: list[tuple[str, str, str, str]] = [
 def looks_like_traceback(text: str) -> bool:
     if not text:
         return False
-    t = text.strip()
-    return (
-        "Traceback (most recent call last):" in t
-        or t.startswith("Traceback (most recent call last)")
-        or ("File \"" in t and "line " in t and ("Error:" in t or "Exception:" in t))
-    )
+    t = text.strip().lower()
+    if "clientconnectordnserror" in t or "getaddrinfo failed" in t:
+        return False
+    if "Traceback (most recent call last):" in t or t.startswith("Traceback (most recent call last)"):
+        return True
+    return "File \"" in t and "line " in t and ("Error:" in t or "Exception:" in t)
 
 
 def classify_error(text: str) -> str:
