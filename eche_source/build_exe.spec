@@ -159,15 +159,30 @@ if _version.is_file():
     _data_entries.append((str(_version), "."))
 
 # Ship ffmpeg if present next to source (portable builds)
+# Also try common system locations so frozen builds always have it
+_ffmpeg_found = False
 for _ff_name in ("ffmpeg.exe", "ffmpeg"):
     for _ff_dir in ("", "run", "ffmpeg", "ffmpeg/bin"):
         _ff_p = _ROOT / _ff_dir / _ff_name if _ff_dir else _ROOT / _ff_name
         if _ff_p.exists() and _ff_p.is_file():
             _data_entries.append((str(_ff_p), _ff_dir or "."))
+            _ffmpeg_found = True
             break
-    else:
-        continue
-    break
+    if _ffmpeg_found:
+        break
+if not _ffmpeg_found:
+    # Try common install locations at build time
+    for _sys_ff in (
+        r"C:\ffmpeg\bin\ffmpeg.exe",
+        r"C:\Program Files\ffmpeg\bin\ffmpeg.exe",
+        os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "ffmpeg", "bin", "ffmpeg.exe"),
+    ):
+        if os.path.isfile(_sys_ff):
+            _data_entries.append((_sys_ff, "."))
+            _ffmpeg_found = True
+            break
+if not _ffmpeg_found:
+    print("[build] WARNING: no ffmpeg.exe found — music/convert will require system PATH in frozen build")
 
 a = Analysis(
     ['eche_app.py'],

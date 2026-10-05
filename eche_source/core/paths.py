@@ -494,14 +494,46 @@ def find_ffmpeg() -> str | None:
     Mirrors find_opus_dll layout. Always tries PATH early for dev machines.
     """
     import shutil
+
+    # Hard known good location first (user's common install) - always check
+    for known in (
+        r"C:\ffmpeg\bin\ffmpeg.exe",
+        r"C:\Program Files\ffmpeg\bin\ffmpeg.exe",
+        os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "ffmpeg", "bin", "ffmpeg.exe"),
+    ):
+        if known and os.path.isfile(known):
+            return os.path.abspath(known)
+
     # Try PATH first (most reliable on dev machines with C:\ffmpeg or system install)
-    found = shutil.which("ffmpeg")
-    if found and os.path.isfile(found):
-        return found
+    for name in ("ffmpeg", "ffmpeg.exe"):
+        found = shutil.which(name)
+        if found and os.path.isfile(found):
+            return os.path.abspath(found)
+
+    # Manual PATH walk as backup (some environments break shutil.which)
+    path_env = os.environ.get("PATH", "")
+    for p in path_env.split(os.pathsep):
+        if not p:
+            continue
+        for name in ("ffmpeg.exe", "ffmpeg"):
+            cand = os.path.join(p, name)
+            if os.path.isfile(cand):
+                return os.path.abspath(cand)
 
     candidates: list[str] = []
     root = package_root()
     bdir = bundle_dir()
+
+    # Always check exe dir for frozen/portable (critical for one-dir builds)
+    if is_frozen():
+        exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+        candidates.extend([
+            os.path.join(exe_dir, "ffmpeg.exe"),
+            os.path.join(exe_dir, "_internal", "ffmpeg.exe"),
+            os.path.join(exe_dir, "run", "ffmpeg.exe"),
+            os.path.join(bdir, "ffmpeg.exe"),
+        ])
+
     exts = [".exe", ""] if os.name == "nt" else [""]
     for ext in exts:
         candidates.extend(
@@ -521,17 +553,9 @@ def find_ffmpeg() -> str | None:
             os.path.join(bdir, "ffmpeg", "ffmpeg.exe"),
         ]
     )
-    # Common user installs (helps when no bundle)
-    candidates.extend(
-        [
-            r"C:\ffmpeg\bin\ffmpeg.exe",
-            r"C:\Program Files\ffmpeg\bin\ffmpeg.exe",
-            r"C:\Program Files (x86)\ffmpeg\bin\ffmpeg.exe",
-        ]
-    )
     for path in candidates:
         if path and os.path.isfile(path):
-            return path
+            return os.path.abspath(path)
     return None
 
 

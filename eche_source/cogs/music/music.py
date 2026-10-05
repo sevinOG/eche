@@ -208,10 +208,14 @@ class Music(commands.Cog):
         await self.send_now_playing(ctx, self.current)
 
         ffmpeg_path = find_ffmpeg()
-        if ffmpeg_path:
-            source = discord.FFmpegPCMAudio(audio_url, executable=ffmpeg_path, **FFMPEG_OPTIONS)
-        else:
-            source = discord.FFmpegPCMAudio(audio_url, **FFMPEG_OPTIONS)
+        try:
+            if ffmpeg_path:
+                source = discord.FFmpegPCMAudio(audio_url, executable=ffmpeg_path, **FFMPEG_OPTIONS)
+            else:
+                source = discord.FFmpegPCMAudio(audio_url, **FFMPEG_OPTIONS)
+        except Exception as e:
+            await ctx.send(f"❌ FFmpeg playback error: {e}\nInstall ffmpeg (https://ffmpeg.org) and ensure `ffmpeg` is in PATH or at C:\\ffmpeg\\bin\\ffmpeg.exe")
+            return await self.play_next(ctx)
 
         def after_playback(error):
             asyncio.run_coroutine_threadsafe(
