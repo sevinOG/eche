@@ -488,6 +488,53 @@ def find_opus_dll() -> str | None:
     return None
 
 
+def find_ffmpeg() -> str | None:
+    """Find ffmpeg executable for music/convert in source + frozen portable builds.
+    Prefers bundled next to exe or in run/, falls back to PATH + common installs.
+    Mirrors find_opus_dll layout. Always tries PATH early for dev machines.
+    """
+    import shutil
+    # Try PATH first (most reliable on dev machines with C:\ffmpeg or system install)
+    found = shutil.which("ffmpeg")
+    if found and os.path.isfile(found):
+        return found
+
+    candidates: list[str] = []
+    root = package_root()
+    bdir = bundle_dir()
+    exts = [".exe", ""] if os.name == "nt" else [""]
+    for ext in exts:
+        candidates.extend(
+            [
+                os.path.join(root, f"ffmpeg{ext}"),
+                os.path.join(root, "run", f"ffmpeg{ext}"),
+                os.path.join(bdir, f"ffmpeg{ext}"),
+                os.path.join(bdir, "run", f"ffmpeg{ext}"),
+            ]
+        )
+    # Common portable / ffmpeg folder layouts
+    candidates.extend(
+        [
+            os.path.join(root, "ffmpeg", "bin", "ffmpeg.exe"),
+            os.path.join(bdir, "ffmpeg", "bin", "ffmpeg.exe"),
+            os.path.join(root, "ffmpeg", "ffmpeg.exe"),
+            os.path.join(bdir, "ffmpeg", "ffmpeg.exe"),
+        ]
+    )
+    # Common user installs (helps when no bundle)
+    candidates.extend(
+        [
+            r"C:\ffmpeg\bin\ffmpeg.exe",
+            r"C:\Program Files\ffmpeg\bin\ffmpeg.exe",
+            r"C:\Program Files (x86)\ffmpeg\bin\ffmpeg.exe",
+        ]
+    )
+    for path in candidates:
+        if path and os.path.isfile(path):
+            return path
+    return None
+
+
 def describe_layout() -> dict[str, str | bool | None]:
     return {
         "frozen": is_frozen(),

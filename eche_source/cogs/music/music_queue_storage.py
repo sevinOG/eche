@@ -1,20 +1,23 @@
 import discord
 
+from core.context_manager import HOME_SERVER_ID, get_home_guild
+
 QUEUE_CHANNEL_NAME = "music-queue"
 QUEUE_HEADER = "Queue:\n"
 
 
-async def ensure_queue_message(bot, guild_id: int | None = None):
-    # Music queue is ALWAYS per-server where the command runs.
-    # Never fall back to home guild.
-    if not guild_id:
-        raise RuntimeError("Music queue requires a guild context (run the command in a server).")
-
-    guild = bot.get_guild(guild_id)
+async def ensure_queue_message(bot):
+    # Music queue is ALWAYS created/stored in the BOT'S HOME SERVER.
+    # This avoids "Missing Permissions" (50013) when running ?play in other servers
+    # where the bot may not have Manage Channels / Manage Messages.
+    # The actual voice playback still happens in the server where the command was used.
+    guild = get_home_guild(bot)
     if guild is None:
-        raise RuntimeError(f"Bot is not in guild {guild_id} or guild not cached.")
+        # Non-home server or HOME_SERVER_ID not set / bot not in home guild.
+        # Allow playback with in-memory queue only (no persistence).
+        return None, None
 
-    # find or create channel (per-guild)
+    # find or create channel (in home guild only)
     channel = discord.utils.get(guild.text_channels, name=QUEUE_CHANNEL_NAME)
     if channel is None:
         try:
@@ -23,7 +26,7 @@ async def ensure_queue_message(bot, guild_id: int | None = None):
             }
             channel = await guild.create_text_channel(QUEUE_CHANNEL_NAME, overwrites=overwrites)
         except discord.Forbidden:
-            raise RuntimeError(f"Missing 'Manage Channels' permission to create #{QUEUE_CHANNEL_NAME} here.")
+            raise RuntimeError(f"Missing 'Manage Channels' permission to create #{QUEUE_CHANNEL_NAME} in HOME server.")
         except Exception as e:
             raise RuntimeError(f"Failed to create queue channel: {e}")
 
@@ -45,8 +48,10 @@ async def ensure_queue_message(bot, guild_id: int | None = None):
     return channel, msg
 
 
-async def load_queue(bot, guild_id):
-    channel, pinned = await ensure_queue_message(bot, guild_id)
+async def load_queue(bot):
+    channel, pinned = await ensure_queue_message(bot)
+    if channel is None or pinned is None:
+        return []  # non-home server: in-memory queue only, no persistence
     content = pinned.content or ""
 
     if not content.startswith("Queue:"):
@@ -80,9 +85,10 @@ async def load_queue(bot, guild_id):
     return entries
 
 
-async def save_queue(bot, guild_id, queue_list):
-    channel, pinned = await ensure_queue_message(bot, guild_id)
-
+async def save_queue(bot, queue_list):
+    channel, pinned = await ensure_queue_message(bot)
+    if channel is None or pinned is None:
+        return  # non-home server: skip persistence, keep in-memory only
     lines = []
     for entry in queue_list:
         artist = (entry.get("artist") or "Unknown").replace("\n", " ").strip()

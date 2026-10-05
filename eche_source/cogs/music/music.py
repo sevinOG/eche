@@ -3,7 +3,7 @@ from discord.ext import commands
 import asyncio
 import re
 import os
-from core.paths import ensure_user_layout
+from core.paths import ensure_user_layout, find_ffmpeg
 from cogs.music.music_queue_storage import load_queue, save_queue
 
 try:
@@ -137,9 +137,11 @@ class Music(commands.Cog):
     # Load queue once
     # ---------------------------------------------------------
     async def ensure_queue_loaded(self, ctx):
+        # Queue is now always stored in the bot's HOME server (to avoid permission errors in other servers).
+        # Voice playback still happens in the server where the user ran the command.
         if not self.queue_loaded:
             try:
-                self.queue = await load_queue(self.bot, ctx.guild.id)
+                self.queue = await load_queue(self.bot)
             except Exception as e:
                 await ctx.send(f"⚠️ Queue error: {e}")
                 self.queue = []
@@ -147,7 +149,7 @@ class Music(commands.Cog):
 
     async def update_queue_message(self, ctx):
         try:
-            await save_queue(self.bot, ctx.guild.id, self.queue)
+            await save_queue(self.bot, self.queue)
         except Exception as e:
             await ctx.send(f"⚠️ Failed to save queue: {e}")
 
@@ -205,7 +207,11 @@ class Music(commands.Cog):
 
         await self.send_now_playing(ctx, self.current)
 
-        source = discord.FFmpegPCMAudio(audio_url, **FFMPEG_OPTIONS)
+        ffmpeg_path = find_ffmpeg()
+        if ffmpeg_path:
+            source = discord.FFmpegPCMAudio(audio_url, executable=ffmpeg_path, **FFMPEG_OPTIONS)
+        else:
+            source = discord.FFmpegPCMAudio(audio_url, **FFMPEG_OPTIONS)
 
         def after_playback(error):
             asyncio.run_coroutine_threadsafe(
