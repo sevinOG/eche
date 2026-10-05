@@ -19,9 +19,10 @@ dprint(os.path.abspath("cookies/ytcookies.txt"))
 import discord
 
 try:
-    from core.paths import find_opus_dll
+    from core.paths import find_opus_dll, find_ffmpeg
 except Exception:
     find_opus_dll = None  # type: ignore
+    find_ffmpeg = None  # type: ignore
 
 OPUS_PATH = find_opus_dll() if find_opus_dll else None
 if OPUS_PATH:
@@ -33,6 +34,9 @@ if OPUS_PATH:
 else:
     dprint(">>> OPUS DLL NOT FOUND (voice may be unavailable)")
 dprint(">>> OPUS LOADED:", discord.opus.is_loaded())
+
+FFMPEG_PATH = find_ffmpeg() if find_ffmpeg else None
+dprint(">>> FFMPEG PATH (resolved):", FFMPEG_PATH or shutil.which("ffmpeg"))
 
 # ---------------------------------------------------------
 # NORMAL IMPORTS

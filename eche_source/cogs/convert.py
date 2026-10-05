@@ -9,6 +9,7 @@ import os
 import subprocess
 import math
 import tempfile
+from core.paths import find_ffmpeg
 
 
 class Convert(commands.Cog):
@@ -19,8 +20,9 @@ class Convert(commands.Cog):
     # Helper: Run FFmpeg asynchronously
     # ---------------------------------------------------------
     async def run_ffmpeg(self, args):
+        ffmpeg = find_ffmpeg() or "ffmpeg"
         process = await asyncio.create_subprocess_exec(
-            "ffmpeg", *args,
+            ffmpeg, *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
@@ -38,8 +40,9 @@ class Convert(commands.Cog):
             "-f", "null",
             "-"
         ]
+        ffmpeg = find_ffmpeg() or "ffmpeg"
         process = await asyncio.create_subprocess_exec(
-            "ffmpeg", *args,
+            ffmpeg, *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )

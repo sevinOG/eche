@@ -158,6 +158,17 @@ _version = _ROOT / "VERSION"
 if _version.is_file():
     _data_entries.append((str(_version), "."))
 
+# Ship ffmpeg if present next to source (portable builds)
+for _ff_name in ("ffmpeg.exe", "ffmpeg"):
+    for _ff_dir in ("", "run", "ffmpeg", "ffmpeg/bin"):
+        _ff_p = _ROOT / _ff_dir / _ff_name if _ff_dir else _ROOT / _ff_name
+        if _ff_p.exists() and _ff_p.is_file():
+            _data_entries.append((str(_ff_p), _ff_dir or "."))
+            break
+    else:
+        continue
+    break
+
 a = Analysis(
     ['eche_app.py'],
     pathex=[str(_ROOT)],
