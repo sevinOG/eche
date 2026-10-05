@@ -189,6 +189,16 @@ def _format_http_error(status: int, body: str, model: str, url: str) -> str:
             )
         return f"{label} server error (HTTP {status}). Body: {snippet}"
 
+    if status == 400:
+        body_l = body.lower()
+        if any(x in body_l for x in ("context length", "too long", "request too large", "exceeds", "prompt is too long")):
+            return (
+                f"{label} prompt too long (memory + chat exceeded model limit). "
+                f"Shorten your message, or the bot's memory for this user is bloated. "
+                f"model=`{model}`"
+            )
+        return f"{label} bad request (HTTP 400). model=`{model}`. Body: {snippet}"
+
     return f"{label} HTTP {status} | model=`{model}` | URL={url} | Body: {snippet}"
 
 
@@ -534,6 +544,9 @@ async def call_groq(prompt: str, user_id: int | None = None):
         try:
             summary = load_memory_summary(user_id)
             if summary:
+                # Truncate to avoid "prompt too long" on Groq (keep recent/relevant)
+                if len(summary) > 1200:
+                    summary = summary[-1200:]
                 memory_block = (
                     "The following describes the user's past interactions and traits:\n"
                     f"{summary}\n\n"

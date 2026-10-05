@@ -138,11 +138,18 @@ class Music(commands.Cog):
     # ---------------------------------------------------------
     async def ensure_queue_loaded(self, ctx):
         if not self.queue_loaded:
-            self.queue = await load_queue(self.bot, ctx.guild.id)
+            try:
+                self.queue = await load_queue(self.bot, ctx.guild.id)
+            except Exception as e:
+                await ctx.send(f"⚠️ Queue error: {e}")
+                self.queue = []
             self.queue_loaded = True
 
     async def update_queue_message(self, ctx):
-        await save_queue(self.bot, ctx.guild.id, self.queue)
+        try:
+            await save_queue(self.bot, ctx.guild.id, self.queue)
+        except Exception as e:
+            await ctx.send(f"⚠️ Failed to save queue: {e}")
 
     # ---------------------------------------------------------
     # Format duration

@@ -8,23 +8,31 @@ async def load_user_context(bot, user_id, username):
     """
     ALWAYS load user context from the HOME SERVER.
     Username MUST be the global username (member.name), never nickname.
+    Truncated to avoid Groq "prompt too long".
     """
     guild = get_home_guild(bot)
     channel, pinned = await ensure_context_channel(bot, guild, user_id, username)
     if not pinned:
         return "No user context available."
-    return pinned.content.strip()
+    content = pinned.content.strip()
+    if len(content) > 1500:
+        content = content[-1500:]
+    return content
 
 
 async def load_bot_context(bot):
     """
     ALWAYS load bot's self-context from the HOME SERVER.
+    Truncated to avoid Groq "prompt too long".
     """
     guild = get_home_guild(bot)
     channel, pinned = await ensure_bot_memory_channel(bot)
     if not pinned:
         return "No self-context available."
-    return pinned.content.strip()
+    content = pinned.content.strip()
+    if len(content) > 1200:
+        content = content[-1200:]
+    return content
 
 
 async def build_prompt(bot, guild, user_id, username, user_message):
@@ -70,4 +78,8 @@ async def build_prompt(bot, guild, user_id, username, user_message):
 - Never list or describe personality traits; just speak.
 """
 
-    return prompt.strip()
+    p = prompt.strip()
+    # Hard cap to avoid Groq "prompt too long" (leave headroom for system/personality)
+    if len(p) > 3500:
+        p = p[:3500]
+    return p

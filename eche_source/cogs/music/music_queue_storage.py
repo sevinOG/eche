@@ -1,31 +1,47 @@
 import discord
-from core.context_manager import get_home_guild
 
 QUEUE_CHANNEL_NAME = "music-queue"
 QUEUE_HEADER = "Queue:\n"
 
 
 async def ensure_queue_message(bot, guild_id: int | None = None):
-    guild = get_home_guild(bot)
-    if guild_id:
-        g = bot.get_guild(guild_id)
-        if g:
-            guild = g
+    # Music queue is ALWAYS per-server where the command runs.
+    # Never fall back to home guild.
+    if not guild_id:
+        raise RuntimeError("Music queue requires a guild context (run the command in a server).")
 
-    # find or create channel
+    guild = bot.get_guild(guild_id)
+    if guild is None:
+        raise RuntimeError(f"Bot is not in guild {guild_id} or guild not cached.")
+
+    # find or create channel (per-guild)
     channel = discord.utils.get(guild.text_channels, name=QUEUE_CHANNEL_NAME)
     if channel is None:
-        overwrites = {
-            guild.default_role: discord.PermissionOverwrite(send_messages=False)
-        }
-        channel = await guild.create_text_channel(QUEUE_CHANNEL_NAME, overwrites=overwrites)
+        try:
+            overwrites = {
+                guild.default_role: discord.PermissionOverwrite(send_messages=False)
+            }
+            channel = await guild.create_text_channel(QUEUE_CHANNEL_NAME, overwrites=overwrites)
+        except discord.Forbidden:
+            raise RuntimeError(f"Missing 'Manage Channels' permission to create #{QUEUE_CHANNEL_NAME} here.")
+        except Exception as e:
+            raise RuntimeError(f"Failed to create queue channel: {e}")
 
-    pins = await channel.pins()
+    try:
+        pins = await channel.pins()
+    except discord.Forbidden:
+        raise RuntimeError(f"Missing 'Read Message History' / 'Manage Messages' to read pins in #{QUEUE_CHANNEL_NAME}.")
     if pins:
         return channel, pins[0]
 
-    msg = await channel.send(QUEUE_HEADER)
-    await msg.pin()
+    try:
+        msg = await channel.send(QUEUE_HEADER)
+        await msg.pin()
+    except discord.Forbidden:
+        raise RuntimeError(f"Missing 'Send Messages' + 'Manage Messages' to pin queue header in this server.")
+    except Exception as e:
+        raise RuntimeError(f"Failed to pin queue header: {e}")
+
     return channel, msg
 
 
