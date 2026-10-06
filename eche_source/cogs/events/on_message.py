@@ -9,15 +9,22 @@ from core.debuglog import dprint
 dprint("[on_message] Loaded from:", inspect.getfile(inspect.currentframe()))
 
 # --- AZBOT INTERNALS ---
-from core.context_manager import update_context, HOME_SERVER_ID
-from core.context_summarizer import summarize_context
+from core.context_manager import (
+    archive_user_recents_if_due,
+    update_context,
+    HOME_SERVER_ID,
+)
 from core.builder import build_prompt
 
 # --- REST-BASED GROQ CLIENT ---
-from core.client import call_groq
+from core.client import (
+    call_groq,
+    CHAT_COMPLETION_TOKENS,
+    CHAT_LONG_COMPLETION_TOKENS,
+)
 
 # --- SEVIN SELF-MEMORY ---
-from core.bot_memory import log_bot_event
+from core.bot_memory import archive_bot_recents_if_due, log_bot_event
 
 # --- BOO SYSTEM ---
 from core.boo_kaitar import maybe_boo
@@ -71,13 +78,10 @@ class OnMessage(commands.Cog):
 
         guild = self.bot.get_guild(HOME_SERVER_ID)
 
-        # 1. Update user context
+        # 1. Store this message in the recent block. Summary runs after the reply.
         await update_context(self.bot, guild, message.author.id, cleaned, message.author.name)
 
-        # 2. Summarize user context (now triggered automatically every 3rd message inside update_context, but we can also ensure state)
-        # summarize_context(...)
-
-        # 3. Build unified prompt
+        # 2. Build unified prompt from long-term memory plus the recent lines.
         prompt = await build_prompt(
             self.bot,
             guild,
@@ -102,33 +106,58 @@ class OnMessage(commands.Cog):
             if message.reference and message.reference.message_id == self.bot.override_waiting_for:
                 max_chars = 2000
 
-        # 4. Call Groq (REST)
-        reply, thoughts = await call_groq(prompt, user_id=message.author.id)
+        # 3. Call Groq. Reserve only enough completion tokens for the reply cap.
+        completion_tokens = (
+            CHAT_LONG_COMPLETION_TOKENS if max_chars >= 2000 else CHAT_COMPLETION_TOKENS
+        )
+        reply, thoughts = await call_groq(
+            prompt,
+            user_id=message.author.id,
+            max_completion_tokens=completion_tokens,
+        )
 
         # Enforce character limit
-        reply = reply[:max_chars]
+        reply = (reply or "")[:max_chars]
+        quota_reply = reply.strip().lower().startswith("sorry, i'm being rate limited")
 
-        if not reply or not reply.strip():
-            return
+        if reply.strip():
+            # Mirror reply into GUI panels
+            try:
+                from core.gui_bridge import chat as gui_chat, log as gui_log
+                gui_chat(f"Bot: {reply}")
+                gui_log(f"Replied to {message.author.display_name}", channel="chat")
+            except Exception:
+                pass
 
-        # Mirror reply into GUI panels
-        try:
-            from core.gui_bridge import chat as gui_chat, log as gui_log
-            gui_chat(f"Bot: {reply}")
-            gui_log(f"Replied to {message.author.display_name}", channel="chat")
-        except Exception:
-            pass
+            # 5. Send reply before any summarization.
+            await message.reply(reply)
 
-        # 5. Send reply - reply to the specific message the user is responding to
-        await message.reply(reply)
+            # Reset override after use
+            if getattr(self.bot, "next_reply_override", False):
+                self.bot.next_reply_override = False
+                self.bot.override_waiting_for = None
 
-        # Reset override after use
-        if getattr(self.bot, "next_reply_override", False):
-            self.bot.next_reply_override = False
-            self.bot.override_waiting_for = None
+            # A quota miss is not a real reply. Skip memory writes so we do not
+            # spend another request in the same full minute.
+            if not quota_reply:
+                await log_bot_event(self.bot, reply)
 
-        # 6. Log Bot's self-context (writes to Bot's memory file)
-        await log_bot_event(self.bot, reply)
+        if not quota_reply:
+            # User and bot recents each fold on their second stored line,
+            # after the Discord reply is already out.
+            try:
+                await archive_user_recents_if_due(
+                    self.bot,
+                    guild,
+                    message.author.id,
+                    message.author.name,
+                )
+            except Exception as e:
+                dprint(f"[on_message] user memory archive failed: {e}")
+            try:
+                await archive_bot_recents_if_due(self.bot)
+            except Exception as e:
+                dprint(f"[on_message] bot memory archive failed: {e}")
 
 
 async def setup(bot):

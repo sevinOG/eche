@@ -6,7 +6,7 @@ import asyncio
 import re
 
 from core.context_manager import ensure_context_channel
-from core.client import call_groq_raw
+from core.client import call_groq_raw, is_quota_error
 from core.summarizer_prompt import (
     build_condense_prompt,
     build_summary_prompt,
@@ -14,6 +14,9 @@ from core.summarizer_prompt import (
 )
 
 RECENT_MESSAGE_COUNT = 2
+# Fold this many stored recent lines into long-term memory, then clear New:.
+# Used for both the user's context and the bot's self context.
+ARCHIVE_AFTER_MESSAGES = 2
 SUMMARY_CHAR_LIMIT = 1000
 SUMMARY_MAX_STORE = 1500
 
@@ -37,6 +40,19 @@ _BAD_SUMMARY_MARKERS = (
     "existing summary:",
     "write the condensed summary",
 )
+
+
+def partition_recent(message_lines: list[str], keep: int) -> tuple[list[str], list[str]] | None:
+    """Split New: lines into (history to fold, lines to leave).
+
+    None means there is nothing to fold yet, so the caller keeps every line.
+    keep=0 folds every line and leaves the recent block empty.
+    """
+    if keep > 0 and len(message_lines) <= keep:
+        return None
+    if keep <= 0:
+        return list(message_lines), []
+    return list(message_lines[:-keep]), list(message_lines[-keep:])
 
 
 def _is_bad_llm_output(text: str) -> bool:
@@ -65,13 +81,13 @@ def _clean_summary_text(text: str) -> str:
 
 async def _llm_summary(prompt: str, model: str, *, retries: int = 3) -> str | None:
     """
-    Call the model; retry on rate-limit style failures.
-    Returns clean summary text or None (caller keeps prior summary).
+    Call the model. A quota error is not retried here; the Groq client already
+    waited once. Returns clean summary text or None (caller keeps prior summary).
     """
     last = ""
     for attempt in range(retries):
         try:
-            raw = await call_groq_raw(prompt, model=model)
+            raw = await call_groq_raw(prompt, model=model, max_completion_tokens=512)
         except Exception as e:
             print(f"[context_summarizer] LLM exception (try {attempt + 1}): {e}")
             last = str(e)
@@ -85,9 +101,10 @@ async def _llm_summary(prompt: str, model: str, *, retries: int = 3) -> str | No
                 f"{text[:160]!r}"
             )
             last = text
-            # Back off harder on rate limits
-            delay = 3.0 * (attempt + 1) if "rate" in text.lower() or "429" in text else 1.0
-            await asyncio.sleep(delay)
+            # The chat client already waited and retried a quota error once.
+            if is_quota_error(text):
+                return None
+            await asyncio.sleep(1.0)
             continue
 
         return text
@@ -102,10 +119,14 @@ async def summarize_context(
     user_id,
     username=None,
     override_header: str | None = None,
+    keep_recent: int | None = None,
 ):
     """
-    Summarize all but the last few messages into a long-term summary,
-    keep the most recent messages verbatim in a 'New:' block.
+    Fold older New: lines into the long-term summary.
+
+    keep_recent defaults to RECENT_MESSAGE_COUNT (leave that many verbatim).
+    keep_recent=0 folds every stored line and leaves New: empty. The caller
+    does that after a reply once two user messages are stored.
 
     Layout:
 
@@ -182,21 +203,17 @@ async def summarize_context(
             print(f"[context_summarizer] ERROR editing pinned for user {user_id}: {e}")
         return s
 
-    if len(message_lines) <= RECENT_MESSAGE_COUNT:
-        recent_lines = message_lines
-        return await _write_layout(summary_block.strip() or "(none yet)", recent_lines)
+    keep = RECENT_MESSAGE_COUNT if keep_recent is None else max(0, int(keep_recent))
+    parted = partition_recent(message_lines, keep)
+    if parted is None:
+        return await _write_layout(summary_block.strip() or "(none yet)", message_lines)
 
-    history_lines = message_lines[:-RECENT_MESSAGE_COUNT]
-    recent_lines = message_lines[-RECENT_MESSAGE_COUNT:]
-
-    if not history_lines and not summary_block:
-        return await _write_layout("(none yet)", recent_lines)
-
+    history_lines, recent_lines = parted
     history_text = "\n".join(history_lines).strip()
     existing_summary = summary_block.strip()
 
-    if not history_text and existing_summary:
-        return await _write_layout(existing_summary, recent_lines)
+    if not history_text:
+        return await _write_layout(existing_summary or "(none yet)", recent_lines)
 
     sum_model = get_summarizer_model()
     print(f"[context_summarizer] Using model={sum_model}")
@@ -228,8 +245,12 @@ async def summarize_context(
 
     summary_text = await _llm_summary(prompt, sum_model)
     if not summary_text:
-        # Keep last good memory; never store ERROR / rate-limit / instructions
+        # Keep last good memory; never store ERROR / rate-limit / instructions.
+        # When folding everything, put the unsummarized lines back in New:
+        # so a failed call does not drop them.
         summary_text = existing_summary or "(summary unavailable)"
+        if keep == 0:
+            recent_lines = list(message_lines)
         print(
             "[context_summarizer] Keeping previous summary; LLM did not return usable text"
         )

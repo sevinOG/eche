@@ -31,6 +31,11 @@ API_URL = GROQ_API_URL
 
 # Public reply hard limit (chars)
 REPLY_MAX_CHARS = 500
+# Groq counts this reservation against tokens-per-minute before it writes.
+# A normal reply is cut to 500 characters, so 256 is enough. The 2000-character
+# override needs a larger reservation.
+CHAT_COMPLETION_TOKENS = 256
+CHAT_LONG_COMPLETION_TOKENS = 768
 
 # If reply contains these, treat as leaked CoT / instructions
 _LEAK_MARKERS = (
@@ -115,6 +120,36 @@ def _config_snapshot() -> str:
         f"model={_model()} | "
         f"key={'set' if (_api_key() and _api_key() != 'ollama') else ('dummy' if _provider_backend() == 'ollama' else 'MISSING')}"
     )
+
+
+def is_quota_error(msg: str) -> bool:
+    """Groq uses 429 for TPM/RPM, including the 'Request too large' wording."""
+    low = (msg or "").lower()
+    return any(
+        s in low
+        for s in (
+            "429",
+            "rate limit",
+            "rate_limit",
+            "request too large",
+            "tokens per minute",
+            "tokens per day",
+            "too many requests",
+        )
+    )
+
+
+def quota_retry_seconds(msg: str) -> float | None:
+    """Seconds to wait before one retry. None when a retry cannot help."""
+    if not is_quota_error(msg):
+        return None
+    low = (msg or "").lower()
+    if "per day" in low or "tpd" in low:
+        return None
+    match = re.search(r"try again in ([0-9]+(?:\.[0-9]+)?)\s*s", low)
+    if match:
+        return min(20.0, max(2.0, float(match.group(1)) + 0.5))
+    return 8.0
 
 
 def _public_error(msg: str, limit: int = 180) -> str:
@@ -479,52 +514,51 @@ async def _groq_sdk_call(
 
     client = AsyncGroq(api_key=api_key)
 
-    try:
-        kwargs: dict = {
-            "model": model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_completion_tokens": max_completion_tokens,
-            "top_p": top_p,
-            "stream": stream,
-            "stop": None,
-        }
-        if reasoning_effort is not None:
-            kwargs["reasoning_effort"] = reasoning_effort
+    kwargs: dict = {
+        "model": model,
+        "messages": messages,
+        "temperature": temperature,
+        "max_completion_tokens": max_completion_tokens,
+        "top_p": top_p,
+        "stream": stream,
+        "stop": None,
+    }
+    if reasoning_effort is not None:
+        kwargs["reasoning_effort"] = reasoning_effort
 
-        completion = await client.chat.completions.create(**kwargs)
-
-        if stream:
+    async def _create(kw: dict) -> str:
+        completion = await client.chat.completions.create(**kw)
+        if kw.get("stream"):
             parts: list[str] = []
             async for chunk in completion:
                 delta = chunk.choices[0].delta.content if chunk.choices else None
                 if delta:
                     parts.append(delta)
             return "".join(parts)
-
         msg = completion.choices[0].message
         content = getattr(msg, "content", None) or ""
         return content if isinstance(content, str) else str(content or "")
 
+    try:
+        return await _create(kwargs)
     except Exception as e:
-        msg = str(e) or type(e).__name__
-        if "reasoning_effort" in msg.lower() and reasoning_effort is not None:
+        err = str(e) or type(e).__name__
+        if "reasoning_effort" in err.lower() and "reasoning_effort" in kwargs:
+            kwargs.pop("reasoning_effort", None)
             try:
-                kwargs.pop("reasoning_effort", None)
-                completion = await client.chat.completions.create(**kwargs)
-                if stream:
-                    parts = []
-                    async for chunk in completion:
-                        delta = chunk.choices[0].delta.content if chunk.choices else None
-                        if delta:
-                            parts.append(delta)
-                    return "".join(parts)
-                return completion.choices[0].message.content or ""
+                return await _create(kwargs)
             except Exception as e2:
-                msg = str(e2) or type(e2).__name__
+                err = str(e2) or type(e2).__name__
+        wait = quota_retry_seconds(err)
+        if wait is not None:
+            await asyncio.sleep(wait)
+            try:
+                return await _create(kwargs)
+            except Exception as e3:
+                err = str(e3) or type(e3).__name__
         return {
             "error": (
-                f"Groq SDK error: {msg}\n"
+                f"Groq SDK error: {err}\n"
                 f"model=`{model}` | [{_config_snapshot()}]"
             )
         }
@@ -533,7 +567,11 @@ async def _groq_sdk_call(
 # ---------------------------------------------------------------------------
 # MAIN MODEL CALL — Discord + local chat
 # ---------------------------------------------------------------------------
-async def call_groq(prompt: str, user_id: int | None = None):
+async def call_groq(
+    prompt: str,
+    user_id: int | None = None,
+    max_completion_tokens: int = CHAT_COMPLETION_TOKENS,
+):
     """
     Main chat call. Works for both Groq (SDK) and Ollama (REST).
     Returns: (reply_text, detail_text)
@@ -569,7 +607,7 @@ async def call_groq(prompt: str, user_id: int | None = None):
         result = await _groq_sdk_call(
             messages,
             model=model,
-            max_completion_tokens=2048,
+            max_completion_tokens=max_completion_tokens,
             temperature=0.6,
             top_p=0.95,
             reasoning_effort="none",
@@ -578,7 +616,7 @@ async def call_groq(prompt: str, user_id: int | None = None):
 
         if isinstance(result, dict) and "error" in result:
             error_msg = result["error"]
-            if "rate limit" in error_msg.lower():
+            if is_quota_error(error_msg):
                 return ("sorry, i'm being rate limited, check back later", "")
             return (_public_error(error_msg), f"({_provider_label()} error: {error_msg})")
 
@@ -589,7 +627,9 @@ async def call_groq(prompt: str, user_id: int | None = None):
             return (_public_error(err), f"({err})")
 
         url = _api_url()
-        payload = _build_payload(messages, model, max_tokens=1024, temperature=0.7)
+        payload = _build_payload(
+            messages, model, max_tokens=max_completion_tokens, temperature=0.7
+        )
         loop = asyncio.get_event_loop()
         data = await loop.run_in_executor(
             None,
@@ -598,6 +638,8 @@ async def call_groq(prompt: str, user_id: int | None = None):
 
         if "error" in data:
             error_msg = data["error"]
+            if is_quota_error(error_msg):
+                return ("sorry, i'm being rate limited, check back later", "")
             return (_public_error(error_msg), f"({_provider_label()} error: {error_msg})")
 
         raw = _extract_content(data)
@@ -667,7 +709,11 @@ async def call_groq_simple(prompt: str, max_chars: int = 2000):
 # ---------------------------------------------------------------------------
 # RAW TEXT CALL — summarizer, LawManager, tools
 # ---------------------------------------------------------------------------
-async def call_groq_raw(prompt: str, model: str | None = None) -> str:
+async def call_groq_raw(
+    prompt: str,
+    model: str | None = None,
+    max_completion_tokens: int = 512,
+) -> str:
     """
     Sends a prompt and returns ONLY the model's text.
     Optional model= overrides the chat model (memory summarizer).
@@ -680,7 +726,7 @@ async def call_groq_raw(prompt: str, model: str | None = None) -> str:
         result = await _groq_sdk_call(
             messages,
             model=use_model,
-            max_completion_tokens=1024,
+            max_completion_tokens=max_completion_tokens,
             temperature=0.4,
             top_p=0.95,
             reasoning_effort=None,
@@ -694,7 +740,9 @@ async def call_groq_raw(prompt: str, model: str | None = None) -> str:
         return f"ERROR: {_missing_key_error()}"
 
     url = _api_url()
-    payload = _build_payload(messages, use_model, max_tokens=1024, temperature=0.4)
+    payload = _build_payload(
+        messages, use_model, max_tokens=max_completion_tokens, temperature=0.4
+    )
     data = await _async_post(url, payload, _headers(), timeout=90)
 
     if "error" in data:

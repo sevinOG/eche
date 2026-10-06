@@ -112,10 +112,22 @@ async def ensure_context_channel(bot, guild, user_id, username=None):
     return channel, msg
 
 
+def user_lines_in_new_section(content: str) -> list[str]:
+    """USER: lines stored in the recent block, ignoring the long-term summary."""
+    text = content or ""
+    if "New:" not in text:
+        return []
+    new_block = text.split("New:", 1)[1]
+    return [line for line in new_block.splitlines() if line.startswith("USER:")]
+
+
 async def update_context(bot, guild, user_id, message_text, username=None):
     """
     Appends a user's message inside the New: section.
-    Triggers summarization every 3rd message, just like bot memory.
+
+    Does not summarize. The reply is built from this block first. After the
+    reply, archive_user_recents_if_due folds every second pair into long-term
+    memory and clears New:.
 
     Works even when the user is not a member of the home guild.
     """
@@ -190,31 +202,37 @@ async def update_context(bot, guild, user_id, message_text, username=None):
     except Exception as e:
         dprint(f"[context_manager] ERROR editing pinned message for {user_id}: {e}")
 
-    # Check message count in New: section and trigger summarizer every 3rd message
-    try:
-        new_lines = [
-            line
-            for line in new_section.splitlines()
-            if line.strip() and not line.startswith("New:")
-        ]
-        dprint(
-            f"[context_manager] User {user_id} lines in New: section: {len(new_lines)}"
-        )
-        if len(new_lines) >= 3:
-            dprint(
-                f"[context_manager] Reached 3+ messages in user {user_id} New:, "
-                f"triggering summarizer."
-            )
-            from core.context_summarizer import summarize_context
 
-            await summarize_context(
-                bot,
-                guild,
-                user_id,
-                username,
-            )
-    except Exception as e:
-        dprint(
-            f"[context_manager] ERROR checking user summarization trigger "
-            f"for {user_id}: {e}"
-        )
+async def archive_user_recents_if_due(bot, guild, user_id, username=None):
+    """After a reply, fold two stored USER lines into long-term memory.
+
+    The next message then becomes the first line in an empty New: block.
+    A failed summary leaves the lines in New: so they are not dropped.
+    """
+    if guild is None:
+        return
+
+    from core.context_summarizer import ARCHIVE_AFTER_MESSAGES, summarize_context
+
+    channel, pinned = await ensure_context_channel(bot, guild, user_id, username)
+    if not channel or not pinned:
+        return
+
+    lines = user_lines_in_new_section(pinned.content or "")
+    dprint(
+        f"[context_manager] User {user_id} recent USER lines before archive: {len(lines)}"
+    )
+    if len(lines) < ARCHIVE_AFTER_MESSAGES:
+        return
+
+    dprint(
+        f"[context_manager] Archiving {len(lines)} recent USER lines "
+        f"for {user_id} into the long-term block."
+    )
+    await summarize_context(
+        bot,
+        guild,
+        user_id,
+        username,
+        keep_recent=0,
+    )

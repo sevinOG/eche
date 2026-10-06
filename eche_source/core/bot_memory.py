@@ -2,7 +2,6 @@
 
 import discord
 from core.context_manager import get_home_guild
-from core.context_summarizer import summarize_context
 from core.debuglog import dprint
 
 BOT_HEADER = "Self Conversation Data (Group Setting):\n\n"
@@ -45,13 +44,22 @@ async def ensure_bot_memory_channel(bot):
     return channel, msg
 
 
+def bot_lines_in_new_section(content: str) -> list[str]:
+    """BOT: lines stored in the recent block, ignoring the long-term summary."""
+    text = content or ""
+    if "New:" not in text:
+        return []
+    new_block = text.split("New:", 1)[1]
+    return [line for line in new_block.splitlines() if line.startswith("BOT:")]
+
+
 async def log_bot_event(bot, reply_text):
     """
-    Appends the bot's reply INSIDE the New: section.
-    Tracks message count to trigger summarization every 3rd message.
-    """
+    Appends the bot's reply inside the New: section.
 
-    guild = get_home_guild(bot)
+    Does not summarize. Call archive_bot_recents_if_due after the Discord
+    reply has already been sent.
+    """
 
     # 1. Ensure channel + pinned exist
     channel, pinned = await ensure_bot_memory_channel(bot)
@@ -111,20 +119,31 @@ async def log_bot_event(bot, reply_text):
     except Exception as e:
         dprint("ERROR editing bot memory:", e)
 
-    # -----------------------------------------------------
-    # 6. Check message count in New: section and trigger summarizer every 3rd message
-    # -----------------------------------------------------
-    try:
-        new_lines = [line for line in new_section.splitlines() if line.strip() and not line.startswith("New:")]
-        dprint(f"[bot_memory] Current lines in New: section: {len(new_lines)}")
-        if len(new_lines) >= 3:
-            dprint(f"[bot_memory] Reached 3+ messages in New:, triggering summarizer.")
-            await summarize_context(
-                bot,
-                guild,
-                bot.user.id,
-                None,
-                override_header=BOT_HEADER
-            )
-    except Exception as e:
-        dprint(f"[bot_memory] ERROR checking summarization trigger: {e}")
+
+async def archive_bot_recents_if_due(bot):
+    """After the reply is sent, fold two stored BOT lines into long-term memory.
+
+    The next reply then becomes the first line in an empty New: block.
+    A failed summary leaves the lines in New: so they are not dropped.
+    """
+    from core.context_summarizer import ARCHIVE_AFTER_MESSAGES, summarize_context
+
+    guild = get_home_guild(bot)
+    channel, pinned = await ensure_bot_memory_channel(bot)
+    if not channel or not pinned:
+        return
+
+    lines = bot_lines_in_new_section(pinned.content or "")
+    dprint(f"[bot_memory] Recent BOT lines before archive: {len(lines)}")
+    if len(lines) < ARCHIVE_AFTER_MESSAGES:
+        return
+
+    dprint(f"[bot_memory] Archiving {len(lines)} recent BOT lines into the long-term block.")
+    await summarize_context(
+        bot,
+        guild,
+        bot.user.id,
+        None,
+        override_header=BOT_HEADER,
+        keep_recent=0,
+    )
