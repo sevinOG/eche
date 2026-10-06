@@ -71,6 +71,7 @@ _extra_hidden = [
     "discord.player",
     "discord.voice_client",
     "cogs.music",
+    "core.ffmpeg_fetch",
     "cogs.music.music",
     "cogs.music.music_player",
     "cogs.music.music_queue_storage",
@@ -158,18 +159,34 @@ _version = _ROOT / "VERSION"
 if _version.is_file():
     _data_entries.append((str(_version), "."))
 
-# Ship ffmpeg if present next to source (portable builds)
-# Also try common system locations so frozen builds always have it
+# Ship a standalone ffmpeg.exe inside the frozen app.
+# GitHub installs build on a PC that usually has no system ffmpeg.
+# ensure_ffmpeg downloads one static exe when copy-from-disk is not possible.
 _ffmpeg_found = False
-for _ff_name in ("ffmpeg.exe", "ffmpeg"):
-    for _ff_dir in ("", "run", "ffmpeg", "ffmpeg/bin"):
-        _ff_p = _ROOT / _ff_dir / _ff_name if _ff_dir else _ROOT / _ff_name
-        if _ff_p.exists() and _ff_p.is_file():
-            _data_entries.append((str(_ff_p), _ff_dir or "."))
-            _ffmpeg_found = True
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+try:
+    from core.ffmpeg_fetch import ensure_ffmpeg
+    _staged = ensure_ffmpeg(_ROOT, log=print)
+except Exception as _ff_exc:
+    print("[build] FFmpeg stage failed:", _ff_exc)
+    _staged = None
+if _staged and os.path.isfile(_staged):
+    _extra_binaries.append((str(_staged), "."))
+    _ffmpeg_found = True
+    print("[build] bundling ffmpeg:", _staged)
+
+# Fallback: an exe already next to source, or a system install on this PC.
+if not _ffmpeg_found:
+    for _ff_name in ("ffmpeg.exe", "ffmpeg"):
+        for _ff_dir in ("", "run", "ffmpeg", "ffmpeg/bin"):
+            _ff_p = _ROOT / _ff_dir / _ff_name if _ff_dir else _ROOT / _ff_name
+            if _ff_p.exists() and _ff_p.is_file():
+                _data_entries.append((str(_ff_p), _ff_dir or "."))
+                _ffmpeg_found = True
+                break
+        if _ffmpeg_found:
             break
-    if _ffmpeg_found:
-        break
 if not _ffmpeg_found:
     # Try common install locations at build time (including winget on target machine)
     local = os.environ.get("LOCALAPPDATA", "")
@@ -200,7 +217,7 @@ if not _ffmpeg_found:
                     if r.count(os.sep) - wroot.count(os.sep) > 6: d[:] = []
             except: pass
 if not _ffmpeg_found:
-    print("[build] WARNING: no ffmpeg.exe found — music/convert will require system PATH in frozen build")
+    print("[build] WARNING: no ffmpeg.exe bundled — ?play will try to download one on first use")
 
 a = Analysis(
     ['eche_app.py'],

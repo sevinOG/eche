@@ -99,6 +99,18 @@ for %%D in (context cookies logs memories) do (
   if not exist "%SCRIPT_DIR%%%D\.gitkeep" type nul > "%SCRIPT_DIR%%%D\.gitkeep"
 )
 
+echo [1b/5] Staging standalone ffmpeg.exe for ?play...
+pushd "%SCRIPT_DIR%"
+set "PYTHONPATH=%CD%"
+"%PY%" -c "import sys; from core.ffmpeg_fetch import ensure_ffmpeg; p = ensure_ffmpeg(sys.argv[1], log=print); print(p or 'FAILED'); raise SystemExit(0 if p else 1)" "%CD%"
+set "FFERR=!errorlevel!"
+popd
+if not "!FFERR!"=="0" (
+  echo [WARN] Could not stage ffmpeg.exe. The build will continue.
+  echo        ?play downloads it on first use if this PC is online.
+  echo        Or install https://ffmpeg.org and rebuild.
+)
+
 echo [2/5] Freezing with: python -m PyInstaller
 echo        Full log: %LOG%
 echo        ^(this can take several minutes - output streams below^)
@@ -141,6 +153,16 @@ if not exist "%BUILD_OUT%\Eche.exe" (
   exit /b 1
 )
 echo [OK] Freeze: %BUILD_OUT%\Eche.exe
+
+REM Keep ffmpeg.exe beside the exe and inside _internal. find_ffmpeg checks both.
+if exist "%SCRIPT_DIR%ffmpeg.exe" (
+  if not exist "%BUILD_OUT%\_internal" mkdir "%BUILD_OUT%\_internal"
+  copy /y "%SCRIPT_DIR%ffmpeg.exe" "%BUILD_OUT%\_internal\ffmpeg.exe" >nul
+  copy /y "%SCRIPT_DIR%ffmpeg.exe" "%BUILD_OUT%\ffmpeg.exe" >nul
+  echo [OK] ffmpeg.exe is in the portable app
+) else (
+  echo [WARN] Portable app has no ffmpeg.exe yet. ?play will download it on first use.
+)
 
 REM Stage brand icons next to onedir exe as well as under assets/
 if exist "%SCRIPT_DIR%assets\icon.png" (

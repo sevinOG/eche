@@ -36,13 +36,7 @@ Creates/refreshes the portable app in **`../eche/`**:
 ...
 ```
 
-**Music (?play) requires FFmpeg** (not included in the build).  
-Install it first:
-
-```cmd
-winget install ffmpeg
-```
-or https://ffmpeg.org → put `ffmpeg.exe` at `C:\ffmpeg\bin\ffmpeg.exe`.
+**Music (?play)** uses a standalone `ffmpeg.exe`. `BUILD.bat` downloads it into this folder and into the frozen app when the PC does not already have one. If that download fails, install FFmpeg from https://ffmpeg.org (or `winget install ffmpeg`) and build again.
 
 ## Optional: run from source (developers)
 

@@ -33,17 +33,9 @@ winget install --id Git.Git -e --source winget --accept-package-agreements --acc
 winget install --id Python.Python.3.12 -e --source winget --accept-package-agreements --accept-source-agreements
 ```
 
-### Music / ?play requirement (FFmpeg)
+### Music / ?play
 
-**FFmpeg is required for music playback.** It is **not** bundled by the installer.
-
-Install it now (recommended):
-
-```cmd
-winget install ffmpeg
-```
-
-Or download from https://ffmpeg.org and place `ffmpeg.exe` at `C:\ffmpeg\bin\ffmpeg.exe`.
+`?play` needs FFmpeg. Install from GitHub and the build downloads a standalone `ffmpeg.exe` into the app (`_internal\ffmpeg.exe`, and beside `Eche.exe`). A separate FFmpeg install is only needed when that download fails. Then install from https://ffmpeg.org or run `winget install ffmpeg`, and restart Eche.
 
 ### 1) Download the installer
 
@@ -92,13 +84,7 @@ Builds portable app (first time ~2–3 min; needs Python on PATH)
 Eche.exe + _internal/  (onedir layout)
 ```
 
-**Music / ?play requires FFmpeg** (not bundled automatically).  
-After install, run one of:
-
-```cmd
-winget install ffmpeg
-```
-or download from https://ffmpeg.org and put `ffmpeg.exe` in `C:\ffmpeg\bin\ffmpeg.exe`.
+**Music / ?play** uses the `ffmpeg.exe` downloaded during that build. It is inside `_internal` and beside `Eche.exe`. If playback says ffmpeg was not found, start Eche once while online so it can finish the download, or install FFmpeg from https://ffmpeg.org and restart.
 
 Default install location is typically `%LOCALAPPDATA%\Eche`.
 

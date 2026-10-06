@@ -189,6 +189,26 @@ class Music(commands.Cog):
             f"⏱️ `{duration}`"
         )
 
+    async def _resolve_ffmpeg(self, ctx):
+        """Bundled or system ffmpeg, otherwise the one-time standalone download."""
+        ffmpeg_path = find_ffmpeg()
+        if ffmpeg_path:
+            return ffmpeg_path
+        await ctx.send(
+            "Downloading FFmpeg once (about 80 MB) so ?play works on this PC..."
+        )
+        from core.ffmpeg_fetch import ensure_ffmpeg, last_error
+
+        ffmpeg_path = await asyncio.to_thread(ensure_ffmpeg)
+        if ffmpeg_path:
+            return ffmpeg_path
+        detail = last_error() or (
+            "Install ffmpeg from https://ffmpeg.org and restart Eche, "
+            "or place ffmpeg.exe at C:\\ffmpeg\\bin\\ffmpeg.exe."
+        )
+        await ctx.send(f"❌ FFmpeg playback error: ffmpeg was not found.\n{detail}")
+        return None
+
     # ---------------------------------------------------------
     # PLAY NEXT — fully hardened
     # ---------------------------------------------------------
@@ -202,6 +222,14 @@ class Music(commands.Cog):
         self.playing = True
         self.current = self.queue.pop(0)
         await self.update_queue_message(ctx)
+
+        ffmpeg_path = await self._resolve_ffmpeg(ctx)
+        if not ffmpeg_path:
+            self.queue.insert(0, self.current)
+            self.current = None
+            self.playing = False
+            await self.update_queue_message(ctx)
+            return
 
         # ALWAYS build a valid query
         query = self.build_query(self.current)
@@ -223,32 +251,31 @@ class Music(commands.Cog):
 
         await self.send_now_playing(ctx, self.current)
 
-        ffmpeg_path = find_ffmpeg()
-        if not ffmpeg_path:
-            import shutil
-            ffmpeg_path = shutil.which("ffmpeg") or shutil.which("ffmpeg.exe")
         try:
-            if ffmpeg_path:
-                # Aggressively force the directory into PATH at play time.
-                # discord.py's FFmpegPCMAudio does internal shutil.which checks in some versions.
-                ff_dir = os.path.dirname(ffmpeg_path) if ffmpeg_path else None
-                current_path = os.environ.get("PATH", "")
-                if ff_dir and os.path.isdir(ff_dir) and ff_dir not in current_path:
-                    os.environ["PATH"] = ff_dir + os.pathsep + current_path
-                resolved = ffmpeg_path  # always prefer full path we resolved
-                source = discord.FFmpegPCMAudio(audio_url, executable=resolved, **FFMPEG_OPTIONS)
-            else:
-                source = discord.FFmpegPCMAudio(audio_url, **FFMPEG_OPTIONS)
+            # Full path. discord.py's default is the bare name "ffmpeg", which
+            # raises "ffmpeg was not found" when the target PC has none on PATH.
+            ff_dir = os.path.dirname(ffmpeg_path)
+            current_path = os.environ.get("PATH", "")
+            if ff_dir and os.path.isdir(ff_dir) and ff_dir not in current_path:
+                os.environ["PATH"] = ff_dir + os.pathsep + current_path
+            source = discord.FFmpegPCMAudio(audio_url, executable=ffmpeg_path, **FFMPEG_OPTIONS)
         except Exception as e:
             import shutil
+            from core.ffmpeg_fetch import last_error
+            detail = last_error()
+            extra = f"\n{detail}" if detail else ""
             await ctx.send(
                 f"❌ FFmpeg playback error: {e}\n"
-                f"find_ffmpeg returned: {ffmpeg_path}\n"
+                f"ffmpeg path: {ffmpeg_path}\n"
                 f"which(ffmpeg) at play: {shutil.which('ffmpeg')}\n"
-                f"PATH has C:\\ffmpeg? {'C:\\ffmpeg' in os.environ.get('PATH','')}\n"
-                "Install ffmpeg (https://ffmpeg.org) and ensure it is in PATH or at C:\\ffmpeg\\bin\\ffmpeg.exe"
+                f"file exists: {os.path.isfile(ffmpeg_path)}"
+                f"{extra}"
             )
-            return await self.play_next(ctx)
+            self.queue.insert(0, self.current)
+            self.current = None
+            self.playing = False
+            await self.update_queue_message(ctx)
+            return
 
         def after_playback(error):
             asyncio.run_coroutine_threadsafe(
