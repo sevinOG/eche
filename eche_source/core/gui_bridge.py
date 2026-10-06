@@ -50,6 +50,18 @@ def log(message: str, channel: str = "global") -> None:
     emit("log", {"message": str(message), "channel": channel})
 
 
+def tool_log(name: str, user: str, detail: str) -> None:
+    """One expandable tool row for the main-window log."""
+    emit(
+        "tool",
+        {
+            "name": str(name or ""),
+            "user": str(user or ""),
+            "detail": str(detail or ""),
+        },
+    )
+
+
 def chat(text: str) -> None:
     emit("chat", {"text": str(text)})
 

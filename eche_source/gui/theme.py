@@ -7,7 +7,7 @@ import os
 import sys
 
 APP_NAME = "Eche"
-APP_VERSION = "1.3.1"
+APP_VERSION = "3.1.2"
 APP_TITLE = f"{APP_NAME} v{APP_VERSION}"
 
 # Palette (installer-aligned purple + deep dark)
@@ -229,6 +229,28 @@ QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus, QListWidget:focus {{
 QTextEdit, QPlainTextEdit {{
     font-family: "Consolas", "Cascadia Mono", "Courier New", monospace;
     font-size: 12px;
+}}
+QTreeWidget#LogPane {{
+    background-color: {BG_INPUT};
+    color: {TEXT};
+    border: 1px solid #2e2f3a;
+    border-radius: 8px;
+    padding: 6px 8px;
+    font-family: "Consolas", "Cascadia Mono", "Courier New", monospace;
+    font-size: 12px;
+    outline: none;
+    selection-background-color: {ACCENT};
+    selection-color: {TEXT_BRIGHT};
+}}
+QTreeWidget#LogPane::item {{
+    padding: 2px 4px;
+}}
+QTreeWidget#LogPane::item:hover {{
+    background-color: #2b2d38;
+}}
+QTreeWidget#LogPane::item:selected {{
+    background-color: #2a2040;
+    color: {TEXT_BRIGHT};
 }}
 QListWidget {{
     padding: 4px;

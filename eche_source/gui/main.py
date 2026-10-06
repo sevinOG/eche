@@ -28,6 +28,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QHBoxLayout,
     QPushButton,
+    QCheckBox,
     QTextEdit,
     QPlainTextEdit,
     QLabel,
@@ -44,6 +45,7 @@ from gui.widgets.unifierpanel import UnifierPanel
 from gui.widgets.cogmanager import CogManagerWindow
 from gui.widgets.botmemorywindow import BotMemoryWindow
 from gui.widgets.loading import LoadingIndicator
+from gui.widgets.logpane import LogPane
 from gui.widgets.dialogs import (
     present_failure,
     show_error,
@@ -236,8 +238,7 @@ class MainWindow(QMainWindow):
 
         self.chat_output = QTextEdit()
         self.chat_output.setReadOnly(True)
-        self.log_output = QTextEdit()
-        self.log_output.setReadOnly(True)
+        self.log_output = LogPane()
 
         splitter_top.addWidget(self._panel("Chat", self.chat_output))
         splitter_top.addWidget(self._build_local_panel())
@@ -257,6 +258,17 @@ class MainWindow(QMainWindow):
 
         footer = QHBoxLayout()
         footer.setContentsMargins(0, 0, 0, 0)
+        self.admin_tools_box = QCheckBox("Admin tools")
+        self.admin_tools_box.setToolTip(
+            "Inject config/admin_tools.md on your turns. "
+            "Off, and the bot never sees that file or the admin tools."
+        )
+        self.admin_tools_box.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.admin_tools_box.blockSignals(True)
+        self.admin_tools_box.setChecked(self._admin_tools_saved_on())
+        self.admin_tools_box.blockSignals(False)
+        self.admin_tools_box.toggled.connect(self._on_admin_tools_toggled)
+        footer.addWidget(self.admin_tools_box)
         footer.addStretch()
         self.donate_button = QPushButton("pls donate, im poor")
         self.donate_button.setObjectName("donate")
@@ -266,9 +278,50 @@ class MainWindow(QMainWindow):
         footer.addWidget(self.donate_button)
         main_layout.addLayout(footer)
 
+        try:
+            from core.admin_tools import ensure_admin_tools_file
+            ensure_admin_tools_file()
+        except Exception:
+            pass
+
         self.set_status("offline")
         self.append_log(f"[INFO] {APP_TITLE} GUI started.")
         self.append_log("[INFO] Open Settings to manage tokens, then Run Bot.")
+
+    def _admin_tools_saved_on(self) -> bool:
+        try:
+            from core.admin_tools import flag_on
+            return flag_on(load_settings().get("admin_tools"), "")
+        except Exception:
+            return False
+
+    def _on_admin_tools_toggled(self, checked: bool):
+        try:
+            settings = load_settings()
+            settings["admin_tools"] = "1" if checked else "0"
+            from core.secrets import save_all
+            save_all(settings, PROJECT_ROOT)
+            os.environ["ECHE_ADMIN_TOOLS"] = settings["admin_tools"]
+        except Exception as e:
+            self.append_log(f"[WARN] Could not save admin tools toggle: {e}")
+            self.admin_tools_box.blockSignals(True)
+            self.admin_tools_box.setChecked(not checked)
+            self.admin_tools_box.blockSignals(False)
+            return
+        if checked:
+            self.append_log(
+                "[INFO] Admin tools on. config/admin_tools.md is injected for the owner."
+            )
+        else:
+            self.append_log("[INFO] Admin tools off. The bot will not see that file.")
+        settings_box = None
+        window = getattr(self, "settings_window", None)
+        if window is not None:
+            settings_box = getattr(window, "security_admin_box", None)
+        if settings_box is not None and settings_box.isChecked() != checked:
+            settings_box.blockSignals(True)
+            settings_box.setChecked(checked)
+            settings_box.blockSignals(False)
 
     def set_loading(self, busy: bool, message: str = "Working…"):
         try:
@@ -562,7 +615,7 @@ class MainWindow(QMainWindow):
             return
         self.local_output.clear()
 
-    def _panel(self, title: str, body: QTextEdit) -> QFrame:
+    def _panel(self, title: str, body: QWidget) -> QFrame:
         frame = QFrame()
         frame.setObjectName("Panel")
         layout = QVBoxLayout(frame)
@@ -688,6 +741,9 @@ class MainWindow(QMainWindow):
 
         env["DISCORD_TOKEN"] = token
         env["HOME_SERVER_ID"] = home
+        from core.admin_tools import flag_on
+        env["ECHE_ADMIN_TOOLS"] = "1" if flag_on(settings.get("admin_tools"), "") else "0"
+        env["ECHE_OWNER_ID"] = (settings.get("owner_id") or "").strip()
         env["ECHE_RUNNING"] = "BOT"
         env["ECHE_GUI_BRIDGE"] = "1"
         env["PYTHONUNBUFFERED"] = "1"
@@ -886,7 +942,13 @@ class MainWindow(QMainWindow):
                 self._handle_plain_line(raw)
                 return
 
-            if event == "log":
+            if event == "tool":
+                self.append_tool_log(
+                    str(data.get("name") or "tool"),
+                    str(data.get("user") or "someone"),
+                    str(data.get("detail") or ""),
+                )
+            elif event == "log":
                 msg = data.get("message", "")
                 channel = data.get("channel", "")
                 text = f"[{channel}] {msg}" if channel else str(msg)
@@ -1071,8 +1133,24 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-        self.log_output.append(text)
+        self.log_output.append_line(text)
+        self._write_log_file(text)
 
+    def append_tool_log(self, name: str, user: str, detail: str):
+        name = " ".join(str(name or "tool").split()) or "tool"
+        user = " ".join(str(user or "someone").split()) or "someone"
+        summary = f"Eche used tool {name} for {user}"
+        detail = str(detail or "").strip() or "(no output)"
+        try:
+            from core.secrets import scrub_text
+            summary = scrub_text(summary, PROJECT_ROOT)
+            detail = scrub_text(detail, PROJECT_ROOT)
+        except Exception:
+            pass
+        self.log_output.append_tool(summary, detail)
+        self._write_log_file(summary + "\n" + detail)
+
+    def _write_log_file(self, text: str) -> None:
         try:
             with open(LOG_FILE_PATH, "a", encoding="utf-8") as f:
                 f.write(text + "\n")
@@ -1081,7 +1159,7 @@ class MainWindow(QMainWindow):
             print(f"Log write failure: {text}", file=sys.stderr)
 
     def save_logs_to_file(self):
-        log_content = self.log_output.toPlainText()
+        log_content = self.log_output.plain_text()
         try:
             with open(LOG_FILE_PATH, "w", encoding="utf-8") as f:
                 f.write(log_content)

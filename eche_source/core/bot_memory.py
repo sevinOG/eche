@@ -1,8 +1,9 @@
 # bot_memory.py
 
 import discord
-from core.context_manager import get_home_guild
+from core.context_manager import HOME_SERVER_ID, get_home_guild
 from core.debuglog import dprint
+from core.today import today_day
 
 BOT_HEADER = "Self Conversation Data (Group Setting):\n\n"
 
@@ -12,6 +13,12 @@ async def ensure_bot_memory_channel(bot):
     Ensures the bot's memory ALWAYS lives in the HOME SERVER.
     """
     guild = get_home_guild(bot)
+    if guild is None:
+        dprint(
+            "[bot_memory] guild is None — check HOME_SERVER_ID "
+            f"({HOME_SERVER_ID}) / bot is in that server"
+        )
+        return None, None
 
     category_name = "bot-memory"
     category = discord.utils.get(guild.categories, name=category_name)
@@ -98,7 +105,7 @@ async def log_bot_event(bot, reply_text):
     if not new_section.endswith("\n"):
         new_section += "\n"
 
-    new_section = new_section + f"BOT: {reply_text}\n"
+    new_section = new_section + f"BOT: [{today_day()}] {reply_text}\n"
 
     # -----------------------------------------------------
     # 5. Rebuild pinned message
@@ -111,7 +118,7 @@ async def log_bot_event(bot, reply_text):
         new_content = (
             BOT_HEADER +
             "Summary:\n(none yet)\n\nNew:\n" +
-            f"BOT: {reply_text}\n"
+            f"BOT: [{today_day()}] {reply_text}\n"
         )
 
     try:

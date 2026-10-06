@@ -11,7 +11,7 @@ Without inference bot reference files and images stay stored on discord only.
 
 Tokens and secrets stay on your machine. See [PRIVACY.md](PRIVACY.md).
 
-**Version:** see [VERSION](VERSION) (currently **1.3.0**)
+**Version:** see [VERSION](VERSION) (currently **3.1.2**)
 
 **Repo:** https://github.com/sevinOG/eche
 

@@ -206,8 +206,32 @@ FIELD_HELP: dict[str, tuple[str, str]] = {
         "Lists users, shows the pin, lets you change the balance, saves back to Discord. "
         "You need the bot token and Home Server ID set first.",
     ),
+    "owner_id": (
+        "Owner IDs",
+        "### What is this?\n"
+        "The Discord **user ids** of the people allowed to ask Eche to mute, "
+        "timeout, kick, or ban. Separate more than one with a comma. "
+        "Other people can still ask for their own context and for lookups.\n\n"
+        "### How to copy one\n"
+        "1. Discord → Settings → Advanced → **Developer Mode**\n"
+        "2. Right-click a name → **Copy User ID**\n"
+        "3. Paste here. Add another after a comma → **Save Settings**\n\n"
+        "A profile mention works too. The saved value is just the numbers.\n\n"
+        "### If you leave it blank\n"
+        "Eche uses the Discord application owner instead. A value that is "
+        "not a user id matches nobody.\n\n"
+        "### Admin tools switch\n"
+        "The checkbox under this field is the same switch as **Admin tools** "
+        "on the main window. Off, and mute, timeout, kick, and ban are not "
+        "sent to the model.",
+    ),
     "security": (
         "Security folders",
+        "### Owner\n"
+        "Set **Owner IDs** and the **Admin tools** switch here. Separate extra "
+        "owners with a comma. The switch is the same one on the main window. "
+        "Mute, timeout, kick, and ban run only for those owners, and only "
+        "while the switch is on.\n\n"
         "### Cookies\n"
         "Some features (e.g. music / YouTube) may need a cookies file. "
         "Open the cookies folder, add your file, then **restart the bot**.\n\n"

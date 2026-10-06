@@ -149,6 +149,10 @@ async def summarize_context(
             username,
         )
 
+    if not channel or not pinned:
+        print("[context_summarizer] No memory channel — skipping archive.")
+        return None
+
     content = pinned.content or ""
 
     if override_header:

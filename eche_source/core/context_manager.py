@@ -7,6 +7,7 @@ import os
 
 from core.debuglog import dprint
 from core.home_id import home_server_id_from_env
+from core.today import today_day
 
 # Always load HOME_SERVER_ID safely with a fallback.
 # A pasted server-icon URL still resolves to the guild id inside it.
@@ -114,6 +115,20 @@ async def ensure_context_channel(bot, guild, user_id, username=None):
     return channel, msg
 
 
+async def read_raw_context(bot, user_id, username=None) -> str | None:
+    """
+    Full pinned memory for one user on the home guild.
+
+    None when the pin cannot be read. The caller decides who `user_id` is.
+    Chat tools must pass the speaker, not a model-supplied id.
+    """
+    guild = get_home_guild(bot)
+    _channel, pinned = await ensure_context_channel(bot, guild, user_id, username)
+    if pinned is None:
+        return None
+    return pinned.content or ""
+
+
 def user_lines_in_new_section(content: str) -> list[str]:
     """USER: lines stored in the recent block, ignoring the long-term summary."""
     text = content or ""
@@ -184,7 +199,7 @@ async def update_context(bot, guild, user_id, message_text, username=None):
     if not new_section.endswith("\n"):
         new_section += "\n"
 
-    new_section = new_section + f"USER: {message_text}\n"
+    new_section = new_section + f"USER: [{today_day()}] {message_text}\n"
 
     new_content = before_summary + after_summary + new_section
 
@@ -196,7 +211,7 @@ async def update_context(bot, guild, user_id, message_text, username=None):
         new_content = (
             header
             + "Summary:\n(none yet)\n\nNew:\n"
-            + f"USER: {message_text}\n"
+            + f"USER: [{today_day()}] {message_text}\n"
         )
 
     try:

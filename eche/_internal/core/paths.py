@@ -504,6 +504,16 @@ def find_ffmpeg() -> str | None:
     # The portable Eche.exe + _internal/ may contain ffmpeg.exe if it was present when the installer built on the target machine.
     # Check every possible location the onedir layout can put it.
     candidates = []
+    # core/ lives in the source tree or in _internal/core. The staged exe is
+    # next to that tree (GitHub builds write ffmpeg.exe there).
+    core_dir = os.path.dirname(os.path.abspath(__file__))
+    app_dir = os.path.dirname(core_dir)
+    candidates.extend([
+        os.path.join(app_dir, "ffmpeg.exe"),
+        os.path.join(app_dir, "_internal", "ffmpeg.exe"),
+        os.path.join(os.path.dirname(app_dir), "ffmpeg.exe"),
+        os.path.join(os.path.dirname(app_dir), "_internal", "ffmpeg.exe"),
+    ])
     if sys.executable:
         exe_dir = os.path.dirname(os.path.abspath(sys.executable))
         candidates.extend([

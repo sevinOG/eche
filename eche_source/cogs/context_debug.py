@@ -3,7 +3,7 @@
 import discord
 from discord.ext import commands
 
-from core.context_manager import ensure_context_channel, get_home_guild
+from core.context_manager import ensure_context_channel, get_home_guild, read_raw_context
 from core.context_summarizer import summarize_context
 
 
@@ -128,12 +128,11 @@ class ContextDebug(commands.Cog):
     @commands.command(name="context_raw")
     @commands.is_owner()
     async def context_raw(self, ctx, member: discord.Member):
-        guild = get_home_guild(self.bot)
-        channel, pinned = await ensure_context_channel(
-            self.bot, guild, member.id, member.name
-        )
+        content = await read_raw_context(self.bot, member.id, member.name)
+        if content is None:
+            return await ctx.send("Could not read that context.")
 
-        await ctx.send(f"**Raw Context for {member.name}:**\n```\n{pinned.content}\n```")
+        await ctx.send(f"**Raw Context for {member.name}:**\n```\n{content}\n```")
 
     # ---------------------------------------------------------
     # REPAIR BOT MEMORY (FULL AUTO-REBUILD)
@@ -146,6 +145,10 @@ class ContextDebug(commands.Cog):
 
         # 1. Get Bot's memory channel + pinned message
         channel, pinned = await ensure_bot_memory_channel(self.bot)
+        if not channel or not pinned:
+            return await ctx.send(
+                "Could not reach bot memory. Check the home server id and that the bot is in that server."
+            )
         content = pinned.content or ""
 
         # 2. Extract all BOT: lines

@@ -3,6 +3,7 @@
 from core.personality import get_personality_prompt
 from core.context_manager import ensure_context_channel, get_home_guild
 from core.bot_memory import ensure_bot_memory_channel
+from core.today import today_stamp
 
 async def load_user_context(bot, user_id, username):
     """
@@ -57,6 +58,10 @@ async def build_prompt(bot, guild, user_id, username, user_message):
     prompt = f"""
 === IDENTITY (WHO YOU ARE) ===
 {personality}
+
+=== TODAY ===
+{today_stamp()}
+If a question needs a fact, score, news, or date, look it up. Do not guess.
 
 === USER PAST CHAT HISTORY ===
 {user_context}

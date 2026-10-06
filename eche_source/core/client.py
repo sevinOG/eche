@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import os
 import re
+import json
 import asyncio
+from dataclasses import dataclass, field
 import requests
 import aiohttp
 from dotenv import load_dotenv
@@ -36,6 +38,38 @@ REPLY_MAX_CHARS = 500
 # override needs a larger reservation.
 CHAT_COMPLETION_TOKENS = 256
 CHAT_LONG_COMPLETION_TOKENS = 768
+
+# Sent only when the Discord turn includes tools. Kept off the normal call_groq path.
+def tool_use_note() -> str:
+    """Fresh each call so the date is the day the message arrives."""
+    from core.today import today_stamp
+    return (
+        f"Today is {today_stamp()}. "
+        "When the speaker asks a question you would otherwise guess — a fact, "
+        "score, news, date, definition, or current event — call duckduckgo "
+        "with their question as query. Do not answer that kind of question "
+        "from memory. Call other tools only when they ask you to do what that "
+        "tool does. Never print a command, JSON, or tool-call markup."
+    )
+
+
+def lookup_prompt(question: str, notes: str) -> str:
+    """Second-pass prompt. The notes are the lookup. The reply is the chat answer."""
+    from core.today import today_stamp
+    asked = " ".join((question or "").split())
+    if len(asked) > 500:
+        asked = asked[:499].rstrip() + "…"
+    source = (notes or "").strip() or "(no notes)"
+    if len(source) > 1500:
+        source = source[:1499].rstrip() + "…"
+    return (
+        f"Today is {today_stamp()}.\n\n"
+        f"The speaker asked:\n{asked}\n\n"
+        f"Lookup notes:\n{source}\n\n"
+        "Answer in character. Be direct and informative. "
+        "Use only the notes. If they do not contain the answer, say you could not find it. "
+        "Under 500 characters. Do not mention tools, searches, or these notes."
+    )
 
 # If reply contains these, treat as leaked CoT / instructions
 _LEAK_MARKERS = (
@@ -399,67 +433,93 @@ def _finalize_sections(raw: str) -> tuple[str, str]:
 # Shared REST helpers (Ollama)
 # ---------------------------------------------------------------------------
 def _build_payload(messages: list, model: str, max_tokens: int, temperature: float) -> dict:
-    return {
+    payload = {
         "model": model,
         "messages": messages,
         "max_tokens": max_tokens,
         "temperature": temperature,
     }
+    # qwen3.5 and granite 4.2 think by default. The trace spends max_tokens
+    # and the visible content comes back empty, so chat and memory summaries
+    # fail. "none" asks for the answer only. Granite 4.1 ignores it.
+    if _provider_backend() == "ollama":
+        payload["reasoning_effort"] = "none"
+    return payload
+
+
+def _reasoning_effort_rejected(error: str) -> bool:
+    return "reasoning_effort" in (error or "").lower()
 
 
 def _sync_post(url: str, payload: dict, headers: dict, timeout: int = 45) -> dict:
-    try:
-        response = requests.post(url, json=payload, headers=headers, timeout=timeout)
-    except Exception as e:
-        return {"error": _format_transport_error(e, url)}
+    for attempt in range(2):
+        try:
+            response = requests.post(url, json=payload, headers=headers, timeout=timeout)
+        except Exception as e:
+            return {"error": _format_transport_error(e, url)}
 
-    if response.status_code != 200:
-        return {
-            "error": _format_http_error(
+        if response.status_code != 200:
+            err = _format_http_error(
                 response.status_code,
                 response.text,
                 payload.get("model", "?"),
                 url,
             )
-        }
+            if (
+                attempt == 0
+                and "reasoning_effort" in payload
+                and _reasoning_effort_rejected(err)
+            ):
+                payload.pop("reasoning_effort", None)
+                continue
+            return {"error": err}
 
-    try:
-        return response.json()
-    except Exception as e:
-        return {
-            "error": (
-                f"{_provider_label()} returned non-JSON (HTTP {response.status_code}). "
-                f"{e}. Body[:300]={response.text[:300]!r}"
-            )
-        }
+        try:
+            return response.json()
+        except Exception as e:
+            return {
+                "error": (
+                    f"{_provider_label()} returned non-JSON (HTTP {response.status_code}). "
+                    f"{e}. Body[:300]={response.text[:300]!r}"
+                )
+            }
+    return {"error": f"{_provider_label()} request failed. model=`{payload.get('model', '?')}`"}
 
 
 async def _async_post(url: str, payload: dict, headers: dict, timeout: int = 45) -> dict:
-    try:
-        timeout_cfg = aiohttp.ClientTimeout(total=timeout)
-        async with aiohttp.ClientSession(timeout=timeout_cfg) as session:
-            async with session.post(url, json=payload, headers=headers) as resp:
-                text = await resp.text()
-                if resp.status != 200:
-                    return {
-                        "error": _format_http_error(
+    for attempt in range(2):
+        try:
+            timeout_cfg = aiohttp.ClientTimeout(total=timeout)
+            async with aiohttp.ClientSession(timeout=timeout_cfg) as session:
+                async with session.post(url, json=payload, headers=headers) as resp:
+                    text = await resp.text()
+                    if resp.status != 200:
+                        err = _format_http_error(
                             resp.status,
                             text,
                             payload.get("model", "?"),
                             url,
                         )
-                    }
-                try:
-                    return await resp.json(content_type=None)
-                except Exception as e:
-                    return {
-                        "error": (
-                            f"{_provider_label()} returned non-JSON (HTTP {resp.status}). "
-                            f"{e}. Body[:300]={text[:300]!r}"
-                        )
-                    }
-    except Exception as e:
-        return {"error": _format_transport_error(e, url)}
+                        if (
+                            attempt == 0
+                            and "reasoning_effort" in payload
+                            and _reasoning_effort_rejected(err)
+                        ):
+                            payload.pop("reasoning_effort", None)
+                            continue
+                        return {"error": err}
+                    try:
+                        return await resp.json(content_type=None)
+                    except Exception as e:
+                        return {
+                            "error": (
+                                f"{_provider_label()} returned non-JSON (HTTP {resp.status}). "
+                                f"{e}. Body[:300]={text[:300]!r}"
+                            )
+                        }
+        except Exception as e:
+            return {"error": _format_transport_error(e, url)}
+    return {"error": f"{_provider_label()} request failed. model=`{payload.get('model', '?')}`"}
 
 
 def _extract_content(data: dict) -> str | None:
@@ -467,6 +527,91 @@ def _extract_content(data: dict) -> str | None:
         return data["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError):
         return None
+
+
+def _extract_message(data: dict) -> dict | None:
+    try:
+        msg = data["choices"][0]["message"]
+    except (KeyError, IndexError, TypeError):
+        return None
+    return msg if isinstance(msg, dict) else None
+
+
+def _parse_tool_arguments(arguments) -> dict:
+    if isinstance(arguments, dict):
+        return arguments
+    if arguments is None or arguments == "":
+        return {}
+    if isinstance(arguments, str):
+        try:
+            loaded = json.loads(arguments)
+        except Exception:
+            return {}
+        return loaded if isinstance(loaded, dict) else {}
+    return {}
+
+
+def _tool_calls_from_message(msg) -> list[dict]:
+    """OpenAI-style tool_calls from a Groq SDK message or a REST message dict."""
+    if isinstance(msg, dict):
+        raw_calls = msg.get("tool_calls")
+    else:
+        raw_calls = getattr(msg, "tool_calls", None)
+    out: list[dict] = []
+    for tc in raw_calls or []:
+        if isinstance(tc, dict):
+            fn = tc.get("function") or {}
+            name = fn.get("name") if isinstance(fn, dict) else None
+            arguments = fn.get("arguments") if isinstance(fn, dict) else None
+        else:
+            fn = getattr(tc, "function", None)
+            name = getattr(fn, "name", None) if fn is not None else None
+            arguments = getattr(fn, "arguments", None) if fn is not None else None
+        if not name:
+            continue
+        out.append({"name": str(name), "arguments": _parse_tool_arguments(arguments)})
+    return out
+
+
+def _tools_unsupported(err: str) -> bool:
+    """True when the provider rejected the tools parameter, not the prompt."""
+    low = (err or "").lower()
+    if "tool" not in low and "function" not in low:
+        return False
+    return any(
+        marker in low
+        for marker in (
+            "not support",
+            "unsupported",
+            "unknown parameter",
+            "unrecognized",
+            "extra fields",
+            "invalid",
+            "does not",
+            "wasn't",
+            "was not",
+        )
+    )
+
+
+def _relax_request(kwargs: dict, err: str) -> bool:
+    """Drop one unsupported option so the same chat can be retried."""
+    changed = False
+    low = (err or "").lower()
+    if "reasoning_effort" in low and "reasoning_effort" in kwargs:
+        kwargs.pop("reasoning_effort", None)
+        changed = True
+    # A rejection of this flag is not a rejection of tools themselves.
+    if "parallel_tool_calls" in kwargs and "parallel_tool_calls" in low:
+        kwargs.pop("parallel_tool_calls", None)
+        changed = True
+        low = low.replace("parallel_tool_calls", "")
+    if "tools" in kwargs and _tools_unsupported(low):
+        kwargs.pop("tools", None)
+        kwargs.pop("tool_choice", None)
+        kwargs.pop("parallel_tool_calls", None)
+        changed = True
+    return changed
 
 
 # ---------------------------------------------------------------------------
@@ -493,10 +638,13 @@ async def _groq_sdk_call(
     top_p: float = 0.95,
     reasoning_effort: str | None = "none",
     stream: bool = False,
+    tools: list | None = None,
 ) -> str | dict:
     """
     Returns the full content string on success, or {"error": "..."} on failure.
-    reasoning_effort defaults to "none" to reduce native CoT dumps into content.
+    When tools are accepted, success is {"content": str, "tool_calls": list}
+    instead of a bare string. reasoning_effort defaults to "none" to reduce
+    native CoT dumps into content.
     """
     try:
         from groq import AsyncGroq
@@ -525,8 +673,12 @@ async def _groq_sdk_call(
     }
     if reasoning_effort is not None:
         kwargs["reasoning_effort"] = reasoning_effort
+    if tools:
+        kwargs["tools"] = tools
+        kwargs["tool_choice"] = "auto"
+        kwargs["parallel_tool_calls"] = False
 
-    async def _create(kw: dict) -> str:
+    async def _create(kw: dict) -> str | dict:
         completion = await client.chat.completions.create(**kw)
         if kw.get("stream"):
             parts: list[str] = []
@@ -537,14 +689,21 @@ async def _groq_sdk_call(
             return "".join(parts)
         msg = completion.choices[0].message
         content = getattr(msg, "content", None) or ""
-        return content if isinstance(content, str) else str(content or "")
+        if not isinstance(content, str):
+            content = str(content or "")
+        if kw.get("tools"):
+            return {"content": content, "tool_calls": _tool_calls_from_message(msg)}
+        return content
 
     try:
         return await _create(kwargs)
     except Exception as e:
         err = str(e) or type(e).__name__
-        if "reasoning_effort" in err.lower() and "reasoning_effort" in kwargs:
-            kwargs.pop("reasoning_effort", None)
+        # Drop reasoning_effort or tools if this model rejects them, then
+        # keep the existing single quota retry. A tools fallback still answers.
+        for _ in range(2):
+            if not _relax_request(kwargs, err):
+                break
             try:
                 return await _create(kwargs)
             except Exception as e2:
@@ -567,15 +726,52 @@ async def _groq_sdk_call(
 # ---------------------------------------------------------------------------
 # MAIN MODEL CALL — Discord + local chat
 # ---------------------------------------------------------------------------
-async def call_groq(
+@dataclass
+class ModelTurn:
+    """One chat completion. tool_calls is empty on a normal reply."""
+
+    reply: str
+    thoughts: str
+    tool_calls: list = field(default_factory=list)
+    quota: bool = False
+
+
+def _split_completion(result) -> tuple[str, list]:
+    """Content plus native tool calls. Error dicts are handled by the caller."""
+    if isinstance(result, dict) and "tool_calls" in result and "error" not in result:
+        content = result.get("content") or ""
+        if not isinstance(content, str):
+            content = str(content or "")
+        return content, list(result.get("tool_calls") or [])
+    if isinstance(result, str):
+        return result, []
+    return "", []
+
+
+def _quota_turn() -> ModelTurn:
+    return ModelTurn("sorry, i'm being rate limited, check back later", "", [], True)
+
+
+def _error_turn(error_msg: str) -> ModelTurn:
+    return ModelTurn(
+        _public_error(error_msg),
+        f"({_provider_label()} error: {error_msg})",
+        [],
+        False,
+    )
+
+
+async def call_groq_turn(
     prompt: str,
     user_id: int | None = None,
     max_completion_tokens: int = CHAT_COMPLETION_TOKENS,
-):
+    tools: list | None = None,
+    extra_system: str | None = None,
+) -> ModelTurn:
     """
-    Main chat call. Works for both Groq (SDK) and Ollama (REST).
-    Returns: (reply_text, detail_text)
-    Public Discord / Local should use reply_text.
+    Chat completion for Discord. `tools` is an OpenAI-style tool list.
+    A quota miss returns no tool calls, so the caller does not run tools
+    or start another request on that turn.
     """
     memory_block = ""
     if user_id is not None:
@@ -599,9 +795,17 @@ async def call_groq(
         {"role": "system", "content": get_personality_prompt()},
         {"role": "user", "content": prompt},
     ]
+    if tools:
+        messages.append({"role": "system", "content": tool_use_note()})
+    # Admin markdown is passed only when that toggle is on. Empty stays out.
+    admin_note = (extra_system or "").strip()
+    if admin_note:
+        messages.append({"role": "system", "content": admin_note})
 
     model = _model()
     backend = _provider_backend()
+    raw = ""
+    calls: list = []
 
     if backend == "cloud":
         result = await _groq_sdk_call(
@@ -612,46 +816,92 @@ async def call_groq(
             top_p=0.95,
             reasoning_effort="none",
             stream=False,
+            tools=tools or None,
         )
 
         if isinstance(result, dict) and "error" in result:
             error_msg = result["error"]
             if is_quota_error(error_msg):
-                return ("sorry, i'm being rate limited, check back later", "")
-            return (_public_error(error_msg), f"({_provider_label()} error: {error_msg})")
+                return _quota_turn()
+            return _error_turn(error_msg)
 
-        raw = result or ""
+        raw, calls = _split_completion(result)
     else:
         if not _api_key() and backend != "ollama":
             err = _missing_key_error()
-            return (_public_error(err), f"({err})")
+            return ModelTurn(_public_error(err), f"({err})", [], False)
 
         url = _api_url()
         payload = _build_payload(
             messages, model, max_tokens=max_completion_tokens, temperature=0.7
         )
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = "auto"
         loop = asyncio.get_event_loop()
         data = await loop.run_in_executor(
             None,
             lambda: _sync_post(url, payload, _headers(), timeout=90),
         )
 
+        if "error" in data and tools and _tools_unsupported(data["error"]):
+            payload.pop("tools", None)
+            payload.pop("tool_choice", None)
+            data = await loop.run_in_executor(
+                None,
+                lambda: _sync_post(url, payload, _headers(), timeout=90),
+            )
+
         if "error" in data:
             error_msg = data["error"]
             if is_quota_error(error_msg):
-                return ("sorry, i'm being rate limited, check back later", "")
-            return (_public_error(error_msg), f"({_provider_label()} error: {error_msg})")
+                return _quota_turn()
+            return _error_turn(error_msg)
 
-        raw = _extract_content(data)
-        if raw is None:
+        msg = _extract_message(data)
+        calls = _tool_calls_from_message(msg) if msg and payload.get("tools") else []
+        raw = None if msg is None else msg.get("content")
+        if raw is None and not calls:
             error_msg = (
                 f"{_provider_label()} bad response shape — no choices[0].message.content. "
                 f"keys={list(data.keys()) if isinstance(data, dict) else type(data)} "
                 f"| [{_config_snapshot()}]"
             )
-            return (_public_error(error_msg), f"({error_msg})")
+            return _error_turn(error_msg)
+        raw = raw or ""
 
-    return _finalize_sections(raw)
+    if not calls and (raw or "").strip():
+        # Model typed the call instead of using the tool API. Capture it
+        # before the reply sanitizer can cut or replace that text.
+        try:
+            from core.tools import calls_from_model_text, registered_names
+            calls = calls_from_model_text(raw, registered_names())
+        except Exception:
+            calls = []
+
+    reply, thoughts = _finalize_sections(raw)
+    quota = reply.strip().lower().startswith("sorry, i'm being rate limited")
+    if quota:
+        calls = []
+    return ModelTurn(reply, thoughts, calls, quota)
+
+
+async def call_groq(
+    prompt: str,
+    user_id: int | None = None,
+    max_completion_tokens: int = CHAT_COMPLETION_TOKENS,
+):
+    """
+    Main chat call. Works for both Groq (SDK) and Ollama (REST).
+    Returns: (reply_text, detail_text)
+    Public Discord / Local should use reply_text.
+    """
+    turn = await call_groq_turn(
+        prompt,
+        user_id=user_id,
+        max_completion_tokens=max_completion_tokens,
+    )
+    return turn.reply, turn.thoughts
 
 
 # ---------------------------------------------------------------------------

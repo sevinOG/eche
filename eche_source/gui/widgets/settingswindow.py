@@ -487,6 +487,36 @@ class SettingsWindow(QWidget):
         layout = QVBoxLayout(page)
         layout.setContentsMargins(4, 0, 8, 8)
         layout.setSpacing(12)
+        o_body = QVBoxLayout()
+        o_body.setSpacing(12)
+        o_body.addLayout(self._field_block(
+            "Owner IDs",
+            "Discord user ids allowed to use mute, timeout, kick, and ban. "
+            "Separate more than one with a comma. "
+            "Developer Mode, then right-click a name → Copy User ID. "
+            "Leave blank to use the Discord application owner.",
+            secret=False,
+            key="owner_id",
+            help_key="owner_id",
+        ))
+        self.security_admin_box = QCheckBox("Admin tools")
+        self.security_admin_box.setToolTip(
+            "Same switch as the main window. Off, and Eche never sees mute, timeout, kick, or ban."
+        )
+        self.security_admin_box.toggled.connect(self._on_security_admin_toggled)
+        o_body.addWidget(self.security_admin_box)
+        o_hint = QLabel(
+            "The bot needs Kick Members, Ban Members, Moderate Members, and Mute Members, "
+            "and its role has to sit above the person it acts on."
+        )
+        o_hint.setObjectName("FieldHint")
+        o_hint.setWordWrap(True)
+        o_body.addWidget(o_hint)
+        layout.addWidget(self._card(
+            "Owner",
+            "Who may ask Eche to mute, timeout, kick, or ban.",
+            o_body,
+        ))
         c_body = QVBoxLayout()
         c_hint = QLabel(
             "Place optional cookie files here (for example ytcookies.txt for music). "
@@ -776,6 +806,11 @@ class SettingsWindow(QWidget):
             self.provider_combo.blockSignals(False)
 
         self._apply_provider_ui()
+        if hasattr(self, "security_admin_box"):
+            from core.admin_tools import flag_on
+            self.security_admin_box.blockSignals(True)
+            self.security_admin_box.setChecked(flag_on(self.data.get("admin_tools"), ""))
+            self.security_admin_box.blockSignals(False)
 
     def _refresh_ollama_models(self):
         if not hasattr(self, "ollama_model_combo"):
@@ -932,7 +967,40 @@ class SettingsWindow(QWidget):
 
         if hasattr(self, "project_path_edit"):
             payload["project_path"] = self.project_path_edit.text().strip()
+        if hasattr(self, "security_admin_box"):
+            payload["admin_tools"] = "1" if self.security_admin_box.isChecked() else "0"
+        else:
+            admin = (self.data.get("admin_tools") or "").strip()
+            try:
+                admin = (load_settings().get("admin_tools") or admin).strip()
+            except Exception:
+                pass
+            payload["admin_tools"] = admin
+        owner_raw = (payload.get("owner_id") or "").strip()
+        if owner_raw:
+            from core.admin_tools import parse_owner_ids
+            parsed_owners = parse_owner_ids(owner_raw)
+            if parsed_owners:
+                payload["owner_id"] = ", ".join(str(item) for item in parsed_owners)
         return payload
+
+    def _on_security_admin_toggled(self, checked: bool):
+        window = self.main_window
+        box = getattr(window, "admin_tools_box", None) if window is not None else None
+        if box is not None:
+            if box.isChecked() != checked:
+                box.setChecked(checked)
+            return
+        try:
+            settings = load_settings()
+            settings["admin_tools"] = "1" if checked else "0"
+            save_settings(settings)
+        except Exception as e:
+            self.security_admin_box.blockSignals(True)
+            self.security_admin_box.setChecked(not checked)
+            self.security_admin_box.blockSignals(False)
+            if self.main_window and hasattr(self.main_window, "append_log"):
+                self.main_window.append_log(f"[WARN] Could not save admin tools toggle: {e}")
 
     def check_for_updates(self):
         typed = self.project_path_edit.text().strip()
@@ -1060,6 +1128,14 @@ class SettingsWindow(QWidget):
             pass
         self.data = load_settings()
         self._populate_fields()
+        main_box = getattr(self.main_window, "admin_tools_box", None)
+        if main_box is not None:
+            from core.admin_tools import flag_on
+            on = flag_on(self.data.get("admin_tools"), "")
+            if main_box.isChecked() != on:
+                main_box.blockSignals(True)
+                main_box.setChecked(on)
+                main_box.blockSignals(False)
         if hasattr(self, "project_path_edit"):
             self.project_path_edit.setText(
                 resolve_source_root((self.data.get("project_path") or "").strip() or None)

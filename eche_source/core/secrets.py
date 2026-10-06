@@ -35,6 +35,8 @@ PUBLIC_KEYS = (
     "summarizer_prompt_path",
     "project_path",
     "suppress_no_provider_warn",
+    "admin_tools",          # "1" while the Admin tools toggle is on
+    "owner_id",             # Discord user id allowed to use admin tools
 )
 
 # Map settings key -> environment variable used by the bot
@@ -49,6 +51,8 @@ ENV_MAP = {
     "provider_backend": "ECHE_PROVIDER",
     "summarizer_model": "SUMMARIZER_MODEL",
     "summarizer_prompt_path": "SUMMARIZER_PROMPT_PATH",
+    "admin_tools": "ECHE_ADMIN_TOOLS",
+    "owner_id": "ECHE_OWNER_ID",
 }
 
 # Human labels for Settings UI (key -> label)
