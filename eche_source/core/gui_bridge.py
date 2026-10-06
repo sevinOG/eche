@@ -147,11 +147,12 @@ async def _emit_cog_list(bot) -> None:
 async def _announce(bot, text: str) -> None:
     """Send a short message to the first available text channel of the home guild."""
     import os
-    home_id = os.getenv("HOME_SERVER_ID")
+    from core.home_id import home_server_id_from_env
+    home_id = home_server_id_from_env()
     if not home_id:
         log("ANNOUNCE failed: HOME_SERVER_ID not set", channel="bridge")
         return
-    guild = bot.get_guild(int(home_id))
+    guild = bot.get_guild(home_id)
     if guild is None:
         log("ANNOUNCE failed: home guild not found", channel="bridge")
         return

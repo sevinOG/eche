@@ -61,8 +61,9 @@ FIELD_HELP: dict[str, tuple[str, str]] = {
         "stores memory and bank data (folders of channels named `memory-…`).\n\n"
         "### How to copy the ID (no typing long numbers by hand)\n"
         "1. Discord → **User Settings → Advanced → Developer Mode = ON**\n"
-        "2. Right-click your server icon → **Copy Server ID**\n"
+        "2. Right-click the server name → **Copy Server ID**\n"
         "3. Paste here → Save\n\n"
+        "Pasting the server icon link also works. Eche reads the ID from that link.\n\n"
         "### Why it matters\n"
         "Without a home server, the bot cannot create user memory or economy channels. "
         "This is required even if you skip the AI provider key.",

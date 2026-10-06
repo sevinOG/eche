@@ -1,12 +1,12 @@
 import discord
-import os
 from discord.ext import commands
 
 # ⭐ NEW — allow bot economy participation
 from core.bot_whitelist import is_allowed_bot
+from core.home_id import home_server_id_from_env
 
 ECONOMY_CHANNEL_NAME = "economy"
-HOME_SERVER_ID = int(os.getenv("HOME_SERVER_ID", "0"))
+HOME_SERVER_ID = home_server_id_from_env()
 
 
 class Bank(commands.Cog):

@@ -177,9 +177,9 @@ class EconomyWorker(QThread):
                 None,
             )
             return
-        try:
-            home_id = int(home_raw)
-        except ValueError:
+        from core.home_id import parse_home_server_id
+        home_id = parse_home_server_id(home_raw)
+        if not home_id:
             self.finished_ok.emit(False, f"Invalid home server id: {home_raw}", None)
             return
 

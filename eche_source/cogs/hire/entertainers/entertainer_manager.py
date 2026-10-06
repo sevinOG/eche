@@ -51,7 +51,8 @@ async def rebuild_jobs_from_pins(bot):
     in #workers channels under memory-<user_id> categories in the HOME_SERVER only.
     """
 
-    home_id = int(os.getenv("HOME_SERVER_ID"))
+    from core.home_id import home_server_id_from_env
+    home_id = home_server_id_from_env()
     guild = bot.get_guild(home_id)
     if guild is None:
         print("[Entertainers] HOME_SERVER_ID invalid, cannot rebuild jobs.")

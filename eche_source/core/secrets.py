@@ -406,6 +406,10 @@ def save_all(data: dict[str, Any], root: str | None = None) -> None:
     os.makedirs(os.path.join(root, "config"), exist_ok=True)
 
     public = {k: str(data.get(k) or "").strip() for k in PUBLIC_KEYS}
+    from core.home_id import parse_home_server_id
+    saved_home = parse_home_server_id(public.get("home_server_id"))
+    if saved_home:
+        public["home_server_id"] = str(saved_home)
     secrets = {k: str(data.get(k) or "").strip() for k in SECRET_KEYS}
 
     existing = _load_encrypted_secrets(root)

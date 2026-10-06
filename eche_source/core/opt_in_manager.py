@@ -80,11 +80,9 @@ def _parse_memory_id(category: discord.CategoryChannel) -> Optional[int]:
 
 
 async def get_home_guild(bot) -> Optional[discord.Guild]:
+    from core.home_id import parse_home_server_id
     home_id_raw = os.getenv("HOME_SERVER_ID") or os.getenv("HOME_GUILD_ID") or os.getenv("HOME_SERVER") or "0"
-    try:
-        home_id = int(home_id_raw)
-    except ValueError:
-        return None
+    home_id = parse_home_server_id(home_id_raw)
     if home_id == 0:
         return None
 

@@ -626,23 +626,29 @@ class MainWindow(QMainWindow):
             self.append_log("[ERROR] Discord token not set.")
             return
 
-        home = (settings.get("home_server_id") or "").strip() or (
+        from core.home_id import parse_home_server_id
+
+        home_raw = (settings.get("home_server_id") or "").strip() or (
             os.environ.get("HOME_SERVER_ID") or ""
         ).strip()
-        if not home:
+        home_id = parse_home_server_id(home_raw)
+        if not home_id:
             self.set_status("error")
             show_error(
                 self,
-                "Home Server ID is missing",
-                "The bot needs a Discord guild (server) ID for memory and context.",
+                "Home Server ID is missing" if not home_raw else "Home Server ID is not a server ID",
+                "The bot needs a Discord guild (server) ID for memory and context."
+                if not home_raw
+                else "That value is not a server ID. A server icon link is ok; other text is not.",
                 hint=(
                     "Open Settings → Discord and set Home Server ID.\n"
                     "Discord → Settings → Advanced → Developer Mode, then "
-                    "right-click your server → Copy Server ID."
+                    "right-click the server name → Copy Server ID."
                 ),
             )
-            self.append_log("[ERROR] HOME_SERVER_ID not set.")
+            self.append_log("[ERROR] HOME_SERVER_ID not set." if not home_raw else f"[ERROR] HOME_SERVER_ID invalid: {home_raw}")
             return
+        home = str(home_id)
 
         backend = (settings.get("provider_backend") or "cloud").strip().lower()
         provider_key = (settings.get("inf_api_key") or "").strip() or (

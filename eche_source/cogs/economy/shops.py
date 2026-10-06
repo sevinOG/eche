@@ -1,11 +1,12 @@
 # economy/shops.py
 
 import discord
-import os
 import io
 from discord.ext import commands
 
-HOME_SERVER_ID = int(os.getenv("HOME_SERVER_ID", "0"))
+from core.home_id import home_server_id_from_env
+
+HOME_SERVER_ID = home_server_id_from_env()
 
 OWNED_CHANNEL = "owned-items"
 HOSTED_CHANNEL = "hosted-items"

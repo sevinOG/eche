@@ -22,7 +22,8 @@ class ForceOptIn(commands.Cog):
         # BULK MODE — no member provided
         # ---------------------------------------------------------
         if member is None:
-            guild = self.bot.get_guild(int(os.getenv("HOME_SERVER_ID")))
+            from core.home_id import home_server_id_from_env
+            guild = self.bot.get_guild(home_server_id_from_env())
             if guild is None:
                 return await ctx.send("❌ HOME_SERVER_ID is invalid or the bot is not in that server.")
 

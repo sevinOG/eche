@@ -1,11 +1,12 @@
 import discord
 from discord.ext import commands
-import os
 
 from cogs.games.registry import GAME_REGISTRY
 from core.opt_in_manager import load_opted_in, opt_in
 
-HOME_SERVER_ID = int(os.getenv("HOME_SERVER_ID", "0"))
+from core.home_id import home_server_id_from_env
+
+HOME_SERVER_ID = home_server_id_from_env()
 ECONOMY_CHANNEL_NAME = "economy"
 
 LOSS_FLOOR = -5000

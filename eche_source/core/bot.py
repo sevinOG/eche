@@ -102,7 +102,10 @@ def _resolve_home_server_id() -> int:
     """
     Read HOME_SERVER_ID after env/settings are applied.
     Prefer env (GUI injects from settings); fall back to settings.json.
+    A Discord icon URL is accepted: the guild id is taken from the link.
     """
+    from core.home_id import parse_home_server_id
+
     raw = (os.getenv("HOME_SERVER_ID") or "").strip()
     if not raw:
         try:
@@ -110,17 +113,14 @@ def _resolve_home_server_id() -> int:
             from core.paths import user_dir
             cfg = load_all(user_dir())
             raw = (cfg.get("home_server_id") or "").strip()
-            if raw:
-                os.environ["HOME_SERVER_ID"] = raw
         except Exception:
-            pass
-    if not raw:
-        # Keep import soft — eche.main validates and reports a friendly error
-        return 0
-    try:
-        return int(raw)
-    except ValueError:
-        return 0
+            raw = ""
+    guild_id = parse_home_server_id(raw)
+    if guild_id:
+        os.environ["HOME_SERVER_ID"] = str(guild_id)
+        return guild_id
+    # Keep import soft — eche.main validates and reports a friendly error
+    return 0
 
 
 HOME_SERVER_ID = _resolve_home_server_id()

@@ -6,9 +6,11 @@ import discord
 import os
 
 from core.debuglog import dprint
+from core.home_id import home_server_id_from_env
 
-# Always load HOME_SERVER_ID safely with a fallback
-HOME_SERVER_ID = int(os.getenv("HOME_SERVER_ID", "0"))
+# Always load HOME_SERVER_ID safely with a fallback.
+# A pasted server-icon URL still resolves to the guild id inside it.
+HOME_SERVER_ID = home_server_id_from_env()
 
 
 def get_home_guild(bot):

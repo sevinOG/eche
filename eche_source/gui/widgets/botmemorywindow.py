@@ -71,9 +71,20 @@ class BotMemoryWorker(QThread):
             async def on_ready():
                 nonlocal fetched_text, target_pin
                 try:
-                    guild = client.get_guild(int(home_server_id))
+                    from core.home_id import parse_home_server_id
+                    guild_id = parse_home_server_id(str(home_server_id))
+                    if not guild_id:
+                        self.finished_fetch.emit(
+                            False,
+                            "Home Server ID is not a Discord server ID. "
+                            "Copy Server ID, not the server icon link.",
+                            None,
+                        )
+                        await client.close()
+                        return
+                    guild = client.get_guild(guild_id)
                     if not guild:
-                        guild = await client.fetch_guild(int(home_server_id))
+                        guild = await client.fetch_guild(guild_id)
                     
                     category = discord.utils.get(guild.categories, name="bot-memory")
                     channel = None

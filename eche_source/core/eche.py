@@ -105,20 +105,30 @@ def main() -> None:
         )
         sys.exit(1)
 
-    home = (os.getenv("HOME_SERVER_ID") or "").strip()
-    if not home:
+    from core.home_id import parse_home_server_id
+
+    home_raw = (os.getenv("HOME_SERVER_ID") or "").strip()
+    if not home_raw:
         try:
             from core.secrets import load_all
-            home = (load_all(project_root).get("home_server_id") or "").strip()
-            if home:
-                os.environ["HOME_SERVER_ID"] = home
+            home_raw = (load_all(project_root).get("home_server_id") or "").strip()
         except Exception:
-            pass
-    if not home:
-        _emit_fatal(
-            "HOME_SERVER_ID is not set. Add it to .env or GUI Settings before starting the bot."
-        )
+            home_raw = ""
+    home_id = parse_home_server_id(home_raw)
+    if not home_id:
+        if home_raw:
+            _emit_fatal(
+                "HOME_SERVER_ID is not a Discord server ID. "
+                "Enable Developer Mode, right-click the server name, and choose Copy Server ID. "
+                "Do not paste the server icon link."
+            )
+        else:
+            _emit_fatal(
+                "HOME_SERVER_ID is not set. Add it to .env or GUI Settings before starting the bot."
+            )
         sys.exit(2)
+    home = str(home_id)
+    os.environ["HOME_SERVER_ID"] = home
 
     # Import after path bootstrap so core.* resolves
     try:

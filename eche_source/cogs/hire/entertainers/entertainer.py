@@ -40,7 +40,8 @@ class Entertainers(commands.Cog):
         await self.bank.save_bank(ctx.author, bal)
 
         # HOME SERVER ONLY
-        home_id = int(os.getenv("HOME_SERVER_ID"))
+        from core.home_id import home_server_id_from_env
+        home_id = home_server_id_from_env()
         home_guild = self.bot.get_guild(home_id)
         if home_guild is None:
             return await ctx.send("❌ HOME_SERVER_ID invalid.")
