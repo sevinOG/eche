@@ -1,6 +1,6 @@
 # eche_installer_source — deploy / recover wizard
 
-The wizard is a **small one-download EXE** (see monorepo `prebuilt/`). That is the **recommended ready-to-run path**.
+The wizard is a **small one-download EXE** (see monorepo `eche_installer/final/`). That is the **recommended ready-to-run path**.
 
 The **application** it installs is **onedir** (`Eche.exe` + `_internal/`), not a one-file dropper-style freeze. A git clone does not ship a frozen `../eche/` binary tree — that comes from `../eche_source/BUILD.bat` or from the wizard.
 

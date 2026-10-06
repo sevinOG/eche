@@ -33,6 +33,18 @@ winget install --id Git.Git -e --source winget --accept-package-agreements --acc
 winget install --id Python.Python.3.12 -e --source winget --accept-package-agreements --accept-source-agreements
 ```
 
+### Music / ?play requirement (FFmpeg)
+
+**FFmpeg is required for music playback.** It is **not** bundled by the installer.
+
+Install it now (recommended):
+
+```cmd
+winget install ffmpeg
+```
+
+Or download from https://ffmpeg.org and place `ffmpeg.exe` at `C:\ffmpeg\bin\ffmpeg.exe`.
+
 ### 1) Download the installer
 
 Use **only** these official GitHub links (unsigned builds may trip SmartScreen — **More info → Run anyway**).
@@ -79,6 +91,14 @@ Builds portable app (first time ~2–3 min; needs Python on PATH)
        ↓
 Eche.exe + _internal/  (onedir layout)
 ```
+
+**Music / ?play requires FFmpeg** (not bundled automatically).  
+After install, run one of:
+
+```cmd
+winget install ffmpeg
+```
+or download from https://ffmpeg.org and put `ffmpeg.exe` in `C:\ffmpeg\bin\ffmpeg.exe`.
 
 Default install location is typically `%LOCALAPPDATA%\Eche`.
 

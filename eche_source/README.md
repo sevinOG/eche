@@ -3,7 +3,7 @@
 Application source for **Eche** (formerly Echelon). Freeze output is **onedir** (folder), not one-file.
 
 **Ready-to-run without building?** Use the monorepo installer:  
-[prebuilt/Eche-Installer.exe](https://github.com/sevinOG/eche/raw/main/prebuilt/Eche-Installer.exe)  
+[Eche-Installer.exe](https://github.com/sevinOG/eche/raw/main/eche_installer/final/Eche-Installer.exe)  
 `../eche/` is only populated after `BUILD.bat` — it is not a pre-shipped binary tree in git.
 
 ## Why onedir?
@@ -35,6 +35,14 @@ Creates/refreshes the portable app in **`../eche/`**:
 ../eche/assets/
 ...
 ```
+
+**Music (?play) requires FFmpeg** (not included in the build).  
+Install it first:
+
+```cmd
+winget install ffmpeg
+```
+or https://ffmpeg.org → put `ffmpeg.exe` at `C:\ffmpeg\bin\ffmpeg.exe`.
 
 ## Optional: run from source (developers)
 

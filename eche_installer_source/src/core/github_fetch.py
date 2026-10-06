@@ -41,7 +41,7 @@ def repo_web_url() -> str:
 def one_tap_installer_url() -> str:
     return (
         f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/raw/main/"
-        f"prebuilt/Eche-Installer.exe"
+        f"eche_installer/final/Eche-Installer.exe"
     )
 
 
