@@ -502,13 +502,17 @@ def find_ffmpeg() -> str | None:
         os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "ffmpeg", "bin", "ffmpeg.exe"),
     ):
         if known and os.path.isfile(known):
-            return os.path.abspath(known)
+            result = os.path.abspath(known)
+            _force_ffmpeg_in_path(result)
+            return result
 
     # Try PATH first (most reliable on dev machines with C:\ffmpeg or system install)
     for name in ("ffmpeg", "ffmpeg.exe"):
         found = shutil.which(name)
         if found and os.path.isfile(found):
-            return os.path.abspath(found)
+            result = os.path.abspath(found)
+            _force_ffmpeg_in_path(result)
+            return result
 
     # Manual PATH walk as backup (some environments break shutil.which)
     path_env = os.environ.get("PATH", "")
@@ -518,7 +522,9 @@ def find_ffmpeg() -> str | None:
         for name in ("ffmpeg.exe", "ffmpeg"):
             cand = os.path.join(p, name)
             if os.path.isfile(cand):
-                return os.path.abspath(cand)
+                result = os.path.abspath(cand)
+                _force_ffmpeg_in_path(result)
+                return result
 
     candidates: list[str] = []
     root = package_root()
@@ -555,8 +561,30 @@ def find_ffmpeg() -> str | None:
     )
     for path in candidates:
         if path and os.path.isfile(path):
-            return os.path.abspath(path)
+            result = os.path.abspath(path)
+            # Force dir into PATH so discord.FFmpegPCMAudio can find it even if it falls back to which()
+            _force_ffmpeg_in_path(result)
+            return result
     return None
+
+
+def _force_ffmpeg_in_path(ffmpeg_path: str | None):
+    """Ensure the directory containing ffmpeg is at the VERY FRONT of PATH.
+    discord.py's FFmpegPCMAudio and internal which() checks are extremely sensitive to this.
+    Must be called as early as possible, before importing discord.
+    """
+    if not ffmpeg_path:
+        return
+    try:
+        import os
+        ff_dir = os.path.dirname(ffmpeg_path)
+        if ff_dir and os.path.isdir(ff_dir):
+            current = os.environ.get("PATH", "")
+            # Remove any existing occurrence so we can put it at the absolute front
+            parts = [p for p in current.split(os.pathsep) if p and p != ff_dir]
+            os.environ["PATH"] = ff_dir + os.pathsep + os.pathsep.join(parts)
+    except Exception:
+        pass
 
 
 def describe_layout() -> dict[str, str | bool | None]:

@@ -1,9 +1,25 @@
+# ============================================================
+# ABSOLUTE TOP: FORCE FFMPEG BEFORE ANY DISCORD IMPORT
+# discord.player does shutil.which + Popen at import time in some paths.
+# This must run before "import discord" below.
+# ============================================================
+import os
+import shutil
+from core.paths import ensure_user_layout, find_ffmpeg
+
+_ffmpeg_path = find_ffmpeg()
+if _ffmpeg_path:
+    _ff_dir = os.path.dirname(_ffmpeg_path)
+    if _ff_dir and os.path.isdir(_ff_dir):
+        current = os.environ.get("PATH", "")
+        if _ff_dir not in current:
+            os.environ["PATH"] = _ff_dir + os.pathsep + current
+    _ = shutil.which("ffmpeg") or shutil.which("ffmpeg.exe")
+
 import discord
 from discord.ext import commands
 import asyncio
 import re
-import os
-from core.paths import ensure_user_layout, find_ffmpeg
 from cogs.music.music_queue_storage import load_queue, save_queue
 
 try:
@@ -208,13 +224,30 @@ class Music(commands.Cog):
         await self.send_now_playing(ctx, self.current)
 
         ffmpeg_path = find_ffmpeg()
+        if not ffmpeg_path:
+            import shutil
+            ffmpeg_path = shutil.which("ffmpeg") or shutil.which("ffmpeg.exe")
         try:
             if ffmpeg_path:
-                source = discord.FFmpegPCMAudio(audio_url, executable=ffmpeg_path, **FFMPEG_OPTIONS)
+                # Aggressively force the directory into PATH at play time.
+                # discord.py's FFmpegPCMAudio does internal shutil.which checks in some versions.
+                ff_dir = os.path.dirname(ffmpeg_path) if ffmpeg_path else None
+                current_path = os.environ.get("PATH", "")
+                if ff_dir and os.path.isdir(ff_dir) and ff_dir not in current_path:
+                    os.environ["PATH"] = ff_dir + os.pathsep + current_path
+                resolved = ffmpeg_path  # always prefer full path we resolved
+                source = discord.FFmpegPCMAudio(audio_url, executable=resolved, **FFMPEG_OPTIONS)
             else:
                 source = discord.FFmpegPCMAudio(audio_url, **FFMPEG_OPTIONS)
         except Exception as e:
-            await ctx.send(f"❌ FFmpeg playback error: {e}\nInstall ffmpeg (https://ffmpeg.org) and ensure `ffmpeg` is in PATH or at C:\\ffmpeg\\bin\\ffmpeg.exe")
+            import shutil
+            await ctx.send(
+                f"❌ FFmpeg playback error: {e}\n"
+                f"find_ffmpeg returned: {ffmpeg_path}\n"
+                f"which(ffmpeg) at play: {shutil.which('ffmpeg')}\n"
+                f"PATH has C:\\ffmpeg? {'C:\\ffmpeg' in os.environ.get('PATH','')}\n"
+                "Install ffmpeg (https://ffmpeg.org) and ensure it is in PATH or at C:\\ffmpeg\\bin\\ffmpeg.exe"
+            )
             return await self.play_next(ctx)
 
         def after_playback(error):

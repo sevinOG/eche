@@ -12,6 +12,27 @@ dprint("FFMPEG PATH:", shutil.which("ffmpeg"))
 dprint(os.path.exists("cookies/ytcookies.txt"))
 dprint(os.path.abspath("cookies/ytcookies.txt"))
 
+# ---------------------------------------------------------
+# VERY EARLY FFMPEG PATH FORCE (before discord import)
+# This is critical because discord.player does shutil.which checks at import/load time.
+# ---------------------------------------------------------
+try:
+    from core.paths import find_ffmpeg
+except Exception:
+    find_ffmpeg = None  # type: ignore
+
+_early_ff = find_ffmpeg() if find_ffmpeg else None
+if _early_ff:
+    _ff_dir = os.path.dirname(_early_ff)
+    if _ff_dir and os.path.isdir(_ff_dir):
+        current = os.environ.get("PATH", "")
+        # Put at the very front
+        if _ff_dir in current:
+            parts = [p for p in current.split(os.pathsep) if p != _ff_dir]
+            current = os.pathsep.join(parts)
+        os.environ["PATH"] = _ff_dir + os.pathsep + current
+        dprint(">>> EARLY FORCED FFMPEG DIR TO FRONT OF PATH:", _ff_dir)
+        dprint(">>> which(ffmpeg) after early force:", shutil.which("ffmpeg"))
 
 # ---------------------------------------------------------
 # OPUS LOAD (works in source + frozen exe)
@@ -37,6 +58,19 @@ dprint(">>> OPUS LOADED:", discord.opus.is_loaded())
 
 FFMPEG_PATH = find_ffmpeg() if find_ffmpeg else None
 dprint(">>> FFMPEG PATH (resolved):", FFMPEG_PATH or shutil.which("ffmpeg"))
+
+# Re-force after full import (belt + suspenders)
+if FFMPEG_PATH:
+    ff_dir = os.path.dirname(FFMPEG_PATH)
+    if ff_dir and os.path.isdir(ff_dir):
+        current = os.environ.get("PATH", "")
+        if ff_dir in current:
+            parts = [p for p in current.split(os.pathsep) if p != ff_dir]
+            current = os.pathsep.join(parts)
+        os.environ["PATH"] = ff_dir + os.pathsep + current
+        dprint(">>> RE-FORCED FFMPEG DIR TO FRONT OF PATH:", ff_dir)
+        dprint(">>> which(ffmpeg) after re-force:", shutil.which("ffmpeg"))
+
 
 # ---------------------------------------------------------
 # NORMAL IMPORTS

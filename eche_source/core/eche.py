@@ -8,6 +8,23 @@ from __future__ import annotations
 import os
 import sys
 
+# ============================================================
+# ABSOLUTELY EARLIEST FFMPEG PATH FORCE
+# Must happen before ANY discord import, because discord.player
+# does shutil.which("ffmpeg") checks at import time in some paths.
+# ============================================================
+try:
+    from core.paths import find_ffmpeg
+    _ff = find_ffmpeg()
+    if _ff:
+        _ff_dir = os.path.dirname(_ff)
+        if _ff_dir and os.path.isdir(_ff_dir):
+            current = os.environ.get("PATH", "")
+            parts = [p for p in current.split(os.pathsep) if p and p != _ff_dir]
+            os.environ["PATH"] = _ff_dir + os.pathsep + os.pathsep.join(parts)
+except Exception:
+    pass
+
 
 def _bootstrap_paths() -> str:
     """
