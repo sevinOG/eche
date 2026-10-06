@@ -171,16 +171,34 @@ for _ff_name in ("ffmpeg.exe", "ffmpeg"):
     if _ffmpeg_found:
         break
 if not _ffmpeg_found:
-    # Try common install locations at build time
+    # Try common install locations at build time (including winget on target machine)
+    local = os.environ.get("LOCALAPPDATA", "")
     for _sys_ff in (
         r"C:\ffmpeg\bin\ffmpeg.exe",
         r"C:\Program Files\ffmpeg\bin\ffmpeg.exe",
-        os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "ffmpeg", "bin", "ffmpeg.exe"),
+        os.path.join(local, "Programs", "ffmpeg", "bin", "ffmpeg.exe"),
+        # winget common
+        os.path.join(local, "Microsoft", "WinGet", "Packages", "Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe", "ffmpeg-7.1-full_build", "bin", "ffmpeg.exe"),
     ):
         if os.path.isfile(_sys_ff):
             _data_entries.append((_sys_ff, "."))
             _ffmpeg_found = True
             break
+    if not _ffmpeg_found:
+        # walk winget packages for any ffmpeg
+        wroot = os.path.join(local, "Microsoft", "WinGet", "Packages")
+        if os.path.isdir(wroot):
+            try:
+                for r, d, fs in os.walk(wroot):
+                    if any(f.lower() == "ffmpeg.exe" for f in fs):
+                        for f in fs:
+                            if f.lower() == "ffmpeg.exe":
+                                _data_entries.append((os.path.join(r, f), "."))
+                                _ffmpeg_found = True
+                                break
+                    if _ffmpeg_found: break
+                    if r.count(os.sep) - wroot.count(os.sep) > 6: d[:] = []
+            except: pass
 if not _ffmpeg_found:
     print("[build] WARNING: no ffmpeg.exe found — music/convert will require system PATH in frozen build")
 
