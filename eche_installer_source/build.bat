@@ -102,7 +102,7 @@ set /a SIZE_MB=%SIZE% / 1024 / 1024
 
 if not exist "%SCRIPT_DIR%final" mkdir "%SCRIPT_DIR%final"
 copy /y "%OUT_EXE%" "%SCRIPT_DIR%final\Eche-Installer.exe" >nul
-echo 3.1.2 > "%SCRIPT_DIR%final\VERSION"
+echo 2.1.0 > "%SCRIPT_DIR%final\VERSION"
 echo Eche Installer - run Eche-Installer.exe > "%SCRIPT_DIR%final\README.txt"
 
 echo.

@@ -4,7 +4,7 @@ from pathlib import Path
 
 APP_NAME = "Eche"
 APP_PUBLISHER = "Eche Team"
-APP_VERSION = "3.1.2"
+APP_VERSION = "2.1.0"
 
 def register_uninstall(install_dir: str, uninstall_exe: str, display_icon: str = None, version: str = APP_VERSION) -> bool:
     if platform.system() != "Windows":

@@ -618,6 +618,27 @@ class EcheInstallerWindow(QMainWindow):
         self.progress_bar.setFixedHeight(28)
         layout.addWidget(self.progress_bar)
 
+        busy_row = QHBoxLayout()
+        busy_row.setSpacing(8)
+        self.busy_icon = QLabel("")
+        self.busy_icon.setFixedWidth(28)
+        self.busy_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.busy_icon.setStyleSheet(
+            f"background: transparent; color: {ECHE_PALETTE['accent']}; "
+            f"font-size: 18px; font-weight: 700;"
+        )
+        self.busy_caption = QLabel("")
+        self.busy_caption.setObjectName("MutedLabel")
+        busy_row.addWidget(self.busy_icon)
+        busy_row.addWidget(self.busy_caption, stretch=1)
+        layout.addLayout(busy_row)
+        self._busy_frames = ("◐", "◓", "◑", "◒")
+        self._busy_i = 0
+        self._busy_ticks = 0
+        self._busy_timer = QTimer(self)
+        self._busy_timer.setInterval(140)
+        self._busy_timer.timeout.connect(self._tick_busy)
+
         self.status_label = QLabel("Ready to install")
         self.status_label.setObjectName("MutedLabel")
         self.status_label.setWordWrap(True)
@@ -1015,11 +1036,47 @@ class EcheInstallerWindow(QMainWindow):
             self.source_type = "exe" if file_path.lower().endswith(".exe") else "dist_dir"
             self.radio_exe.setChecked(True)
 
+    def _install_input_error(self, message: str):
+        self._log(message)
+        self._set_install_busy(False)
+        self.btn_install_now.setEnabled(True)
+        self.btn_back.setEnabled(True)
+
+    def _set_install_busy(self, busy: bool):
+        if busy:
+            self._busy_ticks = 0
+            self._busy_i = 0
+            self.busy_icon.setText(self._busy_frames[0])
+            self.busy_caption.setText("Working…")
+            if not self._busy_timer.isActive():
+                self._busy_timer.start()
+        else:
+            self._busy_timer.stop()
+            self.busy_icon.setText("")
+            self.busy_caption.setText("")
+            if self.progress_bar.maximum() == 0:
+                self.progress_bar.setRange(0, 100)
+
+    def _tick_busy(self):
+        self._busy_i = (self._busy_i + 1) % len(self._busy_frames)
+        self.busy_icon.setText(self._busy_frames[self._busy_i])
+        self._busy_ticks += 1
+        elapsed = int(self._busy_ticks * 0.14)
+        mins, secs = divmod(elapsed, 60)
+        if self.progress_bar.maximum() == 0:
+            self.busy_caption.setText(f"Still working  {mins}:{secs:02d}")
+        else:
+            self.busy_caption.setText(f"Working  {mins}:{secs:02d}")
+
     def _start_install(self):
         self.btn_install_now.setEnabled(False)
         self.btn_back.setEnabled(False)
         self.log_view.clear()
+        self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
+        self._set_install_busy(True)
+        self._log("Install started. A long first install is the download and the app build.")
+        self._log("The spinner stays on while that work is running.")
 
         source_text = self.source_input.text().strip()
         if getattr(self, "radio_github", None) and self.radio_github.isChecked():
@@ -1034,24 +1091,18 @@ class EcheInstallerWindow(QMainWindow):
             source_text = self.source_input.text().strip() or str(self.default_repo)
             src_path = Path(source_text)
             if src_path.is_file() or src_path.suffix.lower() == ".exe":
-                self._log(
+                self._install_input_error(
                     "ERROR: Local source install needs a source folder, not an executable."
                 )
-                self.btn_install_now.setEnabled(True)
-                self.btn_back.setEnabled(True)
                 return
             if not src_path.is_dir():
-                self._log(f"ERROR: Source folder not found: {src_path}")
-                self.btn_install_now.setEnabled(True)
-                self.btn_back.setEnabled(True)
+                self._install_input_error(f"ERROR: Source folder not found: {src_path}")
                 return
             if not self._looks_like_source_dir(src_path):
-                self._log(
+                self._install_input_error(
                     f"ERROR: {src_path} does not look like an Eche source tree "
                     "(expected eche_app.py, core/, or BUILD.bat)."
                 )
-                self.btn_install_now.setEnabled(True)
-                self.btn_back.setEnabled(True)
                 return
             stype = "source_dir"
         elif not source_text:
@@ -1059,16 +1110,12 @@ class EcheInstallerWindow(QMainWindow):
                 source_text = str(self.source_path)
                 stype = self.source_type or "exe"
             else:
-                self._log("ERROR: No source selected. Cannot install.")
-                self.btn_install_now.setEnabled(True)
-                self.btn_back.setEnabled(True)
+                self._install_input_error("ERROR: No source selected. Cannot install.")
                 return
         else:
             src_path = Path(source_text)
             if not src_path.exists():
-                self._log(f"ERROR: Source path does not exist: {src_path}")
-                self.btn_install_now.setEnabled(True)
-                self.btn_back.setEnabled(True)
+                self._install_input_error(f"ERROR: Source path does not exist: {src_path}")
                 return
             if src_path.is_file() and src_path.suffix.lower() == ".exe":
                 stype = "exe"
@@ -1109,15 +1156,23 @@ class EcheInstallerWindow(QMainWindow):
             sb.setValue(sb.maximum())
 
     def _on_progress(self, pct: int, msg: str):
-        self.progress_bar.setValue(pct)
+        if pct < 0:
+            if self.progress_bar.maximum() != 0:
+                self.progress_bar.setRange(0, 0)
+        else:
+            if self.progress_bar.maximum() == 0:
+                self.progress_bar.setRange(0, 100)
+            self.progress_bar.setValue(max(0, min(100, pct)))
         if msg:
             self.status_label.setText(msg)
 
     def _on_install_finished(self, success: bool):
         self.install_success = success
+        self._set_install_busy(False)
         self.btn_install_now.setEnabled(True)
         self.btn_back.setEnabled(True)
         if success:
+            self.progress_bar.setRange(0, 100)
             self.progress_bar.setValue(100)
             self.status_label.setText("Installation successful")
             self._log("=== INSTALL SUCCESS ===")

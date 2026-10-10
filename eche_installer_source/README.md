@@ -1,29 +1,27 @@
-# eche_installer_source — deploy / recover wizard
+# Eche Installer
 
-The wizard is a **small one-download EXE** (see monorepo `eche_installer/final/`). That is the **recommended ready-to-run path**.
+This folder is the installer only. The Discord bot and the desktop app live in `eche_source`. App instructions are in the repo [README](../README.md).
 
-The **application** it installs is **onedir** (`Eche.exe` + `_internal/`), not a one-file dropper-style freeze. A git clone does not ship a frozen `../eche/` binary tree — that comes from `../eche_source/BUILD.bat` or from the wizard.
+The ready-to-run download is `eche_installer/final/Eche-Installer.exe`. Source version **2.1.0**. That exe keeps its old version number until `build.bat` is run again.
 
-Monorepo: [../README.md](../README.md) · Privacy: [../PRIVACY.md](../PRIVACY.md).
+## What the wizard installs
 
-## Scripts
+| Choice | Result |
+|--------|--------|
+| GitHub | Downloads `eche_source` from sevinOG/eche `main`, then builds `Eche.exe` if Python is on PATH |
+| Portable app | Copies an existing `Eche.exe` folder |
+| Local source | Copies an `eche_source` tree |
+| Recover source | Pulls source files back out of a portable app folder |
 
-| Script | What |
-|--------|------|
-| **`build.bat`** | Build `dist\Eche-Installer.exe` |
-| **`install.bat`** | Launch the wizard (auto-builds if missing) |
+The installer does not install itself. A GitHub install never copies `eche_installer_source`.
 
-Uses `eche_source\.venv` when present. Always runs  
-`python -m PyInstaller` (never the fragile `pyinstaller.exe` launcher).
+## During install
 
-## Wizard directions
+The install page shows a spinner and a timer the whole time. The download and the first `BUILD.bat` are the long parts. Pip and PyInstaller can sit for several minutes. The spinner means the window is still working. Leave it until the finish page appears.
 
-1. Install **app** from GitHub (source → `RUN_ECHE.bat` / optional freeze)  
-2. Install **app** from portable onedir folder / `Eche.exe`  
-3. Install **app** from source tree  
-4. Recover **source** from a portable app  
+Default folder: `%LOCALAPPDATA%\Eche`.
 
-## Build (maintainers)
+## Build this installer
 
 ```powershell
 python -m venv .venv
@@ -32,4 +30,8 @@ python -m venv .venv
 .\build.bat
 ```
 
-Code-signing `Eche-Installer.exe` is recommended to reduce SmartScreen false positives.
+`build.bat` uses `eche_source\.venv` when that venv is already there. It runs `python -m PyInstaller`, then copies `dist\Eche-Installer.exe` to `final\`.
+
+`install.bat` opens the wizard and builds it first if the exe is missing.
+
+Code-signing `Eche-Installer.exe` reduces SmartScreen warnings. Unsigned builds are normal for this repo: More info, then Run anyway.

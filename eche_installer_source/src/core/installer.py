@@ -89,9 +89,7 @@ class Installer:
                         exe = try_fetch_portable_app_from_release(install_path, log=self.log, progress=self.progress)
                         if exe:
                             self.log(f"Portable app included: {exe}")
-                            for p in install_path.rglob("*"):
-                                if p.is_file() and str(p) not in copied_files:
-                                    copied_files.append(str(p))
+                            copied_files.append(str(exe))
                     except Exception as pe:
                         self.log(f"Portable overlay skipped: {pe}")
 
@@ -101,19 +99,20 @@ class Installer:
                         if sibling.exists() and self._is_real_app_exe(sibling):
                             exe_candidate = sibling
                     if not exe_candidate:
-                        self.log("No prebuilt Eche.exe - auto-building now (2-3 min, one time)...")
-                        self.progress(50, "Building Eche.exe automatically...")
+                        self.log(
+                            "No prebuilt Eche.exe. Building it now. "
+                            "This often takes several minutes. The spinner means the installer is still working."
+                        )
+                        self.progress(-1, "Building Eche.exe. This often takes several minutes…")
                         built = self._auto_build_app(install_path)
                         if built and built.exists():
                             self.log(f"Auto-build succeeded: {built}")
                             exe_candidate = built
-                            for p in install_path.rglob("*"):
-                                if p.is_file() and str(p) not in copied_files:
-                                    copied_files.append(str(p))
-                            # re-check main exe after build
+                            copied_files.append(str(built))
                             sibling = install_path.parent / "eche" / "Eche.exe"
                             if sibling.exists():
                                 exe_candidate = sibling
+                                copied_files.append(str(sibling))
                         else:
                             self.log("Auto-build did not produce Eche.exe - will fall back to RUN_ECHE.bat")
                     self.log(f"[SUCCESS] GitHub install finished -> {install_path}")
@@ -125,8 +124,10 @@ class Installer:
                     return False
                 finally:
                     if tmp_root:
-                        try: _shutil.rmtree(tmp_root, ignore_errors=True)
-                        except: pass
+                        try:
+                            _shutil.rmtree(tmp_root, ignore_errors=True)
+                        except OSError:
+                            pass
 
             elif opts.source_type == "recover_source":
                 ok = self._recover_source_from_app(source_path, install_path, copied_files)
@@ -230,38 +231,77 @@ class Installer:
             import traceback; self.log(traceback.format_exc())
             return False
 
+    def _iter_copy_files(self, src: Path):
+        """Walk source without descending into venv, build output, or git metadata."""
+        skip = {".venv", "__pycache__", "dist", "build", ".git"}
+        for dirpath, dirnames, filenames in os.walk(src):
+            dirnames[:] = [name for name in dirnames if name.lower() not in skip]
+            for name in filenames:
+                yield Path(dirpath) / name
+
     def _copy_tree(self, src: Path, dst: Path, copied_files: List[str]):
         src = Path(src)
-        total = sum(1 for _ in src.rglob("*") if _.is_file())
         count = 0
-        for item in src.rglob("*"):
-            if self._cancel: break
-            if item.is_file():
-                if ".venv" in str(item) or "__pycache__" in str(item): continue
-                rel = item.relative_to(src)
-                target = dst / rel
-                target.parent.mkdir(parents=True, exist_ok=True)
-                try:
-                    shutil.copy2(item, target)
-                    copied_files.append(str(target))
-                    count += 1
-                    if count % 50 == 0:
-                        pct = 10 + int(50 * count / max(total,1))
-                        self.progress(min(pct,60), f"Copying {rel}...")
-                except Exception as exc:
-                    self.log(f"Copy warning {rel}: {exc}")
+        for item in self._iter_copy_files(src):
+            if self._cancel:
+                break
+            rel = item.relative_to(src)
+            target = dst / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                shutil.copy2(item, target)
+                copied_files.append(str(target))
+                count += 1
+                if count % 40 == 0:
+                    self.progress(min(10 + count // 30, 60), f"Copying {rel}...")
+            except Exception as exc:
+                self.log(f"Copy warning {rel}: {exc}")
+
+    def _run_logged(self, args: list, cwd: Path, env: dict | None = None) -> int:
+        """Run a command and forward each output line. Progress stays indeterminate."""
+        flags = 0
+        if os.name == "nt":
+            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        proc = subprocess.Popen(
+            args,
+            cwd=str(cwd),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            creationflags=flags,
+        )
+        assert proc.stdout is not None
+        seen = 0
+        for line in proc.stdout:
+            clean = line.rstrip()
+            if not clean:
+                continue
+            seen += 1
+            low = clean.lower()
+            important = any(
+                key in low
+                for key in ("error", "fatal", "warn", "success", "building", "====", "eche.exe")
+            )
+            if important or seen % 15 == 0:
+                self.log(clean)
+                self.progress(-1, clean[:140])
+        return proc.wait()
 
     def _auto_build_app(self, install_path: Path):
         install_path = Path(install_path)
         eche_source = install_path if (install_path / "core").is_dir() else install_path
         python_exe = None
-        for cmd in [["py","-3.12"], ["py"], ["python"], ["python3"]]:
+        for cmd in [["py", "-3.12"], ["py"], ["python"], ["python3"]]:
             try:
-                r = subprocess.run(cmd + ["--version"], capture_output=True, text=True, timeout=5)
+                r = subprocess.run(cmd + ["--version"], capture_output=True, text=True, timeout=8)
                 if r.returncode == 0:
                     python_exe = cmd
                     break
-            except: continue
+            except (OSError, subprocess.TimeoutExpired):
+                continue
         if not python_exe:
             self.log("Python not found - cannot auto-build")
             return None
@@ -269,13 +309,29 @@ class Installer:
         try:
             venv_py = eche_source / ".venv" / "Scripts" / "python.exe"
             if not venv_py.exists():
-                subprocess.run(python_exe + ["-m", "venv", ".venv"], cwd=eche_source, check=True)
-            subprocess.run([str(venv_py), "-m", "pip", "install", "-U", "pip"], cwd=eche_source, check=False)
-            subprocess.run([str(venv_py), "-m", "pip", "install", "-r", "requirements.txt"], cwd=eche_source, check=False)
+                self.progress(-1, "Creating a Python virtualenv…")
+                code = self._run_logged(python_exe + ["-m", "venv", ".venv"], eche_source)
+                if code != 0 or not venv_py.exists():
+                    self.log(f"Could not create .venv (exit {code})")
+                    return None
+            self.progress(-1, "Installing Python packages. This can take several minutes…")
+            self._run_logged([str(venv_py), "-m", "pip", "install", "-U", "pip"], eche_source)
+            req = self._run_logged(
+                [str(venv_py), "-m", "pip", "install", "-r", "requirements.txt"],
+                eche_source,
+            )
+            if req != 0:
+                self.log(f"pip install returned {req}. Continuing to the app build.")
             env = os.environ.copy()
             env["ECHE_NO_PAUSE"] = "1"
-            subprocess.run([str(eche_source / "BUILD.bat")], cwd=eche_source, shell=True, env=env)
-            for cand in [eche_source.parent / "eche" / "Eche.exe", eche_source / "dist" / "Eche" / "Eche.exe", install_path / "eche" / "Eche.exe", install_path / "Eche.exe"]:
+            self.progress(-1, "Building Eche.exe. This often takes several minutes…")
+            self._run_logged(["cmd.exe", "/c", "BUILD.bat"], eche_source, env=env)
+            for cand in [
+                eche_source.parent / "eche" / "Eche.exe",
+                eche_source / "dist" / "Eche" / "Eche.exe",
+                install_path / "eche" / "Eche.exe",
+                install_path / "Eche.exe",
+            ]:
                 if cand.exists():
                     return cand
         except Exception as e:

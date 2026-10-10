@@ -31,7 +31,7 @@ INSTALLER_MARKERS = (
     "echelon_installer_source",  # legacy
 )
 
-USER_AGENT = "Eche-Installer/3.1.2 (+https://github.com/sevinOG/eche)"
+USER_AGENT = "Eche-Installer/2.1.0 (+https://github.com/sevinOG/eche)"
 
 
 def repo_web_url() -> str:
@@ -56,12 +56,28 @@ def archive_zip_url(branch: str = GITHUB_BRANCH) -> str:
     )
 
 
-def _download(url: str, log: Callable[[str], None] | None = None) -> bytes:
+def _download(
+    url: str,
+    log: Callable[[str], None] | None = None,
+    progress: Callable[[int, str], None] | None = None,
+) -> bytes:
     log = log or (lambda _m: None)
     log(f"Downloading {url}")
     req = Request(url, headers={"User-Agent": USER_AGENT, "Accept": "*/*"})
+    chunks: list[bytes] = []
+    got = 0
     with urlopen(req, timeout=180) as resp:
-        data = resp.read()
+        total = int(resp.headers.get("Content-Length") or 0)
+        while True:
+            block = resp.read(256 * 1024)
+            if not block:
+                break
+            chunks.append(block)
+            got += len(block)
+            if progress and total > 0 and got // (1024 * 1024) != (got - len(block)) // (1024 * 1024):
+                pct = 8 + int(26 * min(got, total) / total)
+                progress(pct, f"Downloading… {got // (1024 * 1024)} MB")
+    data = b"".join(chunks)
     log(f"Downloaded {len(data):,} bytes")
     return data
 
@@ -128,7 +144,7 @@ def fetch_source_from_github(
             candidates.append(c)
 
     progress(8, "Contacting GitHub…")
-    raw = _download(archive_zip_url(branch), log=log)
+    raw = _download(archive_zip_url(branch), log=log, progress=progress)
     progress(35, "Extracting Eche *app* source (not installer)…")
 
     with zipfile.ZipFile(io.BytesIO(raw)) as zf:
