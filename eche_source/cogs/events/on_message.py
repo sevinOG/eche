@@ -11,9 +11,8 @@ dprint("[on_message] Loaded from:", inspect.getfile(inspect.currentframe()))
 
 # --- AZBOT INTERNALS ---
 from core.context_manager import (
-    archive_user_recents_if_due,
-    update_context,
     HOME_SERVER_ID,
+    remember_user,
 )
 from core.builder import build_prompt
 from core.message_media import collect_discord_media
@@ -41,7 +40,7 @@ from core.tools import (
 )
 
 # --- SEVIN SELF-MEMORY ---
-from core.bot_memory import archive_bot_recents_if_due, log_bot_event
+from core.bot_memory import remember_bot
 
 # --- BOO SYSTEM ---
 from core.boo_kaitar import maybe_boo
@@ -99,7 +98,12 @@ class OnMessage(commands.Cog):
 
     async def _speak_lookup(self, prompt: str, notes: str) -> tuple[str, bool]:
         """Answer the same turn from the lookup notes. The notes themselves are not sent."""
-        from core.client import CHAT_COMPLETION_TOKENS, call_groq_turn, lookup_prompt
+        from core.client import (
+            CHAT_COMPLETION_TOKENS,
+            call_groq_turn,
+            lookup_failed,
+            lookup_prompt,
+        )
         follow = lookup_prompt(prompt, notes)
         try:
             turn = await call_groq_turn(
@@ -110,6 +114,8 @@ class OnMessage(commands.Cog):
             )
         except Exception as exc:
             dprint(f"[on_message] lookup reply failed: {exc}")
+            if lookup_failed(notes):
+                return (notes or "").strip(), False
             return "I found the notes, but I couldn't answer from them.", False
         if turn.quota:
             return turn.reply, True
@@ -123,6 +129,8 @@ class OnMessage(commands.Cog):
                 return turn.reply, True
         spoken = (turn.reply or "").strip()
         if not spoken:
+            if lookup_failed(notes):
+                return (notes or "").strip(), False
             return "I couldn't turn that into an answer.", False
         return spoken, False
 
@@ -130,13 +138,16 @@ class OnMessage(commands.Cog):
         """
         Run the model's tool calls. The visible line is the announcement,
         then the tool body. A lookup body is rewritten by the model first.
-        Returns whether a tool ran, the episode lines, and the tool names.
+        Returns whether a tool ran, the episode lines, the tool names,
+        and the reply text that was posted. A quiet tool posts nothing here.
         """
         ctx = ToolContext(bot=self.bot, message=message)
         ran_any = False
         acts: list[str] = []
         tools_used: list[str] = []
+        said: list[str] = []
         seen: set[str] = set()
+        lookup_quota = False
         for call in calls[:3]:
             if not isinstance(call, dict):
                 continue
@@ -149,9 +160,12 @@ class OnMessage(commands.Cog):
                 continue
             tools_used.append(name)
             spoken = result.text
-            lookup_quota = False
             if result.for_model:
-                spoken, lookup_quota = await self._speak_lookup(prompt, result.text)
+                spoken, this_quota = await self._speak_lookup(prompt, result.text)
+                if this_quota or (spoken or "").strip().lower().startswith(
+                    "sorry, i'm being rate limited"
+                ):
+                    lookup_quota = True
             # A quiet tool already posted everything, including its announcement.
             shown = "" if result.quiet else spoken
             chunks = format_tool_messages(
@@ -173,6 +187,8 @@ class OnMessage(commands.Cog):
                         break
             if not sent:
                 continue
+            if not result.quiet and (spoken or "").strip():
+                said.append(spoken.strip())
             ran_any = True
             who = getattr(message.author, "name", None) or str(message.author.id)
             try:
@@ -199,7 +215,7 @@ class OnMessage(commands.Cog):
                     today_day(),
                 )
             )
-        return ran_any, acts, tools_used
+        return ran_any, acts, tools_used, said, lookup_quota
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -377,11 +393,20 @@ class OnMessage(commands.Cog):
         ran_tools = False
         episode_lines: list[str] = []
         tools_used: list[str] = []
+        tool_said: list[str] = []
         if calls:
             try:
-                ran_tools, episode_lines, tools_used = await self._deliver_tool_calls(
+                (
+                    ran_tools,
+                    episode_lines,
+                    tools_used,
+                    tool_said,
+                    lookup_quota,
+                ) = await self._deliver_tool_calls(
                     message, calls, prompt
                 )
+                if lookup_quota:
+                    quota_reply = True
             except Exception as e:
                 dprint(f"[on_message] tool delivery failed: {e}")
                 ran_tools = False
@@ -412,49 +437,38 @@ class OnMessage(commands.Cog):
         if asked in ("(no text)", "(no content)") and note not in ("", "(no text)", "(no content)"):
             asked = note
         if not quota_reply:
-            # Pin writes start only after the Discord reply is out. New: gets
-            # one short line, not the raw turn. Each pin folds on its third
-            # stored line. That fold is the last edit. A failed fold leaves
-            # the lines.
-            from core.memory_lines import bot_memory_line, user_memory_line
-
+            # The reply is already on Discord. The last three full messages
+            # stay in the local buffer. Every third one updates the long-term pin.
+            user_text = asked
+            if user_text in ("(no text)", "(no content)"):
+                user_text = "a picture" if media.images else "a message with no text"
             try:
-                await update_context(
+                await remember_user(
                     self.bot,
                     guild,
                     message.author.id,
-                    user_memory_line(asked, picture=bool(media.images)),
                     message.author.name,
+                    user_text,
                 )
             except Exception as e:
                 dprint(f"[on_message] user memory store failed: {e}")
             if tools_used or (not ran_tools and reply.strip()):
+                said = reply
+                if ran_tools:
+                    said = " ".join(part.strip() for part in tool_said if part and part.strip())
+                if not str(said or "").strip():
+                    from core.memory_lines import bot_memory_line
+
+                    said = bot_memory_line("", tools_used)
                 try:
-                    await log_bot_event(
+                    await remember_bot(
                         self.bot,
                         message.author.id,
-                        bot_memory_line(asked, tools_used),
                         message.author.name,
+                        said,
                     )
                 except Exception as e:
                     dprint(f"[on_message] bot memory store failed: {e}")
-            try:
-                await archive_user_recents_if_due(
-                    self.bot,
-                    guild,
-                    message.author.id,
-                    message.author.name,
-                )
-            except Exception as e:
-                dprint(f"[on_message] user memory archive failed: {e}")
-            try:
-                await archive_bot_recents_if_due(
-                    self.bot,
-                    message.author.id,
-                    message.author.name,
-                )
-            except Exception as e:
-                dprint(f"[on_message] bot memory archive failed: {e}")
         await self._record_server_line(message, asked, episode_lines)
 
     async def _record_server_line(self, message, text: str, tool_lines: list[str] | None = None) -> None:

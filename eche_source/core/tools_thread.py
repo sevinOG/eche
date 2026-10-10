@@ -152,6 +152,7 @@ _MORE_ROOM = re.compile(
 _STATUS_LINE = re.compile(
     r"^(?:"
     r"duckduckgo blocked that lookup\.?"
+    r"|i couldn't reach duckduckgo\.?"
     r"|i found the notes, but i couldn't answer from them\.?"
     r"|i couldn't turn that into an answer\.?"
     r"|sorry, i(?:'m| am) being rate limited\b.*"
@@ -624,6 +625,9 @@ def fill_prompt(subject: str, plan: str, already: str, notes: str, cut_note: str
         "Do not invent reviews or public opinion that are not in the notes.\n"
         "A writing assignment is written. Do not replace it with a search or a list of links.\n"
         "If the notes are empty, still write the assignment.\n"
+        "If the notes say the lookup was blocked or could not be reached, "
+        "still write the assignment. Do not post that status as the reply. "
+        "Do not invent the missing facts.\n"
         "If you cannot call the tool, reply with only "
         '{"name":"duckduckgo","arguments":{"query":"..."}} and stop.\n'
         "End on a complete sentence.\n"
@@ -724,8 +728,8 @@ async def _execute(ctx: ToolContext, thread, subject: str, plan: str, focus: str
                 notes = append_notes(notes, result.text or "")
             continue
         body, done = finish_thread_part(turn.reply or "", turn.cut)
-        if not body:
-            need_sentence = bool(turn.cut)
+        if not body or _STATUS_LINE.match(body.strip()):
+            need_sentence = bool(turn.cut) and not body
             if done:
                 break
             continue

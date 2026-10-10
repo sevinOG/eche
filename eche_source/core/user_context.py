@@ -111,10 +111,12 @@ class ParsedContext:
             header = header.rstrip() + ":"
         summary = (self.summary or "(none yet)").strip()
         new_body = "\n".join(self.new_lines).rstrip()
-        parts = [header, "", "Summary:", summary, "", "New:"]
-        if new_body:
-            parts.append(new_body)
-        parts.append("")
+        parts = [header, "", "Summary:", summary, ""]
+        if self.new_lines:
+            parts.append("New:")
+            if new_body:
+                parts.append(new_body)
+            parts.append("")
         return "\n".join(parts)
 
 
@@ -144,7 +146,7 @@ def parse_context(text: str) -> ParsedContext:
         display_name = "Bot"
         header = raw.splitlines()[0].strip()
 
-    if "Summary:" not in raw or "New:" not in raw:
+    if "Summary:" not in raw:
         return ParsedContext(
             header=header,
             display_name=display_name,
@@ -152,6 +154,17 @@ def parse_context(text: str) -> ParsedContext:
             new_lines=[],
             raw=raw,
             malformed=True,
+        )
+
+    if "New:" not in raw:
+        summary = raw[raw.index("Summary:") + len("Summary:") :].strip()
+        return ParsedContext(
+            header=header,
+            display_name=display_name,
+            summary=summary,
+            new_lines=[],
+            raw=raw,
+            malformed=False,
         )
 
     try:
@@ -250,7 +263,9 @@ def save_user_context(
     text = (content or "").strip()
     if not text:
         text = empty_context(display_name or str(user_id))
-    elif "Summary:" not in text or "New:" not in text:
+    elif "Summary:" in text and "New:" not in text:
+        text = text.rstrip() + "\n"
+    elif "Summary:" not in text:
         # Preserve free-form notes under New:
         name = display_name or str(user_id)
         text = (

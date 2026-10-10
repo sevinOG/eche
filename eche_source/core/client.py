@@ -174,12 +174,34 @@ def tool_use_note(tools: list | None = None) -> str:
     return "\n".join(lines)
 
 
+# Posted as the tool result when DuckDuckGo does not return a page. The
+# second completion still answers the person. These lines are not a search.
+_LOOKUP_FAILED = (
+    "DuckDuckGo blocked that lookup.",
+    "I couldn't reach DuckDuckGo.",
+)
+
+
+def lookup_failed(notes: str) -> bool:
+    """True when the lookup produced a status line instead of notes."""
+    return (notes or "").strip() in _LOOKUP_FAILED
+
+
 def lookup_prompt(prompt: str, notes: str) -> str:
     """Same turn again, with the lookup notes appended. The reply is the chat answer."""
     source = (notes or "").strip() or "(no notes)"
     if len(source) > 1500:
         source = source[:1499].rstrip() + "…"
     base = (prompt or "").strip()
+    if lookup_failed(source):
+        return (
+            f"{base}\n\n"
+            f"Lookup notes:\n{source}\n\n"
+            "The lookup did not go through. "
+            "Answer the most recent message from what you already know. "
+            "Say that the lookup did not go through. "
+            "Do not invent search results, scores, dates, or news."
+        )
     return (
         f"{base}\n\n"
         f"Lookup notes:\n{source}\n\n"

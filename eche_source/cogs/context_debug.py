@@ -35,13 +35,12 @@ class ContextDebug(commands.Cog):
         )
 
         content = pinned.content or ""
+        from core.context_manager import parse_pin_sections
 
-        try:
-            summary_start = content.index("Summary:") + len("Summary:")
-            new_start = content.index("New:")
-            summary_body = content[summary_start:new_start].strip()
-        except ValueError:
+        if "Summary:" not in content:
             summary_body = "(malformed context)"
+        else:
+            _label, summary_body, _recent = parse_pin_sections(content, "")
 
         await _send_fenced(ctx, f"**Summary for {member.name}:**", summary_body)
 
@@ -64,26 +63,19 @@ class ContextDebug(commands.Cog):
             cleaned = cleaned.replace(header, "")
         cleaned = cleaned.strip() or "(none yet)"
 
-        # 2. Ensure structure exists
-        if "Summary:" not in content or "New:" not in content:
-            content = (
-                f"Context for {member.name}:\n"
-                f"Summary:\n(cleaned later)\n\n"
-                f"New:\n"
-            )
+        # 2. Keep any old recent lines. A summary-only pin stays summary-only.
+        from core.context_manager import parse_pin_sections, summary_only, title_from_label
 
-        # 3. Slice sections
-        try:
-            summary_start = content.index("Summary:") + len("Summary:")
-            new_start = content.index("New:")
-        except ValueError:
-            return await ctx.send("Context format is malformed.")
+        if "Summary:" not in content:
+            content = f"Context for {member.name}:\nSummary:\n(none yet)\n"
+        label, _summary, recent = parse_pin_sections(
+            content, f"Context for {member.name}:\n"
+        )
+        if recent:
+            from core.personal_recent import add_stash
 
-        before = content[:summary_start]
-        after = content[new_start:]
-
-        # 4. Build new pinned message
-        new_content = before + "\n" + cleaned + "\n\n" + after
+            add_stash(member.id, "user", recent)
+        new_content = summary_only(title_from_label(label), cleaned)
 
         # 5. Apply update
         from core.discord_store import edit_record
@@ -111,17 +103,22 @@ class ContextDebug(commands.Cog):
         )
 
         content = pinned.content or ""
+        from core.context_manager import (
+            parse_pin_sections,
+            summary_only,
+            title_from_label,
+        )
 
-        try:
-            summary_start = content.index("Summary:") + len("Summary:")
-            new_start = content.index("New:")
-        except ValueError:
+        if "Summary:" not in content:
             return await ctx.send("Context format is malformed.")
+        label, _summary, recent = parse_pin_sections(
+            content, f"Context for {member.name}:\n"
+        )
+        if recent:
+            from core.personal_recent import add_stash
 
-        before = content[:summary_start]
-        after = content[new_start:]
-
-        new_content = before + "\n(none yet)\n\n" + after
+            add_stash(member.id, "user", recent)
+        new_content = summary_only(title_from_label(label), "(none yet)")
 
         from core.discord_store import edit_record
         await edit_record(pinned, new_content)
@@ -169,31 +166,38 @@ class ContextDebug(commands.Cog):
             )
         content = pinned.content or ""
 
-        # 2. Keep the short lines already in New:, including older BOT: lines.
-        from core.context_manager import parse_pin_sections
+        # Keep any old New: lines in the local buffer. The pin is the long-term block.
+        from core.context_manager import parse_pin_sections, summary_only
+        from core.personal_recent import add_stash, clear_folded, notes_for_fold
 
-        _label, _summary, bot_lines = parse_pin_sections(content, header)
+        _label, summary, bot_lines = parse_pin_sections(content, header)
+        if bot_lines:
+            add_stash(member.id, "bot", bot_lines)
+            kept = summary if summary and summary != "(none yet)" else "(none yet)"
+            rebuilt = summary_only(header, kept)
+            if rebuilt != content:
+                from core.discord_store import edit_record
+                await edit_record(pinned, rebuilt)
 
-        # 3. Rebuild pinned message
-        rebuilt = (
-            header +
-            "Summary:\n(none yet)\n\nNew:\n" +
-            ("\n".join(bot_lines) + "\n" if bot_lines else "")
+        notes = notes_for_fold(member.id, "bot")
+        if not notes:
+            return await ctx.send(
+                f"Bot memory for **{member.name}** is already a summary."
+            )
+
+        from core.context_summarizer import fold_long_memory
+
+        folded = await fold_long_memory(
+            pinned,
+            header,
+            notes,
+            side="bot",
         )
-
-        # 4. Apply repair
-        from core.discord_store import edit_record
-        await edit_record(pinned, rebuilt)
-
-        # 5. Trigger summarizer
-        await summarize_context(
-            self.bot,
-            guild,
-            member.id,
-            member.name,
-            override_header=header
-        )
-
+        if not folded:
+            return await ctx.send(
+                f"Could not rebuild bot memory for **{member.name}**. The summary was left in place."
+            )
+        clear_folded(member.id, "bot")
         await ctx.send(f"Bot memory for **{member.name}** has been fully repaired and rebuilt.")
 
     # ---------------------------------------------------------

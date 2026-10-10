@@ -123,3 +123,17 @@ async def archive_bot_recents_if_due(bot, user_id, username=None):
         override_header=bot_memory_header(_label(username, user_id)),
         keep_recent=0,
     )
+
+
+async def remember_bot(bot, user_id, username, text: str) -> None:
+    """Store one full reply in this user's local buffer."""
+    from core.context_manager import get_home_guild, remember_side
+
+    await remember_side(
+        bot,
+        get_home_guild(bot),
+        user_id,
+        username,
+        text,
+        side="bot",
+    )

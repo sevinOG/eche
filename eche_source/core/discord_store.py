@@ -64,7 +64,7 @@ def bot_memory_header(label: str) -> str:
 
 
 def bot_memory_initial(label: str) -> str:
-    return bot_memory_header(label) + "Summary:\n(none yet)\n\nNew:\n"
+    return bot_memory_header(label) + "Summary:\n(none yet)\n"
 
 
 def renamed_bot_pin(header: str, content: str) -> str:
@@ -78,7 +78,7 @@ def renamed_bot_pin(header: str, content: str) -> str:
         if not body.endswith("\n"):
             body += "\n"
         return header + body
-    return header + "Summary:\n(none yet)\n\nNew:\n"
+    return header + "Summary:\n(none yet)\n"
 
 
 def remember_record(parent_id: int, message) -> None:

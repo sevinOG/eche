@@ -140,10 +140,8 @@ def _shorten_recent(line: str, limit: int) -> str:
 def fit_memory_pin(header: str, summary: str, recent: list[str]) -> str:
     """Build pin text that stays within Discord's 2000-character edit limit.
 
-    `header` is everything through the ``Summary:\\n`` label. Recent lines are
-    shortened before any long-term fact is removed. A fact line is dropped
-    only when the pin is still over the limit, longest first, so one retold
-    paragraph does not push out the rest of the cloud.
+    `header` is everything through the ``Summary:\\n`` label. The pin is that
+    summary only. Recent lines are not written back onto it.
     """
     from core.client import drop_safety_preamble
 
@@ -151,8 +149,9 @@ def fit_memory_pin(header: str, summary: str, recent: list[str]) -> str:
     lines = [ln.strip() for ln in recent if ln and ln.strip()]
 
     def assemble(summary_text: str, kept: list[str]) -> str:
-        body = ("\n".join(kept) + "\n") if kept else ""
-        return f"{header}{summary_text}\n\nNew:\n{body}"
+        # The pin is the long-term block. Recent lines stay in the local file.
+        del kept
+        return f"{header}{summary_text}\n"
 
     def shrink_recents(kept: list[str], floor: int) -> None:
         while len(assemble(summary, kept)) > 1990 and any(len(ln) > floor for ln in kept):
@@ -345,3 +344,120 @@ async def archive_user_recents_if_due(bot, guild, user_id, username=None):
         username,
         keep_recent=0,
     )
+
+
+# The long-term pin is one Discord message. Leave room under the 2000 limit.
+PIN_CAP = 1900
+
+
+def title_from_label(label: str) -> str:
+    """The pin title. `label` from parse_pin_sections includes ``Summary:\\n``."""
+    suffix = "Summary:\n"
+    if (label or "").endswith(suffix):
+        return label[: -len(suffix)]
+    text = label or ""
+    return text if text.endswith("\n") else text + "\n"
+
+
+def summary_only(title: str, summary: str) -> str:
+    """Discord pin body. Recent messages live in the local buffer, not here."""
+    head = title or ""
+    if not head.endswith("\n"):
+        head += "\n"
+    prose = " ".join((summary or "").split()) or "(none yet)"
+    return f"{head}Summary:\n{prose}\n"
+
+
+def summary_room(title: str, limit: int = PIN_CAP) -> int:
+    """Characters of prose that still fit in the long-term pin."""
+    head = title or ""
+    if not head.endswith("\n"):
+        head += "\n"
+    overhead = len(head) + len("Summary:\n") + 1
+    return max(1, limit - overhead)
+
+
+def summary_fits(title: str, summary: str, limit: int = PIN_CAP) -> bool:
+    return len(summary_only(title, summary)) <= limit
+
+
+async def _stash_pin_lines(pinned, user_id: int, side: str, fallback: str) -> None:
+    """Move New: lines off the pin once. The file holds them until the next fold."""
+    from core.discord_store import edit_record, refresh_record
+    from core.personal_recent import add_stash
+
+    pinned = await refresh_record(pinned)
+    label, summary, recent = parse_pin_sections(getattr(pinned, "content", "") or "", fallback)
+    if not recent:
+        return
+    add_stash(user_id, side, recent)
+    title = title_from_label(label)
+    body = summary_only(title, "" if summary in ("", "(none yet)") else summary)
+    if body == (getattr(pinned, "content", "") or ""):
+        return
+    try:
+        await edit_record(pinned, body)
+    except Exception as exc:
+        dprint(f"[context_manager] could not clear recent lines on the pin: {exc}")
+
+
+async def remember_side(bot, guild, user_id, username, text: str, *, side: str) -> None:
+    """Store one full message locally. Every third one updates the long-term pin.
+
+    The buffer stays. A failed summary leaves the counter high so the next
+    message tries again, and the prompt still has the messages.
+    """
+    from core.personal_recent import (
+        FOLD_EVERY,
+        clear_folded,
+        has_stash,
+        notes_for_fold,
+        push,
+    )
+
+    try:
+        uid = int(user_id)
+    except (TypeError, ValueError):
+        return
+    _messages, pending = push(uid, side, text)
+    if guild is None and side != "bot":
+        return
+
+    if side == "bot":
+        from core.bot_memory import ensure_bot_memory_channel
+        from core.discord_store import bot_memory_header
+
+        _channel, pinned = await ensure_bot_memory_channel(bot, uid, username)
+        fallback = bot_memory_header(username or uid)
+    else:
+        _channel, pinned = await ensure_context_channel(bot, guild, uid, username)
+        fallback = f"Context for {username or uid}:\n"
+
+    if pinned is None:
+        return
+    # New: leaves the pin on this turn. Those lines are in the file, and the
+    # prompt reads them, until a fold lands.
+    await _stash_pin_lines(pinned, uid, side, fallback)
+    if pending < FOLD_EVERY and not has_stash(uid, side):
+        return
+
+    from core.context_summarizer import fold_long_memory
+
+    notes = notes_for_fold(uid, side)
+    try:
+        folded = await fold_long_memory(pinned, fallback, notes, side=side)
+    except Exception as exc:
+        dprint(f"[context_manager] {side} summary failed: {exc}")
+        folded = False
+    if folded:
+        clear_folded(uid, side)
+        print(f"[memory] {side} summary stored for {uid}", flush=True)
+    else:
+        print(
+            f"[memory] {side} summary did not land; keeping the buffer for {uid}",
+            flush=True,
+        )
+
+
+async def remember_user(bot, guild, user_id, username, text: str) -> None:
+    await remember_side(bot, guild, user_id, username, text, side="user")

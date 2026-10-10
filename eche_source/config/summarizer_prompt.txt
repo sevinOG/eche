@@ -2,9 +2,9 @@ Update the long-term memory cloud. Reply with only the cloud.
 
 Rules:
 - The new lines are short notes. Fold them into a few sentences. Do not copy the notes one by one.
-- Combine notes about what was asked or answered into one sentence.
-- Example: notes say the user asked about polar bears, linux, and a bar. Write "user asked questions about the location of polar bears, the security of linux OS, if a local bar was closed".
-- Example: notes say eche answered about those topics. Write "eche answered questions about polar bears, cyber security and local bar closing times".
+- Combine notes about what was said into one sentence.
+- Example: notes say the user talked about polar bears, linux, and a bar. Write "user talked about the location of polar bears, the security of linux OS, and whether a local bar was closed".
+- Example: notes say eche talked about those topics. Write "eche talked about polar bears, cyber security, and local bar closing times".
 - Keep who the person is, how they want to be treated, and any instruction they gave. Do not drop those to make room.
 - If a new note is about a subject already in the cloud, add it on that sentence. Do not start a second sentence for the same subject.
 - Keep earlier sentences that later talks still need.

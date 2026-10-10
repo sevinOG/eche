@@ -362,7 +362,7 @@ async def lookup_instant(ctx: ToolContext, arguments: dict) -> ToolResult:
         text = "I couldn't reach DuckDuckGo."
         if "human check" in str(exc):
             text = "DuckDuckGo blocked that lookup."
-        return ToolResult(text=text, fence=False, detail=detail)
+        return ToolResult(text=text, fence=False, detail=detail, for_model=True)
     sent = search_answer(results)
     return ToolResult(
         text=sent,

@@ -15,7 +15,6 @@ _LINE_CHARS = 140
 FOLD_AFTER = 5
 # A turn can add two lines as the file crosses five. Keep those until the fold.
 _RECENT_CAP = 8
-_SUMMARY_CAP = 700
 _RECENT_NAME = "recent.txt"
 
 
@@ -77,18 +76,36 @@ def split_episode(body: str) -> tuple[str, list[str]]:
 
 
 def render_summary(heading: str, summary: str) -> str:
-    """Discord copy of the summary. The raw lines stay in the local file."""
+    """Discord copy of the summary. The raw lines stay in the local file.
+
+    This does not chop the prose. The caller condenses a summary that will
+    not fit instead of ending it mid-sentence.
+    """
     prose = " ".join((summary or "").split())
-    if len(prose) > _SUMMARY_CAP:
-        prose = prose[: _SUMMARY_CAP - 1].rstrip() + "…"
-    text = "\n".join([heading.rstrip(), "Summary:", prose]).rstrip() + "\n"
-    if len(text) <= MAX_STORE:
-        return text
-    room = MAX_STORE - len(heading.rstrip()) - len("\nSummary:\n") - 1
-    if room < 1:
-        room = 1
-    prose = prose[:room].rstrip() + "…"
     return "\n".join([heading.rstrip(), "Summary:", prose]).rstrip() + "\n"
+
+
+def summary_room(heading: str) -> int:
+    """Characters of prose that still fit under the Discord message cap."""
+    overhead = len((heading or "").rstrip()) + len("\nSummary:\n") + 1
+    return max(1, MAX_STORE - overhead)
+
+
+def summary_fits(heading: str, summary: str) -> bool:
+    return len(render_summary(heading, summary)) <= MAX_STORE
+
+
+def stored_episode(heading: str, fresh: str, condensed: str) -> str:
+    """Prose to store. A pass that runs past the pin is cut on a sentence."""
+    for text in (fresh, condensed):
+        if text and summary_fits(heading, text):
+            return text
+    room = summary_room(heading)
+    for text in (condensed, fresh):
+        clipped = _clip_prose(text or "", room)
+        if clipped and summary_fits(heading, clipped):
+            return clipped
+    return ""
 
 
 def recent_path(guild_id: int) -> str:
@@ -143,24 +160,43 @@ def episode_summary_text(raw: str) -> str:
     text = " ".join(drop_safety_preamble(raw or "").split())
     if not text or text.upper().startswith("ERROR"):
         return ""
-    if len(text) > _SUMMARY_CAP:
-        text = text[: _SUMMARY_CAP - 1].rstrip() + "…"
+    low = text.lower()
+    if "existing summary:" in low or "new summary:" in low:
+        return ""
     return text
 
 
-def fold_prompt(summary: str, recent: list[str]) -> str:
+def fold_prompt(summary: str, recent: list[str], limit: int) -> str:
     """Previous summary plus the local file. Not the chat prompt."""
     prose = " ".join((summary or "").split()) or "(none yet)"
     rows = "\n".join(line for line in recent if str(line).strip()) or "(none)"
+    room = max(1, int(limit))
     return (
         "Summarize this server's public episode. Reply with the summary only.\n"
         "Finished prose about the server, not notes to yourself.\n"
         "Update the summary with the recent lines. Keep earlier topics that still matter.\n"
         "Keep topics people raised and tools that ran.\n"
         "Drop greetings, agreements, and one-off reactions.\n"
-        "Plain prose. No bullet list. Under 500 characters.\n\n"
+        "Plain prose. No bullet list. "
+        f"Stay under {room} characters.\n\n"
         f"Summary:\n{prose}\n\n"
         f"Recent:\n{rows}"
+    )
+
+
+def condense_prompt(existing: str, fresh: str, limit: int) -> str:
+    """Second pass. The existing episode plus the summary that did not fit."""
+    prose = " ".join((existing or "").split()) or "(none yet)"
+    segment = " ".join((fresh or "").split()) or "(none)"
+    room = max(1, int(limit))
+    return (
+        "Condense this server episode into one summary. Reply with the summary only.\n"
+        "Use the existing summary and the new summary. Keep topics people raised and tools that ran.\n"
+        "Drop greetings, agreements, and one-off reactions.\n"
+        "Plain prose. No bullet list. "
+        f"Stay under {room} characters.\n\n"
+        f"Existing summary:\n{prose}\n\n"
+        f"New summary:\n{segment}"
     )
 
 
@@ -200,6 +236,21 @@ def turn_lines(
     return [ask_line(user_text, day), *acts]
 
 
+def _clip_prose(text: str, limit: int) -> str:
+    """Shorten on a sentence boundary. A stump is not given an ellipsis."""
+    text = " ".join((text or "").split())
+    if len(text) <= limit:
+        return text
+    window = text[:limit].rstrip()
+    cut = max(window.rfind("."), window.rfind("!"), window.rfind("?"))
+    if cut >= max(40, limit // 3):
+        return window[: cut + 1].strip()
+    space = window.rfind(" ")
+    if space >= 40:
+        return window[:space].rstrip()
+    return window
+
+
 def prompt_episode(body: str) -> str:
     """The summary prose only. Raw lines stay in the local file."""
     from core.client import drop_safety_preamble
@@ -208,9 +259,7 @@ def prompt_episode(body: str) -> str:
     text = " ".join(drop_safety_preamble(summary).split())
     if not text:
         return ""
-    if len(text) <= PROMPT_CHARS:
-        return text
-    return text[: PROMPT_CHARS - 1].rstrip() + "…"
+    return _clip_prose(text, PROMPT_CHARS)
 
 
 async def load_episodic(bot, guild_id) -> str:
@@ -229,17 +278,17 @@ async def load_episodic(bot, guild_id) -> str:
     return episode_body(getattr(message, "content", "") or "", prefix)
 
 
-async def _fold_stored(summary: str, recent: list[str]) -> str:
+async def _fold_stored(summary: str, recent: list[str], limit: int) -> str:
     """Summarizer pass over the local file. Empty means try on a later turn."""
-    from core.client import call_groq_raw
+    from core.client import call_groq_raw, tokens_for
     from core.debuglog import dprint
     from core.summarizer_prompt import get_summarizer_model
 
     try:
         raw = await call_groq_raw(
-            fold_prompt(summary, recent),
+            fold_prompt(summary, recent, limit),
             model=get_summarizer_model(),
-            max_completion_tokens=256,
+            max_completion_tokens=tokens_for(limit),
         )
     except Exception as exc:
         print(f"[episodic] summary failed: {exc}", flush=True)
@@ -248,6 +297,28 @@ async def _fold_stored(summary: str, recent: list[str]) -> str:
     text = episode_summary_text(raw)
     if not text:
         dprint("[episodic] summary returned no usable text")
+    return text
+
+
+async def _condense_stored(previous: str, fresh: str, limit: int) -> str:
+    """Second summarizer pass. Empty means the first text stays unstored."""
+    from core.client import call_groq_raw, tokens_for
+    from core.debuglog import dprint
+    from core.summarizer_prompt import get_summarizer_model
+
+    try:
+        raw = await call_groq_raw(
+            condense_prompt(previous, fresh, limit),
+            model=get_summarizer_model(),
+            max_completion_tokens=tokens_for(limit),
+        )
+    except Exception as exc:
+        print(f"[episodic] condense failed: {exc}", flush=True)
+        dprint(f"[episodic] condense failed: {exc}")
+        return ""
+    text = episode_summary_text(raw)
+    if not text:
+        dprint("[episodic] condense returned no usable text")
     return text
 
 
@@ -290,14 +361,29 @@ async def append_episodic(bot, guild_id, guild_name, lines: list[str]) -> None:
         if message is not None:
             current = getattr(message, "content", "") or ""
         previous, _log = split_episode(episode_body(current, prefix))
-        folded = await _fold_stored(previous, recent)
+        room = summary_room(heading)
+        folded = await _fold_stored(previous, recent, room)
         if not folded:
             print(
                 f"[episodic] summary returned no text; keeping {len(recent)} lines",
                 flush=True,
             )
             return
-        packed = render_summary(heading, folded)
+        chosen = folded
+        if not summary_fits(heading, folded):
+            print(
+                f"[episodic] summary is {len(folded)} characters; condensing",
+                flush=True,
+            )
+            condensed = await _condense_stored(previous, folded, room)
+            chosen = stored_episode(heading, folded, condensed)
+        if not chosen:
+            print(
+                f"[episodic] summary did not fit; keeping {len(recent)} lines",
+                flush=True,
+            )
+            return
+        packed = render_summary(heading, chosen)
         if message is None:
             message = await ensure_record(thread, prefix, packed)
             if message is None:

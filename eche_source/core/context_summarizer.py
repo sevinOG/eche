@@ -103,6 +103,22 @@ def partition_recent(message_lines: list[str], keep: int) -> tuple[list[str], li
     return list(message_lines[:-keep]), list(message_lines[-keep:])
 
 
+_FOLD_PLACEHOLDERS = {
+    "(none yet)",
+    "(summary unavailable)",
+    "(none)",
+    "(no notes)",
+}
+
+
+def _usable_fold(text: str) -> str:
+    """A placeholder is not a summary. The pin and the buffer stay as they were."""
+    body = " ".join((text or "").split())
+    if not body or body.lower() in _FOLD_PLACEHOLDERS or _is_bad_llm_output(body):
+        return ""
+    return body
+
+
 def _is_bad_llm_output(text: str) -> bool:
     t = (text or "").strip()
     if not t:
@@ -312,3 +328,178 @@ async def summarize_context(
         summary_text = await compact_cloud(summary_text)
 
     return await _write_layout(summary_text, recent_lines)
+
+
+def _memory_rows(notes: list[str]) -> str:
+    return "\n".join(str(line).strip() for line in notes if str(line).strip()) or "(none)"
+
+
+def fold_memory_prompt(side: str, existing: str, notes: list[str], limit: int) -> str:
+    """Local buffer plus the long-term block. User and bot each keep their own job."""
+    prose = " ".join((existing or "").split()) or "(none yet)"
+    rows = _memory_rows(notes)
+    room = max(1, int(limit))
+    if side == "bot":
+        intro = (
+            "Update your long-term memory of talking with this person. "
+            "Reply with the summary only.\n"
+            "Finished prose about what you said and did, not notes to yourself.\n"
+            "Update the summary with the recent replies. Keep earlier topics that still matter.\n"
+            "Keep what you told them and any tool you used.\n"
+        )
+    else:
+        intro = (
+            "Update the long-term memory of this person. Reply with the summary only.\n"
+            "Finished prose about the person, not notes to yourself.\n"
+            "Update the summary with the recent messages. "
+            "Keep who they are and how they want to be treated.\n"
+            "Keep what they said and any instruction they gave.\n"
+        )
+    return (
+        f"{intro}"
+        "Drop greetings, agreements, and one-off reactions.\n"
+        "Plain prose. No bullet list. "
+        f"Stay under {room} characters.\n\n"
+        f"Summary:\n{prose}\n\n"
+        f"Recent:\n{rows}"
+    )
+
+
+def condense_memory_prompt(side: str, existing: str, fresh: str, limit: int) -> str:
+    """Second pass. The stored block plus the summary that did not fit."""
+    prose = " ".join((existing or "").split()) or "(none yet)"
+    segment = " ".join((fresh or "").split()) or "(none)"
+    room = max(1, int(limit))
+    if side == "bot":
+        intro = (
+            "Condense your long-term memory of this person into one summary. "
+            "Reply with the summary only.\n"
+            "Use the existing summary and the new summary. "
+            "Keep what you told them and any tool you used.\n"
+        )
+    else:
+        intro = (
+            "Condense this person's long-term memory into one summary. "
+            "Reply with the summary only.\n"
+            "Use the existing summary and the new summary. "
+            "Keep who they are, how they want to be treated, and what they said.\n"
+        )
+    return (
+        f"{intro}"
+        "Drop greetings, agreements, and one-off reactions.\n"
+        "Plain prose. No bullet list. "
+        f"Stay under {room} characters.\n\n"
+        f"Existing summary:\n{prose}\n\n"
+        f"New summary:\n{segment}"
+    )
+
+
+def choose_memory(title: str, fresh: str, condensed: str) -> str:
+    """Prose that fits the pin. A pass that runs past it ends on a sentence."""
+    from core.context_manager import summary_fits, summary_room
+    from core.episodic import _clip_prose
+
+    for text in (fresh, condensed):
+        if text and summary_fits(title, text):
+            return text
+    room = summary_room(title)
+    for text in (condensed, fresh):
+        clipped = _clip_prose(text or "", room)
+        if clipped and summary_fits(title, clipped):
+            return clipped
+    return ""
+
+
+async def _memory_completion(prompt: str, limit: int) -> str:
+    from core.client import call_groq_raw, tokens_for
+    from core.episodic import episode_summary_text
+
+    raw = await call_groq_raw(
+        prompt,
+        model=get_summarizer_model(),
+        max_completion_tokens=tokens_for(limit),
+    )
+    return episode_summary_text(raw)
+
+
+async def fold_long_memory(
+    pinned,
+    fallback_header: str,
+    notes: list[str],
+    *,
+    side: str = "user",
+) -> bool:
+    """Fold the local buffer into the long-term pin. The pin has no New: section.
+
+    Same steps as the server episode: one summary, then a compact pass when
+    that summary will not fit, then a sentence boundary if it still will not.
+    False leaves the pin unchanged so the next message can try again.
+    """
+    from core.context_manager import (
+        parse_pin_sections,
+        summary_fits,
+        summary_only,
+        summary_room,
+        title_from_label,
+    )
+    from core.discord_store import edit_record, refresh_record
+
+    rows = [str(line).strip() for line in notes if str(line).strip()]
+    pinned = await refresh_record(pinned)
+    content = getattr(pinned, "content", "") or ""
+    label, summary_block, message_lines = parse_pin_sections(content, fallback_header)
+    for line in message_lines:
+        text = str(line).strip()
+        if text and text not in rows:
+            rows.append(text)
+    if not rows:
+        return False
+
+    existing = drop_safety_preamble((summary_block or "").strip())
+    if _is_bad_llm_output(existing) or existing in ("(none yet)", "(summary unavailable)"):
+        existing = ""
+
+    title = title_from_label(label)
+    room = summary_room(title)
+    print(f"[context_summarizer] Using model={get_summarizer_model()}")
+    try:
+        folded = await _memory_completion(
+            fold_memory_prompt(side, existing, rows, room),
+            room,
+        )
+    except Exception as exc:
+        print(f"[context_summarizer] {side} summary failed: {exc}")
+        return False
+    folded = _usable_fold(folded)
+    if not folded:
+        print(f"[context_summarizer] {side} summary returned no usable text.")
+        return False
+
+    chosen = folded
+    if not summary_fits(title, folded):
+        print(
+            f"[context_summarizer] {side} summary is {len(folded)} characters. Compacting."
+        )
+        try:
+            condensed = await _memory_completion(
+                condense_memory_prompt(side, existing, folded, room),
+                room,
+            )
+        except Exception as exc:
+            print(f"[context_summarizer] {side} compact failed: {exc}")
+            condensed = ""
+        condensed = _usable_fold(condensed)
+        chosen = choose_memory(title, folded, condensed)
+    if not chosen:
+        print(f"[context_summarizer] {side} summary did not fit.")
+        return False
+
+    body = summary_only(title, chosen)
+    if body == content:
+        return True
+    try:
+        await edit_record(pinned, body)
+    except Exception as exc:
+        print(f"[context_summarizer] ERROR editing long-term pin: {exc}")
+        return False
+    return True

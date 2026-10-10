@@ -259,7 +259,7 @@ class UserContextWindow(QMainWindow):
         rl.addWidget(self.source_label)
         self.editor = QTextEdit()
         self.editor.setPlaceholderText(
-            "Context for Name:\n\nSummary:\n(none yet)\n\nNew:\n"
+            "Context for Name:\n\nSummary:\n(none yet)\n"
         )
         rl.addWidget(self.editor, stretch=1)
         erow = QHBoxLayout()
