@@ -1,16 +1,15 @@
 # gui/widgets/economywindow.py
-# Bank pin browser — same location rules as cogs/economy/bet.py + bank.py:
+# Bank pin browser — same location as cogs/economy/bet.py + bank.py:
 #   HOME_SERVER_ID guild
-#   category  memory-{user_id}
-#   channel   economy
+#   category  bot memory
+#   channel   user-{user_id}
+#   thread    bank
 #   pin       content.startswith("BANK DATA")
-#             lines: BANK DATA / {balance} / STARTER:0|1
 
 from __future__ import annotations
 
 import asyncio
 import os
-import re
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtWidgets import (
@@ -38,9 +37,7 @@ try:
 except Exception:
     PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
-# Match bet.py / bank.py exactly
-ECONOMY_CHANNEL_NAME = "economy"
-MEMORY_CAT_RE = re.compile(r"^memory-(\d+)$", re.IGNORECASE)
+# Match bet.py / bank.py: the bank thread under user-{id}.
 
 
 def load_settings():
@@ -82,38 +79,13 @@ async def _resolve_guild(client, home_id: int):
 
 
 async def _find_economy_channel(guild, user_id: str | int):
-    """
-    Mirror bet.load_balance:
-      category = memory-{user_id}
-      channel  = economy under that category
-    """
-    import discord
+    """User channel plus its bank thread. (None, None) when the user has no channel."""
+    from core.discord_store import THREAD_BANK, find_thread, user_channel
 
-    uid = str(user_id)
-    category = discord.utils.get(guild.categories, name=f"memory-{uid}")
-    if category is None:
-        # categories sometimes partial — scan all
-        for cat in guild.categories:
-            if (cat.name or "").lower() == f"memory-{uid}":
-                category = cat
-                break
-    if category is None:
+    channel = user_channel(guild, user_id)
+    if channel is None:
         return None, None
-
-    economy_channel = discord.utils.get(category.text_channels, name=ECONOMY_CHANNEL_NAME)
-    if economy_channel is None:
-        # Fall back: text channels in category
-        for ch in getattr(category, "channels", []) or []:
-            if getattr(ch, "name", None) == ECONOMY_CHANNEL_NAME:
-                economy_channel = ch
-                break
-    if economy_channel is None:
-        # Last resort: guild text channels with matching category_id
-        for ch in guild.text_channels:
-            if ch.name == ECONOMY_CHANNEL_NAME and ch.category_id == category.id:
-                economy_channel = ch
-                break
-    return category, economy_channel
+    return channel, await find_thread(channel, THREAD_BANK)
 
 
 async def _read_bank_pin(economy_channel):
@@ -207,18 +179,13 @@ class EconomyWorker(QThread):
                     return
 
                 if self.action == "list_users":
-                    # Prefer opted-in users (same population economy tools use),
-                    # then any memory-* categories that already exist.
-                    user_ids: set[str] = set()
+                    from core.discord_store import list_user_ids
+
                     try:
-                        from core.opt_in_manager import load_opted_in
-                        user_ids |= {str(x) for x in load_opted_in()}
+                        await guild.fetch_channels()
                     except Exception:
                         pass
-                    for cat in guild.categories:
-                        m = MEMORY_CAT_RE.match(cat.name or "")
-                        if m:
-                            user_ids.add(m.group(1))
+                    user_ids = {str(uid) for uid in list_user_ids(guild)}
 
                     users = []
                     for uid in sorted(user_ids, key=lambda x: int(x) if x.isdigit() else 0):
@@ -278,11 +245,11 @@ class EconomyWorker(QThread):
                 elif self.action == "fetch":
                     cat, econ = await _find_economy_channel(guild, self.user_id)
                     if cat is None:
-                        message = f"No memory-{self.user_id} category on home server."
+                        message = f"No user-{self.user_id} channel in bot memory."
                         payload = {"text": "", "user_id": self.user_id}
                         return
                     if econ is None:
-                        message = f"No #{ECONOMY_CHANNEL_NAME} channel under memory-{self.user_id}."
+                        message = f"No bank thread under user-{self.user_id}."
                         payload = {"text": "", "user_id": self.user_id}
                         return
                     _pin, text = await _read_bank_pin(econ)
@@ -299,12 +266,12 @@ class EconomyWorker(QThread):
                     }
 
                 elif self.action == "save":
-                    cat, econ = await _find_economy_channel(guild, self.user_id)
-                    if cat is None:
-                        # Create like bet does when missing
-                        cat = await guild.create_category(f"memory-{self.user_id}")
-                    if econ is None:
-                        econ = await cat.create_text_channel(ECONOMY_CHANNEL_NAME)
+                    from core.discord_store import (
+                        BANK_HEADER,
+                        THREAD_BANK,
+                        ensure_record,
+                        ensure_user_thread,
+                    )
 
                     content = (self.content or "").strip()
                     if not content.startswith("BANK DATA"):
@@ -314,19 +281,19 @@ class EconomyWorker(QThread):
                         except Exception:
                             content = format_bank(0.0)
 
-                    _pin, existing = await _read_bank_pin(econ)
-                    pins = await econ.pins()
-                    bank_messages = [
-                        m for m in pins if (m.content or "").startswith("BANK DATA")
-                    ]
-                    if bank_messages:
-                        await bank_messages[0].edit(content=content)
-                        text = bank_messages[0].content
-                    else:
-                        msg = await econ.send(content)
-                        await msg.pin()
-                        text = msg.content
-                    payload = {"text": text, "user_id": self.user_id}
+                    thread = await ensure_user_thread(guild, int(self.user_id), THREAD_BANK)
+                    if thread is None:
+                        message = f"Could not open the bank thread for user-{self.user_id}."
+                        payload = None
+                        return
+                    record = await ensure_record(thread, BANK_HEADER, content)
+                    if record is None:
+                        message = "Could not write the BANK DATA pin."
+                        payload = None
+                        return
+                    if (record.content or "") != content:
+                        await record.edit(content=content)
+                    payload = {"text": content, "user_id": self.user_id}
                     message = "Saved BANK DATA pin to Discord"
                 else:
                     message = f"Unknown action {self.action}"
@@ -378,7 +345,7 @@ class EconomyWindow(QMainWindow):
         titles.addWidget(title)
         sub = QLabel(
             "Balances live on the Home Server only — same as ?bet / bank: "
-            "memory-{{user_id}} → #economy → pinned message starting with BANK DATA."
+            "bot memory → user-{{user_id}} → bank thread → pinned message starting with BANK DATA."
         )
         sub.setObjectName("Subtitle")
         sub.setWordWrap(True)
@@ -469,9 +436,7 @@ class EconomyWindow(QMainWindow):
     def _set_busy(self, busy: bool, msg: str = "Working…"):
         self.loader.set_busy(busy, msg)
         if self.main_window and hasattr(self.main_window, "set_loading"):
-            # Only drive main toolbar for economy when main is offline/busy-safe
-            if busy:
-                self.main_window.set_loading(True, msg)
+            self.main_window.set_loading(busy, msg)
 
     def _busy(self) -> bool:
         return bool(self._worker and self._worker.isRunning())
@@ -520,7 +485,7 @@ class EconomyWindow(QMainWindow):
         gname = (payload or {}).get("guild_name") if isinstance(payload, dict) else ""
         if gname:
             self.home_label.setText(
-                f"Home server: {gname} ({self._home_id}) — bank pins via memory-*/economy"
+                f"Home server: {gname} ({self._home_id}) — bank pins via bot memory / user-* / bank"
             )
         for u in users:
             uid = str(u["id"])
@@ -542,7 +507,7 @@ class EconomyWindow(QMainWindow):
         if raw:
             self._apply_text(raw)
             self.source_label.setText(
-                f"Discord · memory-{self._user_id} / #{ECONOMY_CHANNEL_NAME} · BANK DATA pin"
+                f"Discord · user-{self._user_id} / bank · BANK DATA pin"
             )
             return
         self._set_busy(True, "Fetching bank…")
@@ -570,7 +535,7 @@ class EconomyWindow(QMainWindow):
         text = (payload or {}).get("text") if isinstance(payload, dict) else ""
         self._apply_text(text or format_bank(0.0, "STARTER:0"))
         self.source_label.setText(
-            f"Discord · memory-{self._user_id} / #{ECONOMY_CHANNEL_NAME} · BANK DATA pin"
+            f"Discord · user-{self._user_id} / bank · BANK DATA pin"
         )
         self._log(message)
 

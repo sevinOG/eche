@@ -2,12 +2,12 @@ import discord
 from discord.ext import commands
 
 from cogs.games.registry import GAME_REGISTRY
+from cogs.games._core import release_view
 from core.opt_in_manager import load_opted_in, opt_in
 
 from core.home_id import home_server_id_from_env
 
 HOME_SERVER_ID = home_server_id_from_env()
-ECONOMY_CHANNEL_NAME = "economy"
 
 LOSS_FLOOR = -5000
 
@@ -84,6 +84,8 @@ class StartGameButton(discord.ui.Button):
         await self.parent_view.message.edit(embed=summary_embed)
         self.parent_view.update_message = lambda *args, **kwargs: None
 
+        # The menu clock must not keep running under the game.
+        release_view(self.parent_view)
         try:
             await self.parent_view.message.edit(view=None)
         except:
@@ -167,53 +169,34 @@ class Bet(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    async def load_balance(self, member):
+    async def _bank_message(self, member, seed: str):
+        from core.discord_store import BANK_HEADER, THREAD_BANK, ensure_record, ensure_user_thread
+
         guild = self.bot.get_guild(HOME_SERVER_ID)
-        if guild is None:
+        if guild is None or member is None:
+            return None
+        thread = await ensure_user_thread(
+            guild, member.id, THREAD_BANK, getattr(member, "name", None)
+        )
+        if thread is None:
+            return None
+        return await ensure_record(thread, BANK_HEADER, seed)
+
+    async def load_balance(self, member):
+        from core.discord_store import refresh_record
+
+        bank_message = await self._bank_message(member, "BANK DATA\n0.00\nSTARTER:0")
+        if bank_message is None:
             return 0, True
+        bank_message = await refresh_record(bank_message)
 
-        category = discord.utils.get(guild.categories, name=f"memory-{member.id}")
-        if category is None:
-            category = await guild.create_category(f"memory-{member.id}")
-
-        economy_channel = discord.utils.get(category.text_channels, name=ECONOMY_CHANNEL_NAME)
-        if economy_channel is None:
-            economy_channel = await category.create_text_channel(ECONOMY_CHANNEL_NAME)
-
-        # FIXED: dedupe and get newest BANK DATA pin
-        try:
-            pins = await economy_channel.pins()
-        except:
-            pins = []
-
-        bank_messages = [m for m in pins if m.content.startswith("BANK DATA")]
-        
-        # Clean up duplicates - keep newest
-        if len(bank_messages) > 1:
-            bank_messages.sort(key=lambda m: m.created_at, reverse=True)
-            for dup in bank_messages[1:]:
-                try:
-                    await dup.delete()
-                except:
-                    pass
-            bank_messages = bank_messages[:1]
-
-        if not bank_messages:
-            new_msg = await economy_channel.send("BANK DATA\n0.00\nSTARTER:0")
-            try:
-                await new_msg.pin()
-            except:
-                pass
-            return 0.00, True
-
-        bank_message = bank_messages[0]
-        lines = bank_message.content.splitlines()
+        lines = (bank_message.content or "").splitlines()
         try:
             bal = round(float(lines[1].strip()), 2)
-        except:
+        except Exception:
             bal = 0.0
         starter_flag = lines[2].strip() if len(lines) > 2 else "STARTER:0"
-        first_time = ("STARTER:0" in starter_flag)
+        first_time = "STARTER:0" in starter_flag
         return bal, first_time
 
     async def save_balance(self, member, new_value):
@@ -221,58 +204,20 @@ class Bet(commands.Cog):
         if new_value < LOSS_FLOOR:
             new_value = LOSS_FLOOR
 
-        # FIXED: Remove the broken 0 -> -1 logic that caused cycling
-        # Only apply negative mode conversion if explicitly at exactly 0 and previous wasn't already negative
-        # Better: keep 0 as 0, let bet command handle -1 conversion
+        from core.discord_store import edit_record, refresh_record
+
         rounded = round(float(new_value), 2)
-
-        guild = self.bot.get_guild(HOME_SERVER_ID)
-        if guild is None:
+        bank_message = await self._bank_message(member, f"BANK DATA\n{rounded:.2f}\nSTARTER:1")
+        if bank_message is None:
             return
-        category = discord.utils.get(guild.categories, name=f"memory-{member.id}")
-        if category is None:
-            return
-        economy_channel = discord.utils.get(category.text_channels, name=ECONOMY_CHANNEL_NAME)
-        if economy_channel is None:
-            return
+        bank_message = await refresh_record(bank_message)
 
-        try:
-            pins = await economy_channel.pins()
-        except:
-            pins = []
-
-        bank_messages = [m for m in pins if m.content.startswith("BANK DATA")]
-
-        if len(bank_messages) > 1:
-            bank_messages.sort(key=lambda m: m.created_at, reverse=True)
-            for dup in bank_messages[1:]:
-                try:
-                    await dup.delete()
-                except:
-                    pass
-            bank_messages = bank_messages[:1]
-
-        if not bank_messages:
-            new_msg = await economy_channel.send(f"BANK DATA\n{rounded:.2f}\nSTARTER:1")
-            try:
-                await new_msg.pin()
-            except:
-                pass
-            return
-
-        bank_message = bank_messages[0]
-        lines = bank_message.content.splitlines()
+        lines = (bank_message.content or "").splitlines()
         starter_flag = lines[2].strip() if len(lines) > 2 else "STARTER:1"
-
         try:
-            await bank_message.edit(content=f"BANK DATA\n{rounded:.2f}\n{starter_flag}")
-        except Exception as e:
-            # If edit fails, create new one (pin may have been deleted)
-            try:
-                new_msg = await economy_channel.send(f"BANK DATA\n{rounded:.2f}\n{starter_flag}")
-                await new_msg.pin()
-            except:
-                pass
+            await edit_record(bank_message, f"BANK DATA\n{rounded:.2f}\n{starter_flag}")
+        except Exception:
+            pass
 
     @commands.command(name="bet")
     async def bet(self, ctx, betvalue=None):

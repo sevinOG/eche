@@ -7,7 +7,7 @@ import os
 import sys
 
 APP_NAME = "Eche"
-APP_VERSION = "3.1.2"
+APP_VERSION = "2.1.0"
 APP_TITLE = f"{APP_NAME} v{APP_VERSION}"
 
 # Palette (installer-aligned purple + deep dark)
@@ -183,6 +183,24 @@ QPushButton#info:hover {{
     border-color: {ACCENT_HOVER};
     color: {TEXT_BRIGHT};
 }}
+QPushButton#toolToggle {{
+    background-color: transparent;
+    border: 1px solid {BORDER_LIGHT};
+    border-radius: 8px;
+    color: {TEXT_MUTED};
+    font-weight: 600;
+    padding: 4px 12px;
+    min-height: 16px;
+}}
+QPushButton#toolToggle:hover {{
+    color: {TEXT};
+    border-color: {ACCENT};
+}}
+QPushButton#toolToggle:checked {{
+    background-color: #2a2040;
+    border-color: {ACCENT};
+    color: {TEXT_BRIGHT};
+}}
 QPushButton#donate {{
     background-color: transparent;
     border: 1px solid #4a3a58;
@@ -308,13 +326,19 @@ QCheckBox::indicator:checked {{
 
 /* ---------- Splitter / Scroll / Frame ---------- */
 QSplitter::handle {{
-    background-color: {BORDER};
+    background-color: {BG};
+    border: none;
 }}
 QSplitter::handle:horizontal {{
-    width: 2px;
+    width: 14px;
+    image: none;
 }}
 QSplitter::handle:vertical {{
-    height: 2px;
+    height: 14px;
+    image: none;
+}}
+QSplitter::handle:hover {{
+    background-color: {BG_ELEVATED};
 }}
 QScrollArea {{
     border: none;
@@ -354,6 +378,12 @@ QFrame#Toolbar {{
     background-color: {BG_ELEVATED};
     border: 1px solid {BORDER};
     border-radius: 12px;
+}}
+QFrame#ToolbarDivider {{
+    background-color: {BORDER_LIGHT};
+    border: none;
+    max-width: 1px;
+    min-width: 1px;
 }}
 QFrame#AccentBar {{
     background-color: {ACCENT};

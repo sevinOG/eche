@@ -1,21 +1,20 @@
 """
-opt_in_manager.py V2
-Source of truth = Discord categories in home server: memory-{USER_ID}
-- opt-in = category exists
-- opt-out = category deleted
+opt_in_manager.py
+
+Source of truth = a channel in the home server category ``bot memory``:
+    user-{USER_ID}
+- opt-in = that channel exists
+- opt-out = that channel is deleted
 - hire.py and other cogs pipe through get_valid_members_for_guild()
 
-Keeps opted_in.json only for legacy migration.
+Threads inside the channel hold context, bank, items, and workers.
+opted_in.json is still written so older readers stay in sync.
 """
 
 import os
 import json
 import discord
 from typing import Set, List, Optional
-
-CONTEXT_CHANNEL_NAME = "context"
-ECONOMY_CHANNEL_NAME = "economy"
-CATEGORY_PREFIX = "memory-"
 
 # ----------------------------------------------------------------------
 # Legacy path resolution (kept for backwards compat)
@@ -65,20 +64,6 @@ def save_opted_in(opted_in_set: Set[int]):
         pass
 
 
-# ----------------------------------------------------------------------
-# New system - category parsing
-# ----------------------------------------------------------------------
-def _parse_memory_id(category: discord.CategoryChannel) -> Optional[int]:
-    if not category.name.startswith(CATEGORY_PREFIX):
-        return None
-    try:
-        # memory-286557627612397568 -> 286557627612397568
-        raw = category.name.split("-", 1)[1]
-        return int(raw)
-    except (IndexError, ValueError):
-        return None
-
-
 async def get_home_guild(bot) -> Optional[discord.Guild]:
     from core.home_id import parse_home_server_id
     home_id_raw = os.getenv("HOME_SERVER_ID") or os.getenv("HOME_GUILD_ID") or os.getenv("HOME_SERVER") or "0"
@@ -97,20 +82,15 @@ async def get_home_guild(bot) -> Optional[discord.Guild]:
 
 async def get_opted_in_ids_from_home(bot) -> Set[int]:
     """
-    Source of truth: scan home server categories.
-    Returns set of user IDs who have memory-* categories.
-    Falls back to json if home guild not found.
+    Source of truth: user-{id} channels in the bot memory category.
+    Falls back to json if the home guild is not found.
     """
+    from core.discord_store import list_user_ids
+
     guild = await get_home_guild(bot)
     if guild is None:
         return load_opted_in()
-
-    opted = set()
-    for cat in guild.categories:
-        uid = _parse_memory_id(cat)
-        if uid is not None:
-            opted.add(uid)
-    return opted
+    return list_user_ids(guild)
 
 
 async def get_valid_members_for_guild(bot, guild: discord.Guild) -> List[discord.Member]:
@@ -118,7 +98,7 @@ async def get_valid_members_for_guild(bot, guild: discord.Guild) -> List[discord
     INTELLIGENT CHECK you asked for:
     1. Get invoker's server (guild param)
     2. Get its users
-    3. Intersect with opted-in users from home server context categories
+    3. Intersect with users who have a channel in bot memory
     Returns sorted list of discord.Member
     """
     if guild is None:
@@ -151,60 +131,43 @@ async def get_valid_members_for_guild(bot, guild: discord.Guild) -> List[discord
     return valid
 
 
-async def get_context_channel_for_user(bot, user_id: int) -> Optional[discord.TextChannel]:
-    """Helper: get #context channel for a given user from home server."""
+async def get_context_channel_for_user(bot, user_id: int):
+    """Helper: the context thread for a user, if their channel already exists."""
+    from core.discord_store import THREAD_CONTEXT, find_thread, user_channel
+
     guild = await get_home_guild(bot)
     if guild is None:
         return None
-    category = discord.utils.get(guild.categories, name=f"{CATEGORY_PREFIX}{user_id}")
-    if not category:
+    channel = user_channel(guild, user_id)
+    if channel is None:
         return None
-    return discord.utils.get(category.text_channels, name=CONTEXT_CHANNEL_NAME)
+    return await find_thread(channel, THREAD_CONTEXT)
 
 
 # ----------------------------------------------------------------------
 # Public API - keep same names as before so other cogs don't break
 # ----------------------------------------------------------------------
-async def ensure_user_category(bot, member) -> Optional[discord.CategoryChannel]:
+async def ensure_user_category(bot, member):
+    """Create the user's channel plus context and bank threads. Name kept for callers."""
+    from core.context_manager import ensure_context_channel
+    from core.discord_store import (
+        BANK_HEADER,
+        THREAD_BANK,
+        ensure_record,
+        ensure_user_thread,
+        user_channel,
+    )
+
     guild = await get_home_guild(bot)
     if guild is None:
         return None
 
-    category_name = f"{CATEGORY_PREFIX}{member.id}"
-    category = discord.utils.get(guild.categories, name=category_name)
-    if category is None:
-        try:
-            category = await guild.create_category(category_name, reason=f"opt-in {member.id}")
-        except discord.Forbidden:
-            return None
-
-    # Ensure context channel
-    context_channel = discord.utils.get(category.text_channels, name=CONTEXT_CHANNEL_NAME)
-    if context_channel is None:
-        try:
-            context_channel = await category.create_text_channel(CONTEXT_CHANNEL_NAME)
-            msg = await context_channel.send("CONTEXT DATA\n{}")
-            try:
-                await msg.pin()
-            except Exception:
-                pass
-        except Exception:
-            pass
-
-    # Ensure economy channel
-    economy_channel = discord.utils.get(category.text_channels, name=ECONOMY_CHANNEL_NAME)
-    if economy_channel is None:
-        try:
-            economy_channel = await category.create_text_channel(ECONOMY_CHANNEL_NAME)
-            msg = await economy_channel.send("BANK DATA\n0\nSTARTER:0")
-            try:
-                await msg.pin()
-            except Exception:
-                pass
-        except Exception:
-            pass
-
-    return category
+    username = getattr(member, "name", None)
+    _thread, _message = await ensure_context_channel(bot, guild, member.id, username)
+    bank_thread = await ensure_user_thread(guild, member.id, THREAD_BANK, username)
+    if bank_thread is not None:
+        await ensure_record(bank_thread, BANK_HEADER, "BANK DATA\n0\nSTARTER:0")
+    return user_channel(guild, member.id)
 
 
 async def opt_in(bot, member) -> bool:
@@ -223,28 +186,16 @@ async def opt_in(bot, member) -> bool:
 
 
 async def opt_out(bot, member) -> bool:
-    """
-    FIXED: Old version only removed from json, left category behind.
-    Now deletes the memory-* category.
-    """
+    """Deletes the user's channel in bot memory. Threads go with the channel."""
+    from core.discord_store import delete_user_channel
+
     opted_ids = await get_opted_in_ids_from_home(bot)
     if member.id not in opted_ids and member.id not in load_opted_in():
         return False
 
     guild = await get_home_guild(bot)
     if guild is not None:
-        category = discord.utils.get(guild.categories, name=f"{CATEGORY_PREFIX}{member.id}")
-        if category is not None:
-            try:
-                # Delete all child channels first (Discord requires empty category)
-                for channel in list(category.channels):
-                    try:
-                        await channel.delete(reason=f"opt-out {member.id}")
-                    except Exception:
-                        pass
-                await category.delete(reason=f"opt-out {member.id}")
-            except Exception:
-                pass
+        await delete_user_channel(guild, member.id)
 
     # Also remove from legacy json
     legacy = load_opted_in()

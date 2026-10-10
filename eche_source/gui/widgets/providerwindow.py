@@ -6,7 +6,7 @@ from __future__ import annotations
 import os
 import subprocess
 
-from PyQt6.QtCore import Qt, QUrl, QProcess
+from PyQt6.QtCore import Qt, QTimer, QUrl, QProcess
 from PyQt6.QtGui import QFont, QDesktopServices
 from PyQt6.QtWidgets import (
     QWidget,
@@ -52,9 +52,9 @@ You do **not** have to stay with Groq forever.
 3. Paste that key in **Settings → AI & Model → Provider API Key**  
 4. Keep the model id (or pick another live model from Groq’s docs)  
 
-Other providers (OpenAI, OpenRouter, Together, Fireworks, local Ollama, etc.)
-often also have free tiers or cheap plans. If they speak “OpenAI-style” chat APIs,
-you can usually switch by editing this file’s **URL**, **key env name**, and **model**.
+OpenRouter and local Ollama are in **Settings → AI & Model**. Pick OpenRouter,
+paste its key, and set a model id from openrouter.ai/models. Other OpenAI-style
+hosts can still be pointed at by editing this file’s **URL**, **key**, and **model**.
 
 ## Where is the provider block in this file?
 
@@ -74,8 +74,8 @@ in Settings; only edit this code if you want a different company or a local mode
 
 ## Restart after save
 
-The running bot loads this file when it starts. After you Save, **Kill Bot** then
-**Run Bot** so it picks up changes.
+The running bot loads this file when it starts. After you Save, **Stop** then
+**Run** so it picks up changes.
 """
 
 
@@ -135,8 +135,8 @@ class ProviderWindow(QWidget):
         note = QLabel(
             "This file is the “phone line” to your AI provider. "
             "Default is **Cloud / Groq** (free tier at console.groq.com). "
-            "Prefer the Settings dropdown for Cloud vs Ollama — edit this file for advanced URL tweaks. "
-            "Look near the top for GROQ_API_URL / OLLAMA_API_URL, _provider_backend(), and DEFAULT_MODEL. "
+            "Prefer the Settings dropdown for Groq, OpenRouter, or Ollama — edit this file for advanced URL tweaks. "
+            "Look near the top for GROQ_API_URL, OPENROUTER_API_URL, OLLAMA_API_URL, _provider_backend(), and DEFAULT_MODEL. "
             "Saves to package core/client.py (plain text). Restart the bot after saving."
         )
         note.setObjectName("FieldHint")
@@ -205,25 +205,37 @@ class ProviderWindow(QWidget):
 
     def save_file(self):
         self.loader.set_busy(True, "Saving…")
+        window = self.settings_window
+        if window is not None and hasattr(window, "begin_save_spinner"):
+            window.begin_save_spinner("Saving…")
+        QTimer.singleShot(0, self._commit_save)
+
+    def _commit_save(self):
         try:
             target = _write_path()
             os.makedirs(os.path.dirname(target), exist_ok=True)
             with open(target, "w", encoding="utf-8") as f:
                 f.write(self.editor.toPlainText())
-            self.path = target
-            self.path_label.setText(self.path)
-            self.loader.set_state("online")
-            if self.settings_window and hasattr(self.settings_window, "flash_save_spinner"):
-                self.settings_window.flash_save_spinner()
+        except Exception as exc:
+            self._finish_save(False, str(exc))
+            return
+        self.path = target
+        self.path_label.setText(self.path)
+        QTimer.singleShot(360, lambda: self._finish_save(True, target))
+
+    def _finish_save(self, ok: bool, detail: str):
+        if ok:
+            self.loader.set_state("online", "Saved")
             QMessageBox.information(
                 self,
                 "Saved",
-                f"Provider source updated (not encrypted):\n{self.path}\n\n"
+                f"Provider source updated (not encrypted):\n{detail}\n\n"
                 "Restart the bot (Kill → Run) so it reloads this file.",
             )
-        except Exception as e:
-            self.loader.set_state("error")
-            QMessageBox.critical(self, "Error", str(e))
-        finally:
-            from PyQt6.QtCore import QTimer
-            QTimer.singleShot(600, lambda: self.loader.set_state("offline"))
+        else:
+            self.loader.set_state("error", "Save failed")
+            QMessageBox.critical(self, "Error", detail)
+        QTimer.singleShot(600, lambda: self.loader.set_state("offline"))
+        window = self.settings_window
+        if window is not None and hasattr(window, "end_save_spinner"):
+            window.end_save_spinner(ok)

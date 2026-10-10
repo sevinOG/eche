@@ -5,7 +5,6 @@ from discord.ext import commands
 from core.bot_whitelist import is_allowed_bot
 from core.home_id import home_server_id_from_env
 
-ECONOMY_CHANNEL_NAME = "economy"
 HOME_SERVER_ID = home_server_id_from_env()
 
 
@@ -17,31 +16,18 @@ class Bank(commands.Cog):
     # INTERNAL: Ensure bank file exists
     # ---------------------------------------------------------
     async def ensure_bank_file(self, member):
+        from core.discord_store import BANK_HEADER, THREAD_BANK, ensure_record, ensure_user_thread
+
         guild = self.bot.get_guild(HOME_SERVER_ID)
-        if guild is None:
+        if guild is None or member is None:
             return None
 
-        # Ensure category exists
-        category = discord.utils.get(guild.categories, name=f"memory-{member.id}")
-        if category is None:
+        thread = await ensure_user_thread(
+            guild, member.id, THREAD_BANK, getattr(member, "name", None)
+        )
+        if thread is None:
             return None
-
-        # Ensure economy channel exists
-        economy_channel = discord.utils.get(category.text_channels, name=ECONOMY_CHANNEL_NAME)
-        if economy_channel is None:
-            economy_channel = await category.create_text_channel(ECONOMY_CHANNEL_NAME)
-
-        # Get pinned messages
-        pins = await economy_channel.pins()
-        bank_messages = [m for m in pins if m.content.startswith("BANK DATA")]
-
-        # If missing → create new
-        if not bank_messages:
-            new_msg = await economy_channel.send("BANK DATA\n500.00\nSTARTER:1")
-            await new_msg.pin()
-            return new_msg
-
-        return bank_messages[0]
+        return await ensure_record(thread, BANK_HEADER, "BANK DATA\n500.00\nSTARTER:1")
 
     # ---------------------------------------------------------
     # LOAD BANK (rounded)
@@ -51,10 +37,13 @@ class Bank(commands.Cog):
         if bank_message is None:
             return 500.00
 
-        lines = bank_message.content.splitlines()
+        from core.discord_store import refresh_record
+
+        bank_message = await refresh_record(bank_message)
+        lines = (bank_message.content or "").splitlines()
         try:
             return round(float(lines[1].strip()), 2)
-        except:
+        except Exception:
             return 500.00
 
     # ---------------------------------------------------------
@@ -65,13 +54,16 @@ class Bank(commands.Cog):
         if bank_message is None:
             return
 
+        from core.discord_store import edit_record, refresh_record
+
+        bank_message = await refresh_record(bank_message)
         rounded = round(float(new_value), 2)
 
-        lines = bank_message.content.splitlines()
+        lines = (bank_message.content or "").splitlines()
         starter_flag = lines[2].strip() if len(lines) >= 3 else "STARTER:1"
 
         new_content = f"BANK DATA\n{rounded}\n{starter_flag}"
-        await bank_message.edit(content=new_content)
+        await edit_record(bank_message, new_content)
 
     # ---------------------------------------------------------
     # OWNER-ONLY: ?bankrebuild @user
@@ -83,30 +75,37 @@ class Bank(commands.Cog):
         if member is None:
             return await ctx.send("Usage: `?bankrebuild @user`")
 
+        from core.discord_store import (
+            THREAD_BANK,
+            ensure_user_thread,
+            forget_parent,
+            list_pins,
+            remember_record,
+        )
+
         guild = self.bot.get_guild(HOME_SERVER_ID)
         if guild is None:
             return await ctx.send("Home guild not found.")
 
-        category = discord.utils.get(guild.categories, name=f"memory-{member.id}")
-        if category is None:
-            category = await guild.create_category(f"memory-{member.id}")
+        thread = await ensure_user_thread(
+            guild, member.id, THREAD_BANK, getattr(member, "name", None)
+        )
+        if thread is None:
+            return await ctx.send("Could not open that user's bank thread.")
 
-        economy_channel = discord.utils.get(category.text_channels, name=ECONOMY_CHANNEL_NAME)
-        if economy_channel is None:
-            economy_channel = await category.create_text_channel(ECONOMY_CHANNEL_NAME)
-
-        pins = await economy_channel.pins()
-        for msg in pins:
-            if msg.content.startswith("BANK DATA"):
+        for msg in await list_pins(thread):
+            if (msg.content or "").startswith("BANK DATA"):
                 await msg.delete()
+        forget_parent(thread.id)
 
-        new_msg = await economy_channel.send("BANK DATA\n500.00\nSTARTER:1")
+        new_msg = await thread.send("BANK DATA\n500.00\nSTARTER:1")
         await new_msg.pin()
+        remember_record(thread.id, new_msg)
 
         await ctx.send(
             f"✅ Rebuilt **{member.display_name}**'s bank file.\n"
             f"Balance reset to **500.00**.\n"
-            f"Here is their economy channel: {economy_channel.mention}"
+            f"Bank thread: {thread.mention}"
         )
 
     # ---------------------------------------------------------

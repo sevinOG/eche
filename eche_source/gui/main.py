@@ -28,7 +28,6 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QHBoxLayout,
     QPushButton,
-    QCheckBox,
     QTextEdit,
     QPlainTextEdit,
     QLabel,
@@ -36,10 +35,10 @@ from PyQt6.QtWidgets import (
     QFrame,
     QSizePolicy,
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt6.QtGui import QFont
 
-from gui.theme import APP_TITLE, APP_VERSION, apply_theme
+from gui.theme import APP_TITLE, APP_VERSION, BG, BG_ELEVATED, apply_theme
 from gui.widgets.settingswindow import SettingsWindow
 from gui.widgets.unifierpanel import UnifierPanel
 from gui.widgets.cogmanager import CogManagerWindow
@@ -145,6 +144,21 @@ class LocalChatWorker(QThread):
                 self.finished_err.emit(str(e2) or str(e))
 
 
+class LocalChatInput(QPlainTextEdit):
+    """Enter sends. Shift+Enter keeps a new line. The window does not label this."""
+
+    submit = pyqtSignal()
+
+    def keyPressEvent(self, event):
+        key = event.key()
+        shift = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+        if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and not shift:
+            event.accept()
+            self.submit.emit()
+            return
+        super().keyPressEvent(event)
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -164,6 +178,9 @@ class MainWindow(QMainWindow):
 
         self.bot_process: subprocess.Popen | None = None
         self.reader_thread: BotReaderThread | None = None
+        self._loading_depth = 0
+        self._status_state = "offline"
+        self._status_text = None
 
         self.unifier_window = UnifierPanel()
         self.unifier_window.content_saved.connect(self.on_unifier_content_saved)
@@ -184,46 +201,40 @@ class MainWindow(QMainWindow):
         toolbar = QFrame()
         toolbar.setObjectName("Toolbar")
         tb = QHBoxLayout(toolbar)
-        tb.setContentsMargins(14, 12, 14, 12)
-        tb.setSpacing(10)
-
-        brand = QVBoxLayout()
-        brand.setSpacing(2)
-        title = QLabel(APP_TITLE)
-        title.setObjectName("Title")
-        brand.addWidget(title)
-        sub = QLabel("Discord control panel · learn AI settings in the ℹ dialogs")
-        sub.setObjectName("Subtitle")
-        brand.addWidget(sub)
-        tb.addLayout(brand, stretch=1)
+        tb.setContentsMargins(10, 8, 10, 8)
+        tb.setSpacing(8)
 
         self.loading = LoadingIndicator()
-        tb.addWidget(self.loading)
 
-        self.run_button = QPushButton("Run Bot")
-        self.run_button.setObjectName("run")
-        self.stop_button = QPushButton("Kill Bot")
-        self.stop_button.setObjectName("danger")
-        self.cog_manager_button = QPushButton("Cogs")
-        self.cog_manager_button.setObjectName("ghost")
-        self.settings_button = QPushButton("Settings")
-        self.settings_button.setObjectName("primary")
-
-        self.run_button.clicked.connect(self.on_run_clicked)
-        self.stop_button.clicked.connect(self.on_stop_clicked)
-        self.settings_button.clicked.connect(self.on_settings_clicked)
-        self.cog_manager_button.clicked.connect(self.on_cog_manager_clicked)
+        self.update_button = self._bar_button("Update", "ghost", self.on_update_clicked)
+        self.bot_context_button = self._bar_button(
+            "Bot context", "ghost", self.open_bot_memory_window
+        )
+        self.context_button = self._bar_button(
+            "Context editor", "ghost", self.open_user_context_window
+        )
+        self.economy_button = self._bar_button(
+            "Economy editor", "ghost", self.open_economy_window
+        )
+        self.cog_manager_button = self._bar_button("Cogs", "ghost", self.on_cog_manager_clicked)
+        self.run_button = self._bar_button("Run", "run", self.on_run_clicked)
+        self.stop_button = self._bar_button("Stop", "danger", self.on_stop_clicked)
+        self.settings_button = self._bar_button("Settings", "primary", self.on_settings_clicked)
 
         for btn in (
-            self.run_button,
-            self.stop_button,
+            self.update_button,
+            self.bot_context_button,
+            self.context_button,
+            self.economy_button,
             self.cog_manager_button,
-            self.settings_button,
         ):
-            btn.setMinimumWidth(96)
-            btn.setMinimumHeight(36)
-            btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
             tb.addWidget(btn)
+        tb.addStretch(1)
+        tb.addWidget(self._toolbar_divider())
+        tb.addWidget(self.run_button)
+        tb.addWidget(self.stop_button)
+        tb.addWidget(self.loading)
+        tb.addWidget(self.settings_button)
 
         main_layout.addWidget(toolbar)
 
@@ -245,12 +256,14 @@ class MainWindow(QMainWindow):
         splitter_top.setStretchFactor(0, 1)
         splitter_top.setStretchFactor(1, 1)
         splitter_top.setSizes([560, 560])
+        self._soften_splitter(splitter_top)
 
         splitter_vertical.addWidget(splitter_top)
         splitter_vertical.addWidget(self._panel("Logs", self.log_output))
         splitter_vertical.setStretchFactor(0, 3)
         splitter_vertical.setStretchFactor(1, 1)
         splitter_vertical.setSizes([520, 200])
+        self._soften_splitter(splitter_vertical)
 
         main_layout.addWidget(splitter_vertical, stretch=1)
 
@@ -258,19 +271,27 @@ class MainWindow(QMainWindow):
 
         footer = QHBoxLayout()
         footer.setContentsMargins(0, 0, 0, 0)
-        self.admin_tools_box = QCheckBox("Admin tools")
-        self.admin_tools_box.setToolTip(
-            "Inject config/admin_tools.md on your turns. "
-            "Off, and the bot never sees that file or the admin tools."
+        footer.setSpacing(8)
+        tools_col = QVBoxLayout()
+        tools_col.setSpacing(6)
+        self.default_tools_box = self._tool_toggle(
+            "Default tools",
+            "Thread, lookup, and context. Off, and those tools are left out of chat.",
+            self._default_tools_saved_on(),
+            self._on_default_tools_toggled,
         )
-        self.admin_tools_box.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.admin_tools_box.blockSignals(True)
-        self.admin_tools_box.setChecked(self._admin_tools_saved_on())
-        self.admin_tools_box.blockSignals(False)
-        self.admin_tools_box.toggled.connect(self._on_admin_tools_toggled)
-        footer.addWidget(self.admin_tools_box)
+        self.admin_tools_box = self._tool_toggle(
+            "Admin tools",
+            "Inject config/admin_tools.md on your turns. "
+            "Off, and the bot never sees that file or the admin tools.",
+            self._admin_tools_saved_on(),
+            self._on_admin_tools_toggled,
+        )
+        tools_col.addWidget(self.default_tools_box)
+        tools_col.addWidget(self.admin_tools_box)
+        footer.addLayout(tools_col)
         footer.addStretch()
-        self.donate_button = QPushButton("pls donate, im poor")
+        self.donate_button = QPushButton("donate")
         self.donate_button.setObjectName("donate")
         self.donate_button.setToolTip("Open the tip jar (optional, no pressure)")
         self.donate_button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -286,7 +307,51 @@ class MainWindow(QMainWindow):
 
         self.set_status("offline")
         self.append_log(f"[INFO] {APP_TITLE} GUI started.")
-        self.append_log("[INFO] Open Settings to manage tokens, then Run Bot.")
+        self.append_log("[INFO] Open Settings to manage tokens, then Run.")
+
+    def _bar_button(self, text: str, object_name: str, slot) -> QPushButton:
+        btn = QPushButton(text)
+        btn.setObjectName(object_name)
+        btn.setMinimumHeight(34)
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
+        btn.clicked.connect(slot)
+        return btn
+
+    def _soften_splitter(self, split: QSplitter) -> None:
+        """A gap in the window color. The native handle draws a thick bar."""
+        split.setHandleWidth(14)
+        split.setChildrenCollapsible(False)
+        split.setStyleSheet(
+            "QSplitter::handle {"
+            f"background-color: {BG};"
+            "border: none;"
+            "}"
+            "QSplitter::handle:hover {"
+            f"background-color: {BG_ELEVATED};"
+            "}"
+        )
+
+    def _toolbar_divider(self) -> QFrame:
+        line = QFrame()
+        line.setObjectName("ToolbarDivider")
+        line.setFixedWidth(1)
+        line.setMinimumHeight(22)
+        return line
+
+    def _tool_toggle(self, text: str, tip: str, checked: bool, slot) -> QPushButton:
+        btn = QPushButton(text)
+        btn.setObjectName("toolToggle")
+        btn.setCheckable(True)
+        btn.setToolTip(tip)
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.setMinimumHeight(28)
+        btn.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
+        btn.blockSignals(True)
+        btn.setChecked(checked)
+        btn.blockSignals(False)
+        btn.toggled.connect(slot)
+        return btn
 
     def _admin_tools_saved_on(self) -> bool:
         try:
@@ -294,6 +359,30 @@ class MainWindow(QMainWindow):
             return flag_on(load_settings().get("admin_tools"), "")
         except Exception:
             return False
+
+    def _default_tools_saved_on(self) -> bool:
+        try:
+            from core.tools import default_tools_enabled
+            return default_tools_enabled()
+        except Exception:
+            return True
+
+    def _on_default_tools_toggled(self, checked: bool):
+        try:
+            settings = load_settings()
+            settings["default_tools"] = "1" if checked else "0"
+            from core.secrets import save_all
+            save_all(settings, PROJECT_ROOT)
+        except Exception as e:
+            self.append_log(f"[WARN] Could not save default tools toggle: {e}")
+            self.default_tools_box.blockSignals(True)
+            self.default_tools_box.setChecked(not checked)
+            self.default_tools_box.blockSignals(False)
+            return
+        if checked:
+            self.append_log("[INFO] Default tools on. Thread, lookup, and context are available.")
+        else:
+            self.append_log("[INFO] Default tools off. Thread, lookup, and context are left out.")
 
     def _on_admin_tools_toggled(self, checked: bool):
         try:
@@ -324,9 +413,18 @@ class MainWindow(QMainWindow):
             settings_box.blockSignals(False)
 
     def set_loading(self, busy: bool, message: str = "Working…"):
+        """Show the toolbar spinner. A finished job restores the last bot status."""
         try:
             if busy:
+                self._loading_depth = getattr(self, "_loading_depth", 0) + 1
                 self.loading.set_state("busy", message)
+                return
+            self._loading_depth = max(0, getattr(self, "_loading_depth", 0) - 1)
+            if self._loading_depth == 0:
+                self.set_status(
+                    getattr(self, "_status_state", "offline"),
+                    getattr(self, "_status_text", None),
+                )
         except Exception:
             pass
 
@@ -356,16 +454,27 @@ class MainWindow(QMainWindow):
         card.setObjectName("Card")
         cl = QVBoxLayout(card)
         cl.setContentsMargins(14, 12, 14, 12)
+        backend = (settings.get("provider_backend") or "cloud").strip().lower()
+        if backend == "openrouter":
+            setup = (
+                "OpenRouter is selected.\n"
+                "1. Open Settings → AI & Model\n"
+                "2. Create a key at openrouter.ai/keys\n"
+                "3. Paste it under OpenRouter API Key → Save"
+            )
+        else:
+            setup = (
+                "Default free setup:\n"
+                "1. Open Settings → AI & Model\n"
+                "2. Get a free key at console.groq.com\n"
+                "3. Paste it under Provider API Key → Save\n\n"
+                "OpenRouter is in the same dropdown if you want that instead."
+            )
         body = QLabel(
             "The bot will still start and can run games, bank, music, and other "
             "commands — but it <b>cannot invent chat replies</b> until you add a "
-            "Provider API Key.\n\n"
-            "Default free setup:\n"
-            "1. Open Settings → AI & Model\n"
-            "2. Get a free key at console.groq.com\n"
-            "3. Paste it under Provider API Key → Save\n\n"
-            "You can also open Settings → Memory → Edit Provider to change "
-            "companies later. Most providers offer free or cheap tiers."
+            "provider key.\n\n"
+            f"{setup}"
         )
         body.setWordWrap(True)
         body.setTextFormat(Qt.TextFormat.RichText)
@@ -388,7 +497,7 @@ class MainWindow(QMainWindow):
         lay.addLayout(row)
 
         if dlg.exec() != QDialog.DialogCode.Accepted:
-            self.append_log("[INFO] Run Bot cancelled (no provider key).")
+            self.append_log("[INFO] Run cancelled (no provider key).")
             return False
 
         if dont.isChecked():
@@ -527,9 +636,10 @@ class MainWindow(QMainWindow):
         )
         layout.addWidget(self.local_output, stretch=1)
 
-        self.local_input = QPlainTextEdit()
+        self.local_input = LocalChatInput()
         self.local_input.setPlaceholderText("Local chat — not Discord.")
         self.local_input.setFixedHeight(72)
+        self.local_input.submit.connect(self._on_local_send)
         layout.addWidget(self.local_input)
 
         row = QHBoxLayout()
@@ -632,24 +742,51 @@ class MainWindow(QMainWindow):
         labels = {
             "offline": "Offline",
             "online": "Bot online",
-            "starting": "Starting bot…",
             "error": "Error",
             "busy": "Working…",
         }
-        msg = text or labels.get(state, state)
+        msg = text or labels.get(state, "")
         if msg.startswith("● "):
             msg = msg[2:]
+        if state not in ("busy", "starting"):
+            self._status_state = state
+            self._status_text = text
+        if getattr(self, "_loading_depth", 0) > 0 and state not in ("busy", "starting"):
+            return
         try:
+            # Steady states are the light only. A busy job can still name itself.
+            # Startup is a spinner with no words.
             if state == "online":
-                self.loading.set_state("online", msg)
-            elif state in ("starting", "busy"):
+                self.loading.set_state("online", "")
+            elif state == "starting":
+                self.loading.set_state("busy", "")
+            elif state == "busy":
                 self.loading.set_state("busy", msg)
             elif state == "error":
-                self.loading.set_state("error", msg)
+                self.loading.set_state("error", "")
             else:
-                self.loading.set_state("offline", msg)
+                self.loading.set_state("offline", "")
         except Exception:
             pass
+
+    def _bot_is_running(self) -> bool:
+        proc = getattr(self, "bot_process", None)
+        return proc is not None and proc.poll() is None
+
+    def _raise_error_light(self) -> None:
+        """Show red even if a spinner was covering the light."""
+        self._loading_depth = 0
+        self.set_status("error")
+
+    def _settle_error_light(self) -> None:
+        """After the error window closes, green means the bot is still up."""
+        if self._bot_is_running():
+            self.set_status("online")
+
+    def _present_failure(self, text: str, **kwargs) -> None:
+        self._raise_error_light()
+        present_failure(self, text, **kwargs)
+        self._settle_error_light()
 
     def on_run_clicked(self):
         global BOT_STARTED
@@ -669,14 +806,15 @@ class MainWindow(QMainWindow):
         if not token:
             token = (os.environ.get("DISCORD_TOKEN") or "").strip()
         if not token:
-            self.set_status("error")
+            self._raise_error_light()
             show_error(
                 self,
                 "Discord token is missing",
                 "No bot token was found in secure storage or the environment.",
-                hint="Open Settings → Discord, paste your bot token, then Save and Run Bot again.",
+                hint="Open Settings → Discord, paste your bot token, then Save and Run again.",
             )
             self.append_log("[ERROR] Discord token not set.")
+            self._settle_error_light()
             return
 
         from core.home_id import parse_home_server_id
@@ -686,7 +824,7 @@ class MainWindow(QMainWindow):
         ).strip()
         home_id = parse_home_server_id(home_raw)
         if not home_id:
-            self.set_status("error")
+            self._raise_error_light()
             show_error(
                 self,
                 "Home Server ID is missing" if not home_raw else "Home Server ID is not a server ID",
@@ -700,13 +838,19 @@ class MainWindow(QMainWindow):
                 ),
             )
             self.append_log("[ERROR] HOME_SERVER_ID not set." if not home_raw else f"[ERROR] HOME_SERVER_ID invalid: {home_raw}")
+            self._settle_error_light()
             return
         home = str(home_id)
 
         backend = (settings.get("provider_backend") or "cloud").strip().lower()
-        provider_key = (settings.get("inf_api_key") or "").strip() or (
-            os.environ.get("GROQ_API_KEY") or ""
-        ).strip()
+        if backend == "openrouter":
+            provider_key = (settings.get("openrouter_api_key") or "").strip() or (
+                os.environ.get("OPENROUTER_API_KEY") or ""
+            ).strip()
+        else:
+            provider_key = (settings.get("inf_api_key") or "").strip() or (
+                os.environ.get("GROQ_API_KEY") or ""
+            ).strip()
 
         # Ollama does not need a cloud API key
         if backend != "ollama" and not provider_key:
@@ -724,15 +868,26 @@ class MainWindow(QMainWindow):
                 env[env_name] = val
 
         # Force backend + model explicitly (after the ENV_MAP loop)
-        env["ECHE_PROVIDER"] = "ollama" if backend == "ollama" else "cloud"
         if backend == "ollama":
+            env["ECHE_PROVIDER"] = "ollama"
             env["GROQ_MODEL"] = (
                 settings.get("ollama_model")
                 or settings.get("groq_model")
                 or "llama3"
             ).strip()
             env.setdefault("GROQ_API_KEY", "ollama")
+        elif backend == "openrouter":
+            env["ECHE_PROVIDER"] = "openrouter"
+            env["GROQ_MODEL"] = (
+                settings.get("openrouter_model")
+                or settings.get("groq_model")
+                or "openrouter/free"
+            ).strip()
+            or_key = (settings.get("openrouter_api_key") or "").strip()
+            if or_key:
+                env["OPENROUTER_API_KEY"] = or_key
         else:
+            env["ECHE_PROVIDER"] = "cloud"
             env["GROQ_MODEL"] = (
                 settings.get("cloud_model")
                 or settings.get("groq_model")
@@ -766,7 +921,6 @@ class MainWindow(QMainWindow):
 
         self.append_log(f"[INFO] Starting bot ({launch_label})...")
         self.set_status("starting")
-        self.set_loading(True, "Starting bot…")
         self._tb_buffer.clear()
         self._tb_active = False
 
@@ -789,13 +943,11 @@ class MainWindow(QMainWindow):
                 startupinfo=startupinfo,
             )
             self.append_log(f"[INFO] Bot process started with PID: {self.bot_process.pid}")
-            self.set_loading(True, "Bot starting…")
         except Exception as e:
             tb = traceback.format_exc()
             self.append_log(f"[ERROR] Failed to start bot: {e}\n{tb}")
-            self.set_status("error")
             self.set_loading(False)
-            present_failure(self, tb, log_fn=None, default_title="Failed to start bot")
+            self._present_failure(tb, log_fn=None, default_title="Failed to start bot")
             return
 
         BOT_STARTED = True
@@ -858,6 +1010,17 @@ class MainWindow(QMainWindow):
         BOT_STARTED = False
         self.set_status("offline")
         self.append_log("[INFO] Bot stopped.")
+
+    def shutdown_for_update(self):
+        """Stop the bot and quit so the detached update script can replace Eche.exe."""
+        self.append_log("[update] Closing Eche so the update can replace the running files.")
+        try:
+            self.on_stop_clicked()
+        except Exception as e:
+            self.append_log(f"[WARN] Error stopping bot before update: {e}")
+        app = QApplication.instance()
+        if app is not None:
+            QTimer.singleShot(400, app.quit)
 
     def prepare_for_update(self):
         global BOT_STARTED
@@ -954,13 +1117,12 @@ class MainWindow(QMainWindow):
                 text = f"[{channel}] {msg}" if channel else str(msg)
                 self.append_log(text)
                 if looks_like_traceback(str(msg)):
-                    present_failure(self, str(msg), log_fn=None)
+                    self._present_failure(str(msg), log_fn=None)
             elif event == "fatal":
                 msg = str(data.get("message") or "Bot failed to start")
                 self.append_log(f"[FATAL] {msg}")
-                self.set_status("error")
                 self.set_loading(False)
-                present_failure(self, msg, log_fn=None)
+                self._present_failure(msg, log_fn=None)
             elif event == "ready":
                 user = data.get("user", "")
                 label = f"Bot online · {user}" if user else "Bot online"
@@ -979,9 +1141,8 @@ class MainWindow(QMainWindow):
                 ):
                     self.cog_manager_window.apply_cog_list(loaded)
             elif event == "unifier_update":
-                self._append_panel(
-                    self.chat_output, f"[unifier] {data.get('text', '')}"
-                )
+                # The chat pane is the conversation. The prompt stays out of it.
+                pass
             else:
                 self.append_log(raw)
         except Exception as e:
@@ -1019,7 +1180,7 @@ class MainWindow(QMainWindow):
 
         self.append_log(raw)
         if "HOME_SERVER_ID is not set" in raw or "DISCORD_TOKEN missing" in raw:
-            present_failure(self, raw, log_fn=None)
+            self._present_failure(raw, log_fn=None)
 
     def _flush_traceback_buffer(self) -> None:
         if not self._tb_buffer:
@@ -1028,8 +1189,7 @@ class MainWindow(QMainWindow):
         text = "\n".join(self._tb_buffer)
         self._tb_buffer.clear()
         self._tb_active = False
-        self.set_status("error")
-        present_failure(self, text, log_fn=None, default_title="Code error")
+        self._present_failure(text, log_fn=None, default_title="Code error")
 
     def _append_panel(self, widget, text: str):
         if widget is None or text is None:
@@ -1063,11 +1223,27 @@ class MainWindow(QMainWindow):
             self.append_log("[INFO] Bot output reader finished.")
             self.set_loading(False)
 
-    def on_settings_clicked(self):
+    def on_settings_clicked(self, page=None):
+        # A normal click passes False. Only a page name changes the opening tab.
+        if not isinstance(page, str):
+            page = None
         self.settings_window = SettingsWindow(main_window=self)
+        if page:
+            self.settings_window.show_page(page)
         self.settings_window.show()
         self.settings_window.raise_()
         self.settings_window.activateWindow()
+
+    def on_update_clicked(self):
+        self.on_settings_clicked("updates")
+
+    def open_economy_window(self):
+        if not getattr(self, "economy_window", None):
+            from gui.widgets.economywindow import EconomyWindow
+            self.economy_window = EconomyWindow(main_window=self)
+        self.economy_window.show()
+        self.economy_window.raise_()
+        self.economy_window.activateWindow()
 
     def on_unifier_clicked(self):
         try:
@@ -1084,7 +1260,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             error_msg = f"[ERROR] Failed to open Unifier: {e}\n{traceback.format_exc()}"
             self.append_log(error_msg)
-            present_failure(self, error_msg, log_fn=None)
+            self._present_failure(error_msg, log_fn=None)
 
     def on_cog_manager_clicked(self):
         if not self.cog_manager_window:
@@ -1097,7 +1273,7 @@ class MainWindow(QMainWindow):
 
         if not self.bot_process or self.bot_process.poll() is not None:
             self.append_log(
-                "[INFO] Cog browser opened (bot offline — toggles disabled until Run Bot)."
+                "[INFO] Cog browser opened (bot offline — toggles disabled until Run)."
             )
 
         self.cog_manager_window.show()

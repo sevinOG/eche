@@ -1,16 +1,34 @@
 # bot_memory.py
+# The bot's self context for one user lives in that user's context thread,
+# beside the user's own context message.
 
-import discord
-from core.context_manager import HOME_SERVER_ID, get_home_guild
+from core.context_manager import (
+    HOME_SERVER_ID,
+    _compact_cloud_if_due,
+    fit_memory_pin,
+    get_home_guild,
+    parse_pin_sections,
+)
 from core.debuglog import dprint
-from core.today import today_day
+from core.discord_store import bot_memory_header
+from core.memory_lines import stored_line
 
-BOT_HEADER = "Self Conversation Data (Group Setting):\n\n"
+
+def _label(username, user_id) -> str:
+    """Same name the user pin uses: the global username, else the id."""
+    name = " ".join(str(username or "").split())
+    if name:
+        return name
+    if user_id is not None:
+        return str(user_id)
+    return "them"
 
 
-async def ensure_bot_memory_channel(bot):
+async def ensure_bot_memory_channel(bot, user_id, username=None):
     """
-    Ensures the bot's memory ALWAYS lives in the HOME SERVER.
+    The bot's self-context message for this user, in their context thread.
+    Same Summary / New shape as the user pin, under its own title.
+    Returns (thread, message). Both are None when the home guild is missing.
     """
     guild = get_home_guild(bot)
     if guild is None:
@@ -19,116 +37,67 @@ async def ensure_bot_memory_channel(bot):
             f"({HOME_SERVER_ID}) / bot is in that server"
         )
         return None, None
+    if user_id is None:
+        dprint("[bot_memory] user_id is required — self context is per user")
+        return None, None
 
-    category_name = "bot-memory"
-    category = discord.utils.get(guild.categories, name=category_name)
-    if not category:
-        dprint("Creating category:", category_name)
-        category = await guild.create_category(category_name)
+    from core.discord_store import THREAD_CONTEXT, adopt_bot_record, ensure_user_thread
 
-    channel_name = "context"
-    channel = discord.utils.get(category.channels, name=channel_name)
-    if not channel:
-        dprint("Creating bot context channel")
-        channel = await category.create_text_channel(channel_name)
+    thread = await ensure_user_thread(guild, user_id, THREAD_CONTEXT, username)
+    if thread is None:
+        return None, None
+    message = await adopt_bot_record(thread, _label(username, user_id))
+    if message is None:
+        return thread, None
+    return thread, message
 
-    pins = await channel.pins()
-    if pins:
-        # Ensure header spacing is correct
-        pinned = pins[0]
-        if not pinned.content.startswith(BOT_HEADER):
-            fixed = BOT_HEADER + pinned.content.split("Summary:", 1)[-1]
-            await pinned.edit(content=fixed)
-        return channel, pins[0]
 
-    # Create a clean pinned message with correct spacing
-    dprint("Creating pinned bot context message")
-    msg = await channel.send(
-        BOT_HEADER +
-        "Summary:\n(none yet)\n\nNew:\n"
-    )
-    await msg.pin()
-    return channel, msg
+def _memory_line(reply_text: str) -> str:
+    """One New: line. The caller already wrote the short sentence."""
+    return stored_line(reply_text)
 
 
 def bot_lines_in_new_section(content: str) -> list[str]:
-    """BOT: lines stored in the recent block, ignoring the long-term summary."""
-    text = content or ""
-    if "New:" not in text:
-        return []
-    new_block = text.split("New:", 1)[1]
-    return [line for line in new_block.splitlines() if line.startswith("BOT:")]
+    """Lines in New:, ignoring the long-term cloud. Older BOT: lines count too."""
+    _header, _summary, recent = parse_pin_sections(content or "", "")
+    return [line for line in recent if line.strip()]
 
 
-async def log_bot_event(bot, reply_text):
+async def log_bot_event(bot, user_id, reply_text, username=None):
     """
-    Appends the bot's reply inside the New: section.
+    Appends one short line inside this user's self-context New: section.
 
-    Does not summarize. Call archive_bot_recents_if_due after the Discord
-    reply has already been sent.
+    Does not fold. Call this only after the Discord reply is already
+    out, and call archive_bot_recents_if_due after this write. A fold on
+    that turn consumes the recent lines. Nothing is appended after it.
     """
 
-    # 1. Ensure channel + pinned exist
-    channel, pinned = await ensure_bot_memory_channel(bot)
+    # 1. Ensure the user's context thread + bot message exist
+    channel, pinned = await ensure_bot_memory_channel(bot, user_id, username)
     if not channel or not pinned:
         dprint("ERROR: Could not update bot memory.")
         return
 
-    content = pinned.content or BOT_HEADER
+    from core.discord_store import refresh_record
 
-    # -----------------------------------------------------
-    # 2. Ensure structure exists
-    # -----------------------------------------------------
-    if "Summary:" not in content or "New:" not in content:
-        content = (
-            BOT_HEADER +
-            "Summary:\n(none yet)\n\nNew:\n"
-        )
-
-    # -----------------------------------------------------
-    # 3. Slice into sections
-    # -----------------------------------------------------
-    try:
-        summary_start = content.index("Summary:") + len("Summary:")
-        new_start = content.index("New:")
-    except ValueError:
-        dprint("ERROR: Bot context malformed.")
-        return
-
-    before_summary = content[:summary_start]
-    after_summary = content[summary_start:new_start]
-    new_section = content[new_start:]
-
-    # -----------------------------------------------------
-    # 4. Insert BOT line inside the New: section
-    # -----------------------------------------------------
-    if not new_section.endswith("\n"):
-        new_section += "\n"
-
-    new_section = new_section + f"BOT: [{today_day()}] {reply_text}\n"
-
-    # -----------------------------------------------------
-    # 5. Rebuild pinned message
-    # -----------------------------------------------------
-    new_content = before_summary + after_summary + new_section
-
-    # Safety: avoid Discord 2000-char limit
+    header = bot_memory_header(_label(username, user_id))
+    pinned = await refresh_record(pinned)
+    label, summary, recent = parse_pin_sections(pinned.content or header, header)
+    recent.append(_memory_line(reply_text).strip())
+    summary = await _compact_cloud_if_due(label, summary)
+    new_content = fit_memory_pin(label, summary, recent)
     if len(new_content) > 1990:
-        dprint("WARNING: Bot memory exceeded limit before summarization. Resetting.")
-        new_content = (
-            BOT_HEADER +
-            "Summary:\n(none yet)\n\nNew:\n" +
-            f"BOT: [{today_day()}] {reply_text}\n"
-        )
+        dprint("WARNING: Bot memory still exceeds the pin limit after fitting.")
 
     try:
-        await pinned.edit(content=new_content)
+        from core.discord_store import edit_record
+        await edit_record(pinned, new_content)
     except Exception as e:
         dprint("ERROR editing bot memory:", e)
 
 
-async def archive_bot_recents_if_due(bot):
-    """After the reply is sent, fold two stored BOT lines into long-term memory.
+async def archive_bot_recents_if_due(bot, user_id, username=None):
+    """After the reply is sent, fold three stored lines into that user's cloud.
 
     The next reply then becomes the first line in an empty New: block.
     A failed summary leaves the lines in New: so they are not dropped.
@@ -136,7 +105,7 @@ async def archive_bot_recents_if_due(bot):
     from core.context_summarizer import ARCHIVE_AFTER_MESSAGES, summarize_context
 
     guild = get_home_guild(bot)
-    channel, pinned = await ensure_bot_memory_channel(bot)
+    channel, pinned = await ensure_bot_memory_channel(bot, user_id, username)
     if not channel or not pinned:
         return
 
@@ -149,8 +118,8 @@ async def archive_bot_recents_if_due(bot):
     await summarize_context(
         bot,
         guild,
-        bot.user.id,
-        None,
-        override_header=BOT_HEADER,
+        user_id,
+        username,
+        override_header=bot_memory_header(_label(username, user_id)),
         keep_recent=0,
     )

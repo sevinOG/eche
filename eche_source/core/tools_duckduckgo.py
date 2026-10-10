@@ -41,10 +41,7 @@ _BROWSER = (
 )
 
 _DESCRIPTION = (
-    "Look up a question on DuckDuckGo. Call this when the speaker asks for "
-    "a fact, score, news, definition, date, or anything you should not guess. "
-    "Pass their question as query and do not guess. Do not write the answer "
-    "yourself. Do not call this for opinions, roleplay, or someone's personal context."
+    "Look up a fact, score, news, date, or definition. Pass their question as query."
 )
 
 

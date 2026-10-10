@@ -7,6 +7,17 @@ from core.context_manager import ensure_context_channel, get_home_guild, read_ra
 from core.context_summarizer import summarize_context
 
 
+async def _send_fenced(ctx, heading: str, body: str) -> None:
+    """Post a titled code block. A long body continues as later messages."""
+    from core.client import REPLY_MAX_CHARS, discord_chunks
+
+    head = f"{heading}\n"
+    room = max(16, REPLY_MAX_CHARS - len(head) - 8)
+    pieces = discord_chunks((body or "").strip() or "(empty)", room)
+    await ctx.send(f"{head}```\n{pieces[0]}\n```")
+    for extra in pieces[1:]:
+        await ctx.send(f"```\n{extra}\n```")
+
 
 class ContextDebug(commands.Cog):
     def __init__(self, bot):
@@ -32,7 +43,7 @@ class ContextDebug(commands.Cog):
         except ValueError:
             summary_body = "(malformed context)"
 
-        await ctx.send(f"**Summary for {member.name}:**\n```\n{summary_body}\n```")
+        await _send_fenced(ctx, f"**Summary for {member.name}:**", summary_body)
 
     # ---------------------------------------------------------
     # OVERWRITE SUMMARY (PATCHED + SAFE)
@@ -75,7 +86,8 @@ class ContextDebug(commands.Cog):
         new_content = before + "\n" + cleaned + "\n\n" + after
 
         # 5. Apply update
-        await pinned.edit(content=new_content)
+        from core.discord_store import edit_record
+        await edit_record(pinned, new_content)
 
         # 6. Summarize
         await summarize_context(
@@ -111,7 +123,8 @@ class ContextDebug(commands.Cog):
 
         new_content = before + "\n(none yet)\n\n" + after
 
-        await pinned.edit(content=new_content)
+        from core.discord_store import edit_record
+        await edit_record(pinned, new_content)
 
         await summarize_context(
             self.bot,
@@ -132,51 +145,56 @@ class ContextDebug(commands.Cog):
         if content is None:
             return await ctx.send("Could not read that context.")
 
-        await ctx.send(f"**Raw Context for {member.name}:**\n```\n{content}\n```")
+        await _send_fenced(ctx, f"**Raw Context for {member.name}:**", content)
 
     # ---------------------------------------------------------
     # REPAIR BOT MEMORY (FULL AUTO-REBUILD)
     # ---------------------------------------------------------
     @commands.command(name="bot_repair")
     @commands.is_owner()
-    async def repair_bot_memory(self, ctx):
-        from core.bot_memory import ensure_bot_memory_channel, BOT_HEADER
+    async def repair_bot_memory(self, ctx, member: discord.Member = None):
+        from core.bot_memory import ensure_bot_memory_channel
+        from core.discord_store import bot_memory_header
         guild = get_home_guild(self.bot)
+        member = member or ctx.author
+        header = bot_memory_header(member.name)
 
-        # 1. Get Bot's memory channel + pinned message
-        channel, pinned = await ensure_bot_memory_channel(self.bot)
+        # Self context lives in this user's context thread.
+        channel, pinned = await ensure_bot_memory_channel(
+            self.bot, member.id, member.name
+        )
         if not channel or not pinned:
             return await ctx.send(
                 "Could not reach bot memory. Check the home server id and that the bot is in that server."
             )
         content = pinned.content or ""
 
-        # 2. Extract all BOT: lines
-        bot_lines = []
-        for line in content.splitlines():
-            if line.strip().startswith("BOT:"):
-                bot_lines.append(line)
+        # 2. Keep the short lines already in New:, including older BOT: lines.
+        from core.context_manager import parse_pin_sections
+
+        _label, _summary, bot_lines = parse_pin_sections(content, header)
 
         # 3. Rebuild pinned message
         rebuilt = (
-            BOT_HEADER +
+            header +
             "Summary:\n(none yet)\n\nNew:\n" +
             ("\n".join(bot_lines) + "\n" if bot_lines else "")
         )
 
         # 4. Apply repair
-        await pinned.edit(content=rebuilt)
+        from core.discord_store import edit_record
+        await edit_record(pinned, rebuilt)
 
         # 5. Trigger summarizer
         await summarize_context(
             self.bot,
             guild,
-            self.bot.user.id,
-            None,
-            override_header=BOT_HEADER
+            member.id,
+            member.name,
+            override_header=header
         )
 
-        await ctx.send("Bot memory has been fully repaired and rebuilt.")
+        await ctx.send(f"Bot memory for **{member.name}** has been fully repaired and rebuilt.")
 
     # ---------------------------------------------------------
     # DEBUGUSER
@@ -190,20 +208,21 @@ class ContextDebug(commands.Cog):
         channel, pinned = await ensure_context_channel(
             self.bot, guild, member.id, member.name
         )
+        if not channel or not pinned:
+            return await ctx.send("Could not reach that user's context pin.")
 
-        summary = await summarize_context(
-            self.bot,
-            guild,
-            member.id,
-            member.name
-        )
+        from core.context_manager import parse_pin_sections
 
-        await ctx.send(
-            f"**User Context Debug for {member.name}:**\n"
-            f"Channel: {channel.mention}\n"
-            f"Pinned:\n```\n{pinned.content}\n```\n"
-            f"Summary:\n```\n{summary}\n```"
+        _label, summary, _recent = parse_pin_sections(
+            pinned.content or "",
+            f"Context for {member.name}:\n\n",
         )
+        await _send_fenced(
+            ctx,
+            f"**User Context Debug for {member.name}:**\nChannel: {channel.mention}\nPinned:",
+            pinned.content or "",
+        )
+        await _send_fenced(ctx, "**Summary:**", summary or "")
 
 
 async def setup(bot):

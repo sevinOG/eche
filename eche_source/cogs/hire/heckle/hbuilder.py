@@ -27,7 +27,7 @@ def build_heckle_prompt(target_mention: str, amount: float):
     elif max_chars < 1200:
         length_desc = "long (a detailed paragraph)"
     else:
-        length_desc = "very long (a dramatic rant up to the character limit)"
+        length_desc = "very long (a dramatic rant)"
 
     # Tone scaling
     if intensity < 0.15:
@@ -52,7 +52,6 @@ Generate a heckle that:
 - Is {length_desc}
 - Uses {tone_desc}
 - Speak directly to the target only
-- MUST stay under {max_chars} characters (hard limit)
 - Do not break character
 - Do not reveal your reasoning
 - Do not apologize, just deliver the insult.

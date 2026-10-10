@@ -44,12 +44,7 @@ def asks_for_own_context(text: str) -> bool:
     return _OWN_CONTEXT_ASK.fullmatch(cleaned) is not None
 
 _CONTEXT_RAW = (
-    "Read the pinned memory context of the person who is speaking to you. "
-    "Call this only when they ask to see their own context, for example "
-    "what their context looks like or to show them their context. "
-    "It always reads that speaker and cannot read anyone else. "
-    "If they ask for another person's context, do not call this. "
-    "Do not type a command and do not write the context yourself."
+    "Read this speaker's own pinned context, and only when they ask to see it."
 )
 
 

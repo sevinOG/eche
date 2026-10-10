@@ -8,9 +8,6 @@ from core.home_id import home_server_id_from_env
 
 HOME_SERVER_ID = home_server_id_from_env()
 
-OWNED_CHANNEL = "owned-items"
-HOSTED_CHANNEL = "hosted-items"
-
 
 class ConfirmPurchaseView(discord.ui.View):
     def __init__(self, cog, ctx, buyer, seller, item_name, price, item_entry, seller_hosted_file):
@@ -126,59 +123,60 @@ class Shops(commands.Cog):
         return await bank.set_balance(member, amount)
 
     # -------- INTERNAL FILE HELPERS --------
-    async def _find_or_make_pin(self, channel, header_prefix: str, seed: str):
-        """Return a pin whose content starts with header_prefix; create if missing."""
-        pins = await channel.pins()
-        for p in pins:
-            if (p.content or "").startswith(header_prefix):
-                return p
-        msg = await channel.send(seed)
-        await msg.pin()
-        return msg
-
     async def ensure_shop_files(self, member):
         """
-        Shop inventory lives on the home server under memory-{user}/owned-items.
-        Both OWNED ITEMS and HOSTED ITEMS pins share that single channel —
-        we no longer create a separate #hosted-items channel.
+        Shop inventory lives in the user's items thread.
+        OWNED ITEMS and HOSTED ITEMS are two pinned messages in that thread.
         """
-        guild = self.bot.get_guild(HOME_SERVER_ID)
-        if guild is None:
-            return None, None
-
-        category = discord.utils.get(guild.categories, name=f"memory-{member.id}")
-        if category is None:
-            category = await guild.create_category(f"memory-{member.id}")
-
-        # Prefer legacy #hosted-items if it already exists; otherwise one #owned-items channel
-        legacy_hosted = discord.utils.get(category.text_channels, name=HOSTED_CHANNEL)
-        owned_channel = discord.utils.get(category.text_channels, name=OWNED_CHANNEL)
-        if owned_channel is None:
-            owned_channel = await category.create_text_channel(OWNED_CHANNEL)
-
-        owned_file = await self._find_or_make_pin(
-            owned_channel, "OWNED ITEMS", "OWNED ITEMS\n"
+        from core.discord_store import (
+            HOSTED_HEADER,
+            OWNED_HEADER,
+            THREAD_ITEMS,
+            ensure_record,
+            ensure_user_thread,
         )
 
-        if legacy_hosted is not None:
-            hosted_file = await self._find_or_make_pin(
-                legacy_hosted, "HOSTED ITEMS", "HOSTED ITEMS\n"
-            )
-        else:
-            # New installs: host pin lives next to owned pin (no extra channel)
-            hosted_file = await self._find_or_make_pin(
-                owned_channel, "HOSTED ITEMS", "HOSTED ITEMS\n"
-            )
+        guild = self.bot.get_guild(HOME_SERVER_ID)
+        if guild is None or member is None:
+            return None, None
 
+        thread = await ensure_user_thread(
+            guild, member.id, THREAD_ITEMS, getattr(member, "name", None)
+        )
+        if thread is None:
+            return None, None
+
+        owned_file = await ensure_record(thread, OWNED_HEADER, "OWNED ITEMS\n")
+        hosted_file = await ensure_record(thread, HOSTED_HEADER, "HOSTED ITEMS\n")
         return owned_file, hosted_file
 
+    async def _existing_hosted_file(self, member):
+        """HOSTED ITEMS pin if this user already has an items thread. Does not create one."""
+        from core.discord_store import HOSTED_HEADER, THREAD_ITEMS, find_record, find_thread, user_channel
+
+        guild = self.bot.get_guild(HOME_SERVER_ID)
+        if guild is None or member is None:
+            return None
+        channel = user_channel(guild, member.id)
+        if channel is None:
+            return None
+        thread = await find_thread(channel, THREAD_ITEMS)
+        if thread is None:
+            return None
+        return await find_record(thread, HOSTED_HEADER)
+
     async def load_items(self, file_message):
-        lines = file_message.content.splitlines()
+        from core.discord_store import refresh_record
+
+        fresh = await refresh_record(file_message)
+        lines = (getattr(fresh, "content", None) or "").splitlines()
         return lines[1:]
 
     async def save_items(self, file_message, header, items):
+        from core.discord_store import edit_record
+
         content = header + "\n" + "\n".join(items)
-        await file_message.edit(content=content)
+        await edit_record(file_message, content)
 
     # -------- ROOT: ?shop --------
     @commands.group(name="shop", invoke_without_command=True)
@@ -300,6 +298,8 @@ class Shops(commands.Cog):
             return await ctx.send("❌ Price must be a number.")
 
         guild = self.bot.get_guild(HOME_SERVER_ID)
+        if guild is None:
+            return await ctx.send("❌ Home server not found.")
 
         seller = None
         seller_hosted_file = None
@@ -307,7 +307,9 @@ class Shops(commands.Cog):
         real_price = None
 
         for member in guild.members:
-            _, hosted_file = await self.ensure_shop_files(member)
+            hosted_file = await self._existing_hosted_file(member)
+            if hosted_file is None:
+                continue
             items = await self.load_items(hosted_file)
 
             for entry in items:

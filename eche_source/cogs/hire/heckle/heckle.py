@@ -48,26 +48,28 @@ class Heckle(commands.Cog):
         attacker_bal -= amount
         await self.bank.save_bank(ctx.author, attacker_bal)
 
-        # Build prompt + char limit
         prompt, max_chars = build_heckle_prompt(f"<@{target.id}>", amount)
+        from core.client import REPLY_MAX_CHARS, discord_chunks
 
-        # Call Groq via SIMPLE endpoint
+        prefix = "🤭 **Heckler says:**\n"
+        room = max(16, REPLY_MAX_CHARS - len(prefix))
+        budget = min(max_chars, room)
+
         try:
-            heckle_text = await call_groq_simple(prompt, max_chars=max_chars)
+            heckle_text = await call_groq_simple(prompt, max_chars=budget)
         except Exception as e:
-            return await ctx.send(f"❌ Groq error: {e}")
+            for chunk in discord_chunks(f"❌ Groq error: {e}") or ["❌ Groq error."]:
+                await ctx.send(chunk)
+            return
 
-        # If the REST client returned an error tuple
         if isinstance(heckle_text, tuple):
-            return await ctx.send(f"❌ {heckle_text[1]}")
+            detail = heckle_text[1] if len(heckle_text) > 1 else "Heckle failed."
+            for chunk in discord_chunks(f"❌ {detail}") or ["❌ Heckle failed."]:
+                await ctx.send(chunk)
+            return
 
-        # Enforce char limit (hard cutoff)
-        heckle_text = heckle_text[:max_chars]
-
-        # Send the heckle
-        await ctx.send(
-            f"🤭 **Heckler says:**\n{heckle_text}"
-        )
+        for chunk in discord_chunks(prefix + (heckle_text or "").strip()):
+            await ctx.send(chunk)
 
 
 async def setup(bot):

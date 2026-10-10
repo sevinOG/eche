@@ -19,6 +19,7 @@ from typing import Any
 SECRET_KEYS = (
     "discord_token",
     "inf_api_key",       # GROQ_API_KEY
+    "openrouter_api_key",  # OPENROUTER_API_KEY
     "us_access_token",   # US_ACCESS_TOKEN (Unsplash)
     "us_secret_token",   # US_SECRET_TOKEN (Unsplash)
 )
@@ -26,27 +27,28 @@ SECRET_KEYS = (
 # UPDATED PUBLIC KEYS (per your request)
 PUBLIC_KEYS = (
     "home_server_id",
-    "thoughts_thread_id",
     "groq_model",          # active model → GROQ_MODEL env (for client.py)
     "cloud_model",         # Cloud (Groq) model id
     "ollama_model",        # Local Ollama model id
-    "provider_backend",    # cloud | ollama
+    "openrouter_model",    # OpenRouter model id (author/slug)
+    "provider_backend",    # cloud | openrouter | ollama
     "summarizer_model",
     "summarizer_prompt_path",
     "project_path",
     "suppress_no_provider_warn",
     "admin_tools",          # "1" while the Admin tools toggle is on
-    "owner_id",             # Discord user id allowed to use admin tools
+    "default_tools",        # "0" hides thread, lookup, and context. Blank stays on.
+    "owner_id",             # Discord user ids for owner commands and admin tools
 )
 
 # Map settings key -> environment variable used by the bot
 ENV_MAP = {
     "discord_token": "DISCORD_TOKEN",
     "inf_api_key": "GROQ_API_KEY",
+    "openrouter_api_key": "OPENROUTER_API_KEY",
     "us_access_token": "US_ACCESS_TOKEN",
     "us_secret_token": "US_SECRET_TOKEN",
     "home_server_id": "HOME_SERVER_ID",
-    "thoughts_thread_id": "THOUGHTS_THREAD_ID",
     "groq_model": "GROQ_MODEL",
     "provider_backend": "ECHE_PROVIDER",
     "summarizer_model": "SUMMARIZER_MODEL",
@@ -54,24 +56,6 @@ ENV_MAP = {
     "admin_tools": "ECHE_ADMIN_TOOLS",
     "owner_id": "ECHE_OWNER_ID",
 }
-
-# Human labels for Settings UI (key -> label)
-SECRET_FIELD_META = (
-    ("discord_token", "Discord Token", "Bot token from Discord Developer Portal"),
-    ("inf_api_key", "Provider API Key", "Key for your AI provider (default stack uses Groq)"),
-    ("us_access_token", "Unsplash Access Token", "Image search (optional)"),
-    ("us_secret_token", "Unsplash Secret Token", "Image search (optional)"),
-)
-
-PUBLIC_FIELD_META = (
-    ("home_server_id", "Home Server ID", "Discord server used for memory / economy"),
-    ("thoughts_thread_id", "Thoughts Thread ID", "Optional thread for internal thoughts"),
-    (
-        "groq_model",
-        "Model ID",
-        "Which AI model to call (default: llama-3.3-70b-versatile). Use ℹ to learn more.",
-    ),
-)
 
 _SECRETS_FILENAME = "secrets.dpapi.json"
 _SETTINGS_FILENAME = "settings.json"
@@ -204,6 +188,9 @@ def _restrict_acl_windows(path: str) -> None:
         import subprocess
 
         user = getpass.getuser()
+        flags = 0
+        if sys.platform.startswith("win"):
+            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         subprocess.run(
             [
                 "icacls",
@@ -215,6 +202,8 @@ def _restrict_acl_windows(path: str) -> None:
             check=False,
             capture_output=True,
             text=True,
+            timeout=8,
+            creationflags=flags,
         )
     except Exception:
         try:
@@ -286,6 +275,7 @@ def _save_public(root: str, public: dict[str, str]) -> None:
     data = _read_json(settings_path(root))
     for key in SECRET_KEYS:
         data.pop(key, None)
+    data.pop("thoughts_thread_id", None)
     for key in PUBLIC_KEYS:
         data[key] = str(public.get(key) or "").strip()
     data["secrets_backend"] = "dpapi"
@@ -367,26 +357,24 @@ def load_all(root: str | None = None) -> dict[str, str]:
             except Exception:
                 out["project_path"] = root or os.getcwd()
 
-    # ⭐ REPLACED TAIL OF load_all() PER YOUR REQUEST ⭐
-
     backend = (out.get("provider_backend") or "").strip().lower()
-    if backend not in ("cloud", "ollama"):
+    if backend not in ("cloud", "ollama", "openrouter"):
         out["provider_backend"] = "cloud"
         backend = "cloud"
 
     legacy = (out.get("groq_model") or "").strip()
     cloud_m = (out.get("cloud_model") or "").strip()
     ollama_m = (out.get("ollama_model") or "").strip()
+    openrouter_m = (out.get("openrouter_model") or "").strip()
 
-    _CLOUD_DEFAULT = "llama-3.3-70b-versatile"
+    _CLOUD_DEFAULT = "qwen/qwen3.8-27b"
     _OLLAMA_DEFAULT = "llama3"
+    _OPENROUTER_DEFAULT = "openrouter/free"
     _OLLAMA_LOOKALIKES = {"llama3", "llama3.2", "llama3.1", "mistral", "mixtral", "phi3", "qwen2.5"}
 
     if not cloud_m:
-        if legacy and legacy not in _OLLAMA_LOOKALIKES and "llama-3.3" in legacy or (
-            legacy and legacy not in _OLLAMA_LOOKALIKES
-        ):
-            cloud_m = legacy if legacy not in _OLLAMA_LOOKALIKES else _CLOUD_DEFAULT
+        if legacy and legacy not in _OLLAMA_LOOKALIKES:
+            cloud_m = legacy
         else:
             cloud_m = _CLOUD_DEFAULT
         out["cloud_model"] = cloud_m
@@ -398,9 +386,23 @@ def load_all(root: str | None = None) -> dict[str, str]:
             ollama_m = _OLLAMA_DEFAULT
         out["ollama_model"] = ollama_m
 
-    out["groq_model"] = cloud_m if backend == "cloud" else ollama_m
+    if not openrouter_m:
+        openrouter_m = _OPENROUTER_DEFAULT
+        out["openrouter_model"] = openrouter_m
+
+    if backend == "ollama":
+        out["groq_model"] = ollama_m
+    elif backend == "openrouter":
+        out["groq_model"] = openrouter_m
+    else:
+        out["groq_model"] = cloud_m
     if not (out.get("groq_model") or "").strip():
-        out["groq_model"] = _CLOUD_DEFAULT if backend == "cloud" else _OLLAMA_DEFAULT
+        if backend == "ollama":
+            out["groq_model"] = _OLLAMA_DEFAULT
+        elif backend == "openrouter":
+            out["groq_model"] = _OPENROUTER_DEFAULT
+        else:
+            out["groq_model"] = _CLOUD_DEFAULT
 
     return out
 

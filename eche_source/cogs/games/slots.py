@@ -1,7 +1,7 @@
 import random
 import discord
 from discord.ui import View, Button, Select
-from cogs.games._core import register_game
+from cogs.games._core import register_game, release_view
 
 
 # ---------------------------------------------------------
@@ -137,6 +137,7 @@ class SlotSession:
 
         self.save_callback = save_callback
         self.message = message
+        self.view = None
 
         if self.odds == 1:
             self.machine = ClassicSlots()
@@ -187,17 +188,23 @@ class SlotSession:
             color=color
         )
         embed.set_footer(text=f"Session balance: {self.balance:.2f} coins")
+        await self._show(embed)
 
+    async def _show(self, embed):
         view = SlotSessionView(self)
+        release_view(self.view)
+        self.view = view
         await self.message.edit(embed=embed, view=view)
 
     async def update_message(self):
         embed = self.message.embeds[0]
         embed.set_footer(text=f"Session balance: {self.balance:.2f} coins")
-        await self.message.edit(embed=embed, view=SlotSessionView(self))
+        await self._show(embed)
 
     async def cash_out(self):
         await self.save_callback(self.ctx.author, self.balance)
+        release_view(self.view)
+        self.view = None
 
         old = self.message.embeds[0]
         embed = discord.Embed.from_dict(old.to_dict())

@@ -68,8 +68,6 @@ WINNER: Defendant
 Do NOT use JSON.
 Do NOT add extra formatting.
 Do NOT add additional headers.
-Keep your response around 1000 characters.
-Do not EVER exceed 2000 characters.
 
 ---
 
@@ -137,7 +135,8 @@ Now issue your verdict.
         # CALL GROQ (your wrapper)
         # -----------------------------------------------------
         try:
-            agent_response = await self.groq(prompt)
+            from core.client import tokens_for
+            agent_response = await self.groq(prompt, max_completion_tokens=tokens_for(1000))
         except Exception as e:
             print(f"[LawManager] Groq error: {e}")
             return

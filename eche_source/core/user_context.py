@@ -7,8 +7,9 @@
 #       _meta.json          # optional: {"name": "My Guild"}
 #       {user_id}.txt       # same Summary/New shape as Discord pins
 #
-# Discord live layout (home / any guild the bot can see):
-#   category memory-{user_id} / channel context / pinned message
+# Discord live layout (home guild):
+#   category "bot memory" / channel user-{id} / thread context
+#   two pins: the user's context, and the bot's self context for that user
 #
 # Parsing mirrors bot_memory / context_manager so GUI and bot share one format.
 
@@ -21,7 +22,6 @@ from dataclasses import dataclass, field
 from typing import Any
 
 HEADER_RE = re.compile(r"^Context for (.+?):\s*$", re.MULTILINE)
-MEMORY_CAT_RE = re.compile(r"^memory-(\d+)$", re.IGNORECASE)
 
 
 def _root() -> str:
@@ -138,7 +138,9 @@ def parse_context(text: str) -> ParsedContext:
     if m:
         display_name = m.group(1).strip()
         header = f"Context for {display_name}:"
-    elif raw.lstrip().startswith("Self Conversation Data"):
+    elif raw.lstrip().startswith("Eche with ") or raw.lstrip().startswith(
+        "Self Conversation Data"
+    ):
         display_name = "Bot"
         header = raw.splitlines()[0].strip()
 
@@ -367,46 +369,49 @@ def import_legacy_memories(server_id: str | int | None = None) -> int:
 # Discord accessors (same shape as botmemorywindow workers)
 # ---------------------------------------------------------------------------
 
+async def _user_context_message(guild, user_id: str | int, *, create: bool):
+    from core.discord_store import (
+        THREAD_CONTEXT,
+        USER_CONTEXT_HEADER,
+        adopt_bot_record,
+        ensure_record,
+        ensure_user_thread,
+        find_record,
+        find_thread,
+        user_channel,
+    )
+
+    if create:
+        thread = await ensure_user_thread(guild, int(user_id), THREAD_CONTEXT)
+    else:
+        channel = user_channel(guild, user_id)
+        thread = await find_thread(channel, THREAD_CONTEXT) if channel else None
+    if thread is None:
+        return None, None
+    if create:
+        message = await ensure_record(thread, USER_CONTEXT_HEADER, f"Context for {user_id}:\n")
+        await adopt_bot_record(thread, str(user_id))
+    else:
+        message = await find_record(thread, USER_CONTEXT_HEADER)
+    return thread, message
+
+
 async def discord_list_user_contexts(guild) -> list[dict[str, Any]]:
     """
-    Scan a guild for memory-{user_id} categories and return pin previews.
+    Scan bot memory for user channels and return context-thread previews.
     Read-only against Discord — does not write local files.
     """
-    import discord  # noqa: F401 — runtime
+    from core.discord_store import list_user_channels
 
     results: list[dict[str, Any]] = []
-    categories = list(getattr(guild, "categories", None) or [])
-    if not categories:
-        # fetch_guild often omits channel cache — pull via HTTP
-        try:
-            from discord import CategoryChannel
-            channels = await guild.fetch_channels()
-            categories = [c for c in channels if isinstance(c, CategoryChannel)]
-        except Exception:
-            categories = []
-
-    for category in categories:
-        m = MEMORY_CAT_RE.match(category.name or "")
-        if not m:
-            continue
-        user_id = m.group(1)
-        channel = discord.utils.get(category.text_channels, name="context")
-        if not channel:
-            try:
-                channel = discord.utils.get(
-                    guild.text_channels, name="context", category_id=category.id
-                )
-            except Exception:
-                channel = None
-        if not channel:
-            continue
-        pins = await channel.pins()
-        text = pins[0].content if pins else ""
+    for user_id, channel in list_user_channels(guild):
+        _thread, message = await _user_context_message(guild, user_id, create=False)
+        text = message.content if message is not None else ""
         parsed = parse_context(text)
         results.append(
             {
-                "id": user_id,
-                "display_name": parsed.display_name or user_id,
+                "id": str(user_id),
+                "display_name": parsed.display_name or str(user_id),
                 "channel_id": channel.id,
                 "raw": text,
                 "summary_preview": (parsed.summary or "")[:120],
@@ -418,31 +423,18 @@ async def discord_list_user_contexts(guild) -> list[dict[str, Any]]:
 
 
 async def discord_fetch_user_context(guild, user_id: str | int) -> str:
-    import discord
-
-    cat = discord.utils.get(guild.categories, name=f"memory-{user_id}")
-    if not cat:
+    _thread, message = await _user_context_message(guild, user_id, create=False)
+    if message is None:
         return ""
-    channel = discord.utils.get(cat.text_channels, name="context")
-    if not channel:
-        return ""
-    pins = await channel.pins()
-    return pins[0].content if pins else ""
+    return message.content or ""
 
 
 async def discord_save_user_context(guild, user_id: str | int, content: str) -> str:
-    import discord
-
-    cat = discord.utils.get(guild.categories, name=f"memory-{user_id}")
-    if not cat:
-        raise RuntimeError(f"No memory-{user_id} category in this server.")
-    channel = discord.utils.get(cat.text_channels, name="context")
-    if not channel:
-        raise RuntimeError(f"No context channel under memory-{user_id}.")
-    pins = await channel.pins()
-    if not pins:
-        msg = await channel.send(content)
-        await msg.pin()
-        return msg.content
-    await pins[0].edit(content=content)
-    return pins[0].content
+    thread, message = await _user_context_message(guild, user_id, create=True)
+    if thread is None:
+        raise RuntimeError(f"No user-{user_id} channel in bot memory.")
+    if message is None:
+        raise RuntimeError(f"No context thread for user-{user_id}.")
+    from core.discord_store import edit_record
+    await edit_record(message, content)
+    return content

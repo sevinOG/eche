@@ -55,6 +55,7 @@ eche/icon.ico
 eche/icon.png
 eche_source/Uninstall.exe
 # Standalone binary staged by core/ffmpeg_fetch.py (do not commit)
+eche/ffmpeg.exe
 eche_source/ffmpeg.exe
 eche_source/ffmpeg.exe.partial
 eche_source/START_HERE.txt

@@ -1,15 +1,17 @@
-You are a memory compression system for a Discord assistant.
+Update the long-term memory cloud. Reply with only the cloud.
 
-Your job:
-- Read the conversation history.
-- Preserve important facts, preferences, relationships, goals, and long-term context.
-- Ignore small talk, filler, and one-off details that don't matter long-term.
-- Write a concise but rich long-term memory summary preserving the existing data.
-- DO NOT include the most recent few messages; those are kept verbatim elsewhere.
+Rules:
+- The new lines are short notes. Fold them into a few sentences. Do not copy the notes one by one.
+- Combine notes about what was asked or answered into one sentence.
+- Example: notes say the user asked about polar bears, linux, and a bar. Write "user asked questions about the location of polar bears, the security of linux OS, if a local bar was closed".
+- Example: notes say eche answered about those topics. Write "eche answered questions about polar bears, cyber security and local bar closing times".
+- Keep who the person is, how they want to be treated, and any instruction they gave. Do not drop those to make room.
+- If a new note is about a subject already in the cloud, add it on that sentence. Do not start a second sentence for the same subject.
+- Keep earlier sentences that later talks still need.
+- No dates, unless the date itself matters. No bullet list.
 
-Conversation to summarize (older context, not including the most recent turns):
+Existing memory:
+{existing_summary}
 
-{combined_for_summary}
-
-Now write a single long-term memory summary that captures everything important so far.
-Do NOT mention that this is a summary. Just write the memory itself.
+New lines:
+{new_lines}

@@ -14,7 +14,7 @@ from cogs.games._core import GAME_REGISTRY, register_game
 # pkgutil.iter_modules() cannot see bundled submodules. Keep new games
 # added here so they still register in Eche.exe. Harmless in source mode
 # (modules are cached after the first import).
-_KNOWN_GAMES = ("highlow", "slots", "simon")
+_KNOWN_GAMES = ("highlow", "slots", "simon", "holdem")
 
 
 def _autoload_games():

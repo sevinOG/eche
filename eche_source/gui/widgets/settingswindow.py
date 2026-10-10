@@ -1,6 +1,6 @@
 # gui/widgets/settingswindow.py
 # Multi-page settings: Discord | AI | Media | Memory | Economy | Security | Updates
-# Cloud vs Ollama: hide unused fields; separate cloud_model / ollama_model; mode-aware save.
+# Cloud, OpenRouter, and Ollama: hide unused fields; each mode keeps its own model.
 
 from __future__ import annotations
 
@@ -27,6 +27,8 @@ from PyQt6.QtWidgets import (
     QListWidgetItem,
     QStackedWidget,
     QComboBox,
+    QRadioButton,
+    QButtonGroup,
 )
 
 from gui.theme import APP_NAME, APP_VERSION
@@ -35,13 +37,16 @@ from gui.widgets.personalitywindow import PersonalityWindow
 from gui.widgets.loading import LoadingIndicator
 from gui.widgets.dialogs import show_error, show_info, present_failure
 from gui.widgets.settings_help import FIELD_HELP
-from gui.widgets.settings_workers import UpdateWorker
+from gui.widgets.settings_workers import SettingsSaveWorker, UpdatePrepareWorker
 
 UNSPLASH_DEV_URL = "https://unsplash.com/developers"
 UNSPLASH_APPS_URL = "https://unsplash.com/oauth/applications"
+OPENROUTER_KEYS_URL = "https://openrouter.ai/keys"
+OPENROUTER_MODELS_URL = "https://openrouter.ai/models"
 
 _CLOUD_DEFAULT = "qwen/qwen3.8-27b"
 _OLLAMA_DEFAULT = "llama3"
+_OPENROUTER_DEFAULT = "openrouter/free"
 _OLLAMA_PLACEHOLDER_PREFIXES = ("Fetching", "Ollama not", "No local")
 
 try:
@@ -115,8 +120,11 @@ class SettingsWindow(QWidget):
         self.resize(780, 640)
         self.setMinimumSize(640, 480)
         self._update_worker = None
+        self._save_worker = None
+        self._save_spin_token = 0
         self._cloud_only: list = []
         self._ollama_only: list = []
+        self._openrouter_only: list = []
         self._pending_ollama_model = _OLLAMA_DEFAULT
         self._ollama_process: QProcess | None = None
 
@@ -186,16 +194,23 @@ class SettingsWindow(QWidget):
         clear_btn.clicked.connect(self.clear_secrets)
         footer.addWidget(clear_btn)
         footer.addStretch()
-        save_btn = QPushButton("Save Settings")
-        save_btn.setObjectName("primary")
-        save_btn.setMinimumHeight(38)
-        save_btn.setMinimumWidth(150)
-        save_btn.clicked.connect(self.save)
-        footer.addWidget(save_btn)
+        self.save_btn = QPushButton("Save Settings")
+        self.save_btn.setObjectName("primary")
+        self.save_btn.setMinimumHeight(38)
+        self.save_btn.setMinimumWidth(150)
+        self.save_btn.clicked.connect(self.save)
+        footer.addWidget(self.save_btn)
         root.addLayout(footer)
 
         self._populate_fields()
         self.nav.setCurrentRow(0)
+
+    def show_page(self, key: str) -> None:
+        """Open one settings category. `key` matches PAGES, for example `updates`."""
+        for index, (_label, page_key) in enumerate(self.PAGES):
+            if page_key == key:
+                self.nav.setCurrentRow(index)
+                return
 
     def _wrap_scroll(self, page: QWidget) -> QScrollArea:
         scroll = QScrollArea()
@@ -242,6 +257,7 @@ class SettingsWindow(QWidget):
 
         self._cloud_only = []
         self._ollama_only = []
+        self._openrouter_only = []
 
         be_block = QVBoxLayout()
         be_block.setSpacing(8)
@@ -253,8 +269,8 @@ class SettingsWindow(QWidget):
         be_top.addWidget(self._info_button("provider_backend"))
         be_block.addLayout(be_top)
         be_hint = QLabel(
-            "Cloud = Groq (default free tier). Ollama = models on this PC. "
-            "Only fields for the selected mode are shown."
+            "Groq is the default cloud. OpenRouter uses its own key and model id. "
+            "Ollama runs on this PC. Only fields for the selected mode are shown."
         )
         be_hint.setObjectName("FieldHint")
         be_hint.setWordWrap(True)
@@ -262,6 +278,7 @@ class SettingsWindow(QWidget):
         self.provider_combo = QComboBox()
         self.provider_combo.setMinimumHeight(34)
         self.provider_combo.addItem("Cloud — Groq (default)", "cloud")
+        self.provider_combo.addItem("OpenRouter", "openrouter")
         self.provider_combo.addItem("Local — Ollama", "ollama")
         self.provider_combo.currentIndexChanged.connect(self._on_provider_backend_changed)
         be_block.addWidget(self.provider_combo)
@@ -321,6 +338,35 @@ class SettingsWindow(QWidget):
         self._ollama_only.append(ol_wrap)
         body.addWidget(ol_wrap)
 
+        or_wrap = QWidget()
+        or_l = QVBoxLayout(or_wrap)
+        or_l.setContentsMargins(0, 0, 0, 0)
+        or_l.setSpacing(12)
+        or_l.addLayout(self._field_block(
+            "OpenRouter API Key",
+            "From openrouter.ai/keys — stored separately from the Groq key",
+            secret=True, key="openrouter_api_key", help_key="openrouter_api_key",
+        ))
+        or_l.addLayout(self._field_block(
+            "Model ID (OpenRouter)",
+            f"Default: {_OPENROUTER_DEFAULT}. Paste any author/slug from the models page.",
+            secret=False, key="openrouter_model", help_key="openrouter_model",
+        ))
+        or_links = QHBoxLayout()
+        or_links.setSpacing(8)
+        or_keys = QPushButton("OpenRouter keys")
+        or_keys.setObjectName("link")
+        or_keys.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(OPENROUTER_KEYS_URL)))
+        or_links.addWidget(or_keys)
+        or_models = QPushButton("OpenRouter models")
+        or_models.setObjectName("link")
+        or_models.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(OPENROUTER_MODELS_URL)))
+        or_links.addWidget(or_models)
+        or_links.addStretch()
+        or_l.addLayout(or_links)
+        self._openrouter_only.append(or_wrap)
+        body.addWidget(or_wrap)
+
         prov_row = QHBoxLayout()
         prov_row.setSpacing(6)
         self.prov_btn = QPushButton("Edit Provider (client.py)")
@@ -334,7 +380,7 @@ class SettingsWindow(QWidget):
 
         layout.addWidget(self._card(
             "AI provider & model",
-            "Provider = who runs the AI. Unused fields are hidden when you switch backend.",
+            "Provider = who runs the AI. Groq, OpenRouter, and Ollama each keep their own fields.",
             body,
         ))
         layout.addStretch(1)
@@ -491,7 +537,7 @@ class SettingsWindow(QWidget):
         o_body.setSpacing(12)
         o_body.addLayout(self._field_block(
             "Owner IDs",
-            "Discord user ids allowed to use mute, timeout, kick, and ban. "
+            "Discord user ids for owner-only commands and for mute, timeout, kick, and ban. "
             "Separate more than one with a comma. "
             "Developer Mode, then right-click a name → Copy User ID. "
             "Leave blank to use the Discord application owner.",
@@ -607,16 +653,28 @@ class SettingsWindow(QWidget):
         body.setSpacing(10)
         row = QHBoxLayout()
         hint = QLabel(
-            "One-tap rebuild from **eche_source** (not this portable folder). "
-            "Runs BUILD.bat → refreshes sibling eche\\Eche.exe + icons."
+            "Fetch application source from GitHub, or build a local eche_source folder. "
+            "Eche closes first so Windows can replace the running app. "
+            "A command window named Eche update finishes the copy and build, then opens Eche again."
         )
         hint.setObjectName("FieldHint")
         hint.setWordWrap(True)
         row.addWidget(hint, stretch=1)
         row.addWidget(self._info_button("updates"))
         body.addLayout(row)
+
+        self.update_mode = QButtonGroup(self)
+        self.radio_github = QRadioButton("GitHub  ·  sevinOG/eche main")
+        self.radio_local = QRadioButton("Local source folder")
+        self.radio_github.setChecked(True)
+        self.update_mode.addButton(self.radio_github, 0)
+        self.update_mode.addButton(self.radio_local, 1)
+        self.radio_github.toggled.connect(self._on_update_mode)
+        body.addWidget(self.radio_github)
+        body.addWidget(self.radio_local)
+
         path_label_row = QHBoxLayout()
-        path_lab = QLabel("eche_source path")
+        path_lab = QLabel("Local eche_source path")
         path_lab.setObjectName("FieldLabel")
         path_label_row.addWidget(path_lab)
         path_label_row.addStretch()
@@ -631,42 +689,27 @@ class SettingsWindow(QWidget):
             detected = source_root(stored or None) or resolve_source_root(stored or None)
         except Exception:
             detected = resolve_source_root(stored or None)
-        self.project_path_edit.setText(detected)
-        self.project_path_edit.setPlaceholderText("…/eche_source (auto-detected)")
+        self.project_path_edit.setText(detected or "")
+        self.project_path_edit.setPlaceholderText("…/eche_source")
         self.project_path_edit.setMinimumHeight(34)
         path_row.addWidget(self.project_path_edit, stretch=1)
-        browse_btn = QPushButton("Browse…")
-        browse_btn.setObjectName("ghost")
-        browse_btn.setMinimumHeight(34)
-        browse_btn.clicked.connect(self._browse_project)
-        path_row.addWidget(browse_btn)
-        detect_btn = QPushButton("Re-detect")
-        detect_btn.setObjectName("ghost")
-        detect_btn.setMinimumHeight(34)
-        detect_btn.clicked.connect(self._redetect_path)
-        path_row.addWidget(detect_btn)
+        self._update_browse = QPushButton("Browse…")
+        self._update_browse.setObjectName("ghost")
+        self._update_browse.setMinimumHeight(34)
+        self._update_browse.clicked.connect(self._browse_project)
+        path_row.addWidget(self._update_browse)
+        self._update_detect = QPushButton("Re-detect")
+        self._update_detect.setObjectName("ghost")
+        self._update_detect.setMinimumHeight(34)
+        self._update_detect.clicked.connect(self._redetect_path)
+        path_row.addWidget(self._update_detect)
         body.addLayout(path_row)
-        try:
-            from core.paths import describe_layout, build_script_path
-            layout_info = describe_layout()
-            bat = build_script_path(self.project_path_edit.text().strip() or None)
-            info = QLabel(
-                f"portable package: {layout_info.get('package_root')}\n"
-                f"source for rebuild: {layout_info.get('source_root')}\n"
-                f"BUILD.bat: {bat or '(not found)'}\n"
-                f"frozen: {layout_info.get('frozen')}"
-            )
-            info.setObjectName("FieldHint")
-            info.setWordWrap(True)
-            body.addWidget(info)
-        except Exception:
-            pass
-        self.update_status = QLabel("Ready — press Rebuild Portable App.")
+        self.update_status = QLabel("Ready. GitHub is the default. Local source is optional.")
         self.update_status.setObjectName("FieldHint")
         self.update_status.setWordWrap(True)
         body.addWidget(self.update_status)
         upd_row = QHBoxLayout()
-        self.check_btn = QPushButton("Rebuild Portable App")
+        self.check_btn = QPushButton("Update Eche")
         self.check_btn.setObjectName("primary")
         self.check_btn.setMinimumHeight(40)
         self.check_btn.setMinimumWidth(200)
@@ -678,12 +721,23 @@ class SettingsWindow(QWidget):
         upd_row.addStretch()
         body.addLayout(upd_row)
         layout.addWidget(self._card(
-            "One-tap rebuild",
-            "Source: eche_source\\BUILD.bat → publishes to eche\\",
+            "Update",
+            "GitHub download, or the folder you pick. The running app closes before files are replaced.",
             body,
         ))
         layout.addStretch(1)
+        self._on_update_mode(True)
         return page
+
+    def _on_update_mode(self, _checked: bool = False):
+        local = bool(getattr(self, "radio_local", None) and self.radio_local.isChecked())
+        for widget in (
+            getattr(self, "project_path_edit", None),
+            getattr(self, "_update_browse", None),
+            getattr(self, "_update_detect", None),
+        ):
+            if widget is not None:
+                widget.setEnabled(local)
 
     def _on_nav(self, row: int):
         if row >= 0:
@@ -761,12 +815,13 @@ class SettingsWindow(QWidget):
         if not hasattr(self, "provider_combo"):
             return
         backend = self.provider_combo.currentData() or "cloud"
-        is_ollama = backend == "ollama"
         for w in self._cloud_only:
-            w.setVisible(not is_ollama)
+            w.setVisible(backend == "cloud")
         for w in self._ollama_only:
-            w.setVisible(is_ollama)
-        if is_ollama:
+            w.setVisible(backend == "ollama")
+        for w in self._openrouter_only:
+            w.setVisible(backend == "openrouter")
+        if backend == "ollama":
             self._refresh_ollama_models()
 
     def _on_provider_backend_changed(self, _index: int = 0):
@@ -780,17 +835,21 @@ class SettingsWindow(QWidget):
             else:
                 edit.clear()
         for key, edit in self._public_edits.items():
-            if key == "cloud_model":
+            if key in ("cloud_model", "openrouter_model"):
                 continue
             edit.setText(str(self.data.get(key) or ""))
 
-        cloud_m = (
-            self.data.get("cloud_model")
-            or (self.data.get("groq_model") if (self.data.get("provider_backend") or "cloud") != "ollama" else "")
-            or _CLOUD_DEFAULT
-        ).strip()
+        saved_backend = (self.data.get("provider_backend") or "cloud").strip().lower()
+        cloud_m = (self.data.get("cloud_model") or "").strip()
+        if not cloud_m and saved_backend == "cloud":
+            cloud_m = (self.data.get("groq_model") or "").strip()
+        cloud_m = cloud_m or _CLOUD_DEFAULT
         if "cloud_model" in self._public_edits:
-            self._public_edits["cloud_model"].setText(cloud_m or _CLOUD_DEFAULT)
+            self._public_edits["cloud_model"].setText(cloud_m)
+
+        openrouter_m = (self.data.get("openrouter_model") or _OPENROUTER_DEFAULT).strip()
+        if "openrouter_model" in self._public_edits:
+            self._public_edits["openrouter_model"].setText(openrouter_m or _OPENROUTER_DEFAULT)
 
         self._pending_ollama_model = (
             self.data.get("ollama_model") or _OLLAMA_DEFAULT
@@ -798,7 +857,7 @@ class SettingsWindow(QWidget):
 
         if hasattr(self, "provider_combo"):
             backend = (self.data.get("provider_backend") or "cloud").strip().lower()
-            if backend not in ("cloud", "ollama"):
+            if backend not in ("cloud", "ollama", "openrouter"):
                 backend = "cloud"
             idx = self.provider_combo.findData(backend)
             self.provider_combo.blockSignals(True)
@@ -848,11 +907,34 @@ class SettingsWindow(QWidget):
                 self.ollama_model_combo.setCurrentIndex(i)
         self.ollama_model_combo.blockSignals(False)
 
-    def flash_save_spinner(self, ms: int = 700):
+    def begin_save_spinner(self, message: str = "Saving…"):
+        """Show the header spinner and keep it spinning until end_save_spinner."""
         if not hasattr(self, "save_loader"):
             return
-        self.save_loader.set_busy(True, "Saving…")
-        QTimer.singleShot(ms, lambda: self.save_loader.set_state("offline"))
+        self._save_spin_token = getattr(self, "_save_spin_token", 0) + 1
+        self.save_loader.set_busy(True, message)
+
+    def end_save_spinner(self, ok: bool = True, note: str = ""):
+        if not hasattr(self, "save_loader"):
+            return
+        token = getattr(self, "_save_spin_token", 0)
+        if not note:
+            note = "Saved" if ok else "Save failed"
+        self.save_loader.set_state("online" if ok else "error", note)
+
+        def _idle(expected=token):
+            if getattr(self, "_save_spin_token", 0) != expected:
+                return
+            worker = getattr(self, "_save_worker", None)
+            if worker is not None and worker.isRunning():
+                return
+            self.save_loader.set_state("offline")
+
+        QTimer.singleShot(700, _idle)
+
+    def flash_save_spinner(self, ms: int = 700):
+        self.begin_save_spinner()
+        QTimer.singleShot(ms, lambda: self.end_save_spinner(True))
 
     def _toggle_secret_visibility(self, checked: bool):
         mode = QLineEdit.EchoMode.Normal if checked else QLineEdit.EchoMode.Password
@@ -889,6 +971,10 @@ class SettingsWindow(QWidget):
         self.user_context_window.activateWindow()
 
     def open_economy_window(self):
+        main = self.main_window
+        if main is not None and hasattr(main, "open_economy_window"):
+            main.open_economy_window()
+            return
         from gui.widgets.economywindow import EconomyWindow
         if not hasattr(self, "economy_window") or not self.economy_window:
             self.economy_window = EconomyWindow(main_window=self.main_window)
@@ -933,7 +1019,7 @@ class SettingsWindow(QWidget):
         for key, edit in self._secret_edits.items():
             payload[key] = edit.text().strip()
         for key, edit in self._public_edits.items():
-            if key in ("cloud_model", "groq_model", "ollama_model"):
+            if key in ("cloud_model", "groq_model", "ollama_model", "openrouter_model"):
                 continue
             payload[key] = edit.text().strip()
 
@@ -960,8 +1046,17 @@ class SettingsWindow(QWidget):
         payload["ollama_model"] = ollama_m or _OLLAMA_DEFAULT
         self._pending_ollama_model = payload["ollama_model"]
 
+        openrouter_m = (self.data.get("openrouter_model") or _OPENROUTER_DEFAULT).strip()
+        if "openrouter_model" in self._public_edits:
+            typed = self._public_edits["openrouter_model"].text().strip()
+            if typed:
+                openrouter_m = typed
+        payload["openrouter_model"] = openrouter_m or _OPENROUTER_DEFAULT
+
         if backend == "ollama":
             payload["groq_model"] = payload["ollama_model"]
+        elif backend == "openrouter":
+            payload["groq_model"] = payload["openrouter_model"]
         else:
             payload["groq_model"] = payload["cloud_model"]
 
@@ -976,6 +1071,12 @@ class SettingsWindow(QWidget):
             except Exception:
                 pass
             payload["admin_tools"] = admin
+        # The main-window Default tools switch is not on this form.
+        # Keep whatever it last saved so a settings save does not turn it back on.
+        try:
+            payload["default_tools"] = (load_settings().get("default_tools") or "").strip()
+        except Exception:
+            payload["default_tools"] = (self.data.get("default_tools") or "").strip()
         owner_raw = (payload.get("owner_id") or "").strip()
         if owner_raw:
             from core.admin_tools import parse_owner_ids
@@ -1003,74 +1104,45 @@ class SettingsWindow(QWidget):
                 self.main_window.append_log(f"[WARN] Could not save admin tools toggle: {e}")
 
     def check_for_updates(self):
+        from core.app_update import default_source_target
+
+        local = bool(self.radio_local.isChecked())
         typed = self.project_path_edit.text().strip()
-        try:
-            from core.paths import (
-                source_root,
-                build_script_path,
-                is_buildable_source,
-                has_build_venv,
+        if local:
+            target = typed
+            try:
+                from core.paths import is_buildable_source
+            except Exception:
+                is_buildable_source = is_source_tree  # type: ignore
+            if not target or not is_buildable_source(target):
+                show_error(
+                    self,
+                    "Local source not found",
+                    "Pick the eche_source folder that contains BUILD.bat, core/, and gui/.",
+                    hint="Browse to the source tree, not the portable eche folder.",
+                    details=typed or "(empty)",
+                )
+                return
+        else:
+            target = default_source_target(typed or None)
+
+        self._update_target = os.path.abspath(target)
+        where = "GitHub (sevinOG/eche, main)" if not local else self._update_target
+        git_note = ""
+        if not local and os.path.isdir(os.path.join(self._update_target, ".git")):
+            git_note = (
+                "\n\nThat folder is a git checkout. "
+                "The GitHub copy overwrites code files there."
             )
-        except Exception:
-            source_root = lambda _=None: None  # type: ignore
-            build_script_path = lambda _=None: None  # type: ignore
-
-            def is_buildable_source(p):  # type: ignore
-                return is_source_tree(p)
-
-            def has_build_venv(p):  # type: ignore
-                return os.path.isfile(os.path.join(p or "", ".venv", "Scripts", "python.exe"))
-
-        project_path = source_root(typed or None) or source_root(None) or ""
-        if project_path:
-            self.project_path_edit.setText(project_path)
-
-        if not project_path or not is_buildable_source(project_path):
-            show_error(
-                self,
-                "eche_source not found",
-                "In-app rebuild needs the **eche_source** folder with BUILD.bat, core/, gui/, .venv.",
-                hint="Browse to …\\workspace\\eche_source",
-                details=typed or project_path or "(empty)",
-            )
-            return
-
-        if not has_build_venv(project_path):
-            show_error(
-                self,
-                "Python venv missing in source",
-                f"Found source at:\n{project_path}\n\n"
-                "Run: python -m venv .venv && .venv\\Scripts\\pip install -r requirements.txt",
-                details=project_path,
-            )
-            return
-
-        bat_path = build_script_path(project_path)
-        if not bat_path:
-            for name in ("BUILD.bat", "package_portable.bat"):
-                cand = os.path.join(project_path, name)
-                if os.path.isfile(cand):
-                    bat_path = cand
-                    break
-        if not bat_path or not os.path.isfile(bat_path):
-            show_error(
-                self, "BUILD.bat not found",
-                f"Expected BUILD.bat inside:\n{project_path}",
-                details=project_path,
-            )
-            return
-
-        payload = self._collect_payload()
-        payload["project_path"] = project_path
-        save_settings(payload)
-
         reply = QMessageBox.question(
             self,
-            "Rebuild portable app?",
-            "This runs one command:\n\n"
-            f"  {bat_path}\n\n"
-            "It rebuilds Eche.exe into the sibling eche\\ folder "
-            "(icons included). Keep this window open — watch the spinner.\n\n"
+            "Update Eche?",
+            "Eche will close so the update can replace the running files.\n\n"
+            f"Source: {where}\n"
+            f"Build in: {self._update_target}\n\n"
+            "A command window named Eche update stays open, runs the build, "
+            "and starts Eche again. Cookies, settings, and secrets stay in place. "
+            f"Code files are updated.{git_note}\n\n"
             "Continue?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.Yes,
@@ -1078,68 +1150,141 @@ class SettingsWindow(QWidget):
         if reply != QMessageBox.StandardButton.Yes:
             return
 
-        self.check_btn.setEnabled(False)
-        self.update_status.setText("Building… this can take a few minutes.")
-        if hasattr(self, "update_loader"):
-            self.update_loader.set_busy(True, "Building…")
-        if hasattr(self, "save_loader"):
-            self.save_loader.set_busy(True, "Building…")
-        if self.main_window and hasattr(self.main_window, "append_log"):
-            self.main_window.append_log(f"[update] Starting {bat_path}")
+        if local:
+            payload = self._collect_payload()
+            payload["project_path"] = self._update_target
+            try:
+                save_settings(payload)
+            except Exception as exc:
+                if self.main_window and hasattr(self.main_window, "append_log"):
+                    self.main_window.append_log(f"[update] Could not save the source path: {exc}")
 
-        self._update_worker = UpdateWorker(project_path, bat_path)
+        self.check_btn.setEnabled(False)
+        self.stack.setEnabled(False)
+        self.update_status.setText(
+            "Downloading from GitHub…" if not local else "Preparing the local update…"
+        )
+        if hasattr(self, "update_loader"):
+            self.update_loader.set_busy(True, self.update_status.text())
+        self._update_worker = UpdatePrepareWorker("github" if not local else "local")
         self._update_worker.log_line.connect(self._on_update_log)
-        self._update_worker.finished_ok.connect(self._on_update_done)
+        self._update_worker.finished_ok.connect(self._on_update_ready)
         self._update_worker.start()
 
     def _on_update_log(self, line: str):
-        self.update_status.setText(line[:240] if line else "Building…")
+        self.update_status.setText(line[:240] if line else "Working…")
         if self.main_window and hasattr(self.main_window, "append_log"):
             self.main_window.append_log(f"[update] {line}")
 
-    def _on_update_done(self, ok: bool, message: str, already_current: bool = False):
-        self.check_btn.setEnabled(True)
-        if hasattr(self, "update_loader"):
-            self.update_loader.set_state("online" if ok else "error")
-            QTimer.singleShot(1200, lambda: self.update_loader.set_state("offline"))
-        if hasattr(self, "save_loader"):
-            self.save_loader.set_state("online" if ok else "error")
-            QTimer.singleShot(1200, lambda: self.save_loader.set_state("offline"))
-        self.update_status.setText(message.split("\n")[0][:240])
-        if ok:
-            title = "Already up to date" if already_current else "Rebuild complete"
-            QMessageBox.information(self, title, message)
-            if self.main_window and hasattr(self.main_window, "append_log"):
-                self.main_window.append_log(f"[update] OK: {message.splitlines()[0]}")
-        else:
+    def _on_update_ready(self, ok: bool, stage_or_error: str):
+        if not ok:
+            self.check_btn.setEnabled(True)
+            self.stack.setEnabled(True)
+            if hasattr(self, "update_loader"):
+                self.update_loader.set_state("error")
+                QTimer.singleShot(1200, lambda: self.update_loader.set_state("offline"))
+            self.update_status.setText(stage_or_error.split("\n")[0][:240])
             log = self.main_window.append_log if self.main_window else None
-            present_failure(self, message, log_fn=log, default_title="Rebuild failed")
+            present_failure(self, stage_or_error, log_fn=log, default_title="Update failed")
+            return
+
+        stage = stage_or_error.strip() or None
+        target = getattr(self, "_update_target", "") or ""
+        try:
+            from core.app_update import launch_handoff, relaunch_command, write_handoff_script
+
+            script = write_handoff_script(
+                pid=os.getpid(),
+                target=target,
+                relaunch=relaunch_command(target),
+                stage=stage,
+            )
+            launch_handoff(script)
+        except Exception as exc:
+            self.check_btn.setEnabled(True)
+            self.stack.setEnabled(True)
+            if hasattr(self, "update_loader"):
+                self.update_loader.set_state("error")
+            self.update_status.setText(str(exc)[:240])
+            log = self.main_window.append_log if self.main_window else None
+            present_failure(self, str(exc), log_fn=log, default_title="Update failed")
+            return
+
+        self.update_status.setText("Closing Eche. The Eche update window will finish the build.")
+        if hasattr(self, "update_loader"):
+            self.update_loader.set_busy(True, "Closing…")
+        if self.main_window and hasattr(self.main_window, "shutdown_for_update"):
+            self.main_window.shutdown_for_update()
+            return
+        from PyQt6.QtWidgets import QApplication
+        app = QApplication.instance()
+        if app is not None:
+            QTimer.singleShot(400, app.quit)
+
+    def _save_busy(self) -> bool:
+        worker = getattr(self, "_save_worker", None)
+        return worker is not None and worker.isRunning()
 
     def save(self):
-        self.flash_save_spinner(900)
+        if self._save_busy():
+            return
+        self.save_btn.setEnabled(False)
+        self.stack.setEnabled(False)
+        self.begin_save_spinner("Saving…")
         payload = self._collect_payload()
         if not (payload.get("provider_backend") or "").strip():
             payload["provider_backend"] = "cloud"
-        save_settings(payload)
+        # Return to the event loop first so the spinner can paint, then write.
+        QTimer.singleShot(0, lambda: self._start_save_worker(payload, clear=False))
+
+    def _start_save_worker(self, payload: dict | None, *, clear: bool):
+        self._save_was_clear = clear
+        self._save_worker = SettingsSaveWorker(payload, clear=clear)
+        self._save_worker.finished_ok.connect(self._on_settings_saved)
+        self._save_worker.start()
+
+    def _on_settings_saved(self, ok: bool, err: str):
+        self.save_btn.setEnabled(True)
+        self.stack.setEnabled(True)
+        if getattr(self, "_save_was_clear", False):
+            self._save_was_clear = False
+            if not ok:
+                self.end_save_spinner(False)
+                show_error(self, "Clear failed", err or "Stored secrets could not be removed.")
+                return
+            for edit in self._secret_edits.values():
+                edit.clear()
+            try:
+                self.data = load_settings()
+            except Exception:
+                pass
+            self.end_save_spinner(True, "Cleared")
+            QMessageBox.information(self, "Cleared", "Stored secrets were removed.")
+            return
+        if not ok:
+            self.end_save_spinner(False)
+            show_error(self, "Save failed", err or "Settings could not be saved.")
+            return
         try:
-            from core.summarizer_prompt import ensure_summarizer_prompt_file
-            ensure_summarizer_prompt_file(payload.get("summarizer_prompt_path") or None)
-        except Exception:
-            pass
-        self.data = load_settings()
-        self._populate_fields()
-        main_box = getattr(self.main_window, "admin_tools_box", None)
-        if main_box is not None:
-            from core.admin_tools import flag_on
-            on = flag_on(self.data.get("admin_tools"), "")
-            if main_box.isChecked() != on:
-                main_box.blockSignals(True)
-                main_box.setChecked(on)
-                main_box.blockSignals(False)
-        if hasattr(self, "project_path_edit"):
-            self.project_path_edit.setText(
-                resolve_source_root((self.data.get("project_path") or "").strip() or None)
-            )
+            self.data = load_settings()
+            self._populate_fields()
+            main_box = getattr(self.main_window, "admin_tools_box", None)
+            if main_box is not None:
+                from core.admin_tools import flag_on
+                on = flag_on(self.data.get("admin_tools"), "")
+                if main_box.isChecked() != on:
+                    main_box.blockSignals(True)
+                    main_box.setChecked(on)
+                    main_box.blockSignals(False)
+            if hasattr(self, "project_path_edit"):
+                self.project_path_edit.setText(
+                    resolve_source_root((self.data.get("project_path") or "").strip() or None)
+                )
+        except Exception as exc:
+            self.end_save_spinner(False)
+            show_error(self, "Save failed", str(exc) or "Settings were written, then the form failed to reload.")
+            return
+        self.end_save_spinner(True)
         try:
             from core.paths import package_root
             from core.secrets import settings_path, secrets_path
@@ -1170,9 +1315,8 @@ class SettingsWindow(QWidget):
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
-        from core.secrets import clear_secrets as wipe_secrets
-        wipe_secrets(PROJECT_ROOT)
-        for edit in self._secret_edits.values():
-            edit.clear()
-        self.data = load_settings()
-        QMessageBox.information(self, "Cleared", "Stored secrets were removed.")
+        if self._save_busy():
+            return
+        self.save_btn.setEnabled(False)
+        self.begin_save_spinner("Clearing secrets…")
+        QTimer.singleShot(0, lambda: self._start_save_worker(None, clear=True))

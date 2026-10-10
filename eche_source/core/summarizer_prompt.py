@@ -5,31 +5,34 @@ from __future__ import annotations
 
 import os
 
-DEFAULT_SUMMARIZER_PROMPT = """You compress Discord chat into long-term memory for an assistant.
+DEFAULT_SUMMARIZER_PROMPT = """Update the long-term memory cloud. Reply with only the cloud.
 
-Output rules (mandatory):
-- Reply with ONLY the memory summary text.
-- No titles, labels, bullet lists of instructions, or phrases like "Your job", "Conversation to summarize", "Now write".
-- Do not mention that this is a summary.
-- Do not quote or restate these rules.
-- Preserve important facts, preferences, relationships, goals, and durable context.
-- Drop small talk and one-off noise.
-- Keep it concise (prefer under 800 characters).
-
-Material to compress:
-
-{combined_for_summary}
-"""
-
-DEFAULT_CONDENSE_PROMPT = """Compress this long-term memory into a shorter form.
-
-Output rules (mandatory):
-- Reply with ONLY the condensed memory text.
-- No labels, instructions, or meta commentary.
-- Keep critical facts, preferences, relationships, and goals.
-- Prefer under 600 characters.
+Rules:
+- The new lines are short notes. Fold them into a few sentences. Do not copy the notes one by one.
+- Combine notes about what was asked or answered into one sentence.
+- Example: notes say the user asked about polar bears, linux, and a bar. Write "user asked questions about the location of polar bears, the security of linux OS, if a local bar was closed".
+- Example: notes say eche answered about those topics. Write "eche answered questions about polar bears, cyber security and local bar closing times".
+- Keep who the person is, how they want to be treated, and any instruction they gave. Do not drop those to make room.
+- If a new note is about a subject already in the cloud, add it on that sentence. Do not start a second sentence for the same subject.
+- Keep earlier sentences that later talks still need.
+- No dates, unless the date itself matters. No bullet list.
 
 Existing memory:
+{existing_summary}
+
+New lines:
+{new_lines}
+"""
+
+DEFAULT_CONDENSE_PROMPT = """Shorten this memory cloud so it stays under {char_limit} characters. Reply with only the cloud.
+
+Rules:
+- Keep who the person is, how they want to be treated, and any instruction they gave.
+- Keep the topics they asked about and the topics eche answered. Combine them into fewer sentences.
+- Drop one-off chatter and repeated wording.
+- Do not copy the chat. No bullet list.
+
+Memory:
 {existing_summary}
 """
 
@@ -135,6 +138,20 @@ def build_summary_prompt(combined_for_summary: str) -> str:
     return template.rstrip() + "\n\n" + combined_for_summary
 
 
-def build_condense_prompt(existing_summary: str) -> str:
+def build_merge_prompt(existing_summary: str, new_lines: str) -> str:
+    """Ask for an in-place update. Older sheets still receive both parts."""
+    template = get_summarizer_prompt()
+    existing = (existing_summary or "").strip() or "(none yet)"
+    fresh = (new_lines or "").strip() or "(none)"
+    if "{existing_summary}" in template or "{new_lines}" in template:
+        return (
+            template.replace("{existing_summary}", existing).replace("{new_lines}", fresh)
+        )
+    combined = "Existing memory:\n" + existing + "\n\nNew lines:\n" + fresh
+    return build_summary_prompt(combined)
+
+
+def build_condense_prompt(existing_summary: str, char_limit: int = 1400) -> str:
     template = DEFAULT_CONDENSE_PROMPT.strip()
-    return template.replace("{existing_summary}", existing_summary)
+    text = template.replace("{existing_summary}", (existing_summary or "").strip())
+    return text.replace("{char_limit}", str(int(char_limit)))

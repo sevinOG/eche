@@ -2,7 +2,7 @@ import discord
 import random
 import asyncio
 from discord.ui import View
-from cogs.games._core import register_game
+from cogs.games._core import register_game, release_view
 
 ODDS_TABLE = {
     1: {"win": 1.5, "lose": 1},
@@ -160,6 +160,7 @@ class HighLowButtons(View):
             message=self.message
         )
 
+        release_view(self)
         await self.message.edit(embed=embed, view=end_view)
 
     async def on_timeout(self):
@@ -212,7 +213,9 @@ class HighLowEndButtons(View):
     @discord.ui.button(label="Play Again", style=discord.ButtonStyle.green)
     async def play_again(self, interaction, button):
         await interaction.response.defer()
-        # No save yet - keep running total in memory
+        # No save yet - keep running total in memory.
+        # Stop this result row so its clock cannot close the next round.
+        release_view(self)
         await HighLowGame.start(
             ctx=self.ctx,
             odds=self.odds,
@@ -232,6 +235,8 @@ class HighLowEndButtons(View):
 
         for child in self.children:
             child.disabled = True
+
+        release_view(self)
 
         embed = discord.Embed(
             title="🎲 High-Low — Concluded",

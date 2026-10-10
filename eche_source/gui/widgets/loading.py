@@ -9,10 +9,9 @@ from PyQt6.QtWidgets import QLabel, QHBoxLayout, QWidget
 
 class LoadingIndicator(QWidget):
     """
-    One status chip for the main toolbar:
-      - busy: animated spinner + message
-      - online: green dot + "Bot online"
-      - offline / error: muted / red + message
+    One status chip for the main toolbar.
+    Online, offline, error, and startup are the light only.
+    A busy job can still show a short message beside it.
     """
 
     _FRAMES = ("◐", "◓", "◑", "◒")
@@ -62,18 +61,23 @@ class LoadingIndicator(QWidget):
         state = (state or "offline").lower()
         if state == "starting":
             state = "busy"
-            message = message or "Starting bot…"
+            message = ""
 
         self._state = state
         self.show()
 
         if state == "busy":
             self._busy = True
-            self._base_msg = message or "Working…"
+            self._base_msg = (message or "").strip()
             self._frame = 0
             self.icon.setText(self._FRAMES[0])
             self.icon.setProperty("state", "online")
-            self.label.setText("")
+            if self._base_msg:
+                self.label.setText(self._base_msg)
+                self.label.setVisible(True)
+            else:
+                self.label.setText("")
+                self.label.setVisible(False)
             self._refresh_style(self.icon)
             if not self._timer.isActive():
                 self._timer.start()
@@ -85,22 +89,25 @@ class LoadingIndicator(QWidget):
 
         if state == "online":
             self.icon.setProperty("state", "online")
-            self.label.setText("")
         elif state == "error":
             self.icon.setProperty("state", "error")
-            self.label.setText("")
         else:
             self.icon.setProperty("state", "offline")
-            self.label.setText("")
 
         self._refresh_style(self.icon)
+        note = (message or "").strip()
+        if note:
+            self.label.setText(note)
+            self.label.setVisible(True)
+        else:
+            self.label.setText("")
+            self.label.setVisible(False)
 
     def _tick(self):
         if not self._busy:
             return
         self._frame = (self._frame + 1) % len(self._FRAMES)
         self.icon.setText(self._FRAMES[self._frame])
-        self.label.setText("")
 
     @staticmethod
     def _refresh_style(w):

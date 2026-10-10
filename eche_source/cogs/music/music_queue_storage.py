@@ -1,51 +1,32 @@
-import discord
+from core.context_manager import get_home_guild
+from core.discord_store import THREAD_MUSIC, ensure_bot_thread, ensure_record
 
-from core.context_manager import HOME_SERVER_ID, get_home_guild
-
-QUEUE_CHANNEL_NAME = "music-queue"
 QUEUE_HEADER = "Queue:\n"
 
 
 async def ensure_queue_message(bot):
-    # Music queue is ALWAYS created/stored in the BOT'S HOME SERVER.
-    # This avoids "Missing Permissions" (50013) when running ?play in other servers
-    # where the bot may not have Manage Channels / Manage Messages.
-    # The actual voice playback still happens in the server where the command was used.
-    guild = get_home_guild(bot)
-    if guild is None:
-        # Non-home server or HOME_SERVER_ID not set / bot not in home guild.
-        # Allow playback with in-memory queue only (no persistence).
+    # The queue lives in the bot's channel on the home server:
+    # bot memory / bot / music-queue.
+    # Playback still happens in the server where the command was used.
+    if get_home_guild(bot) is None:
         return None, None
 
-    # find or create channel (in home guild only)
-    channel = discord.utils.get(guild.text_channels, name=QUEUE_CHANNEL_NAME)
-    if channel is None:
-        try:
-            overwrites = {
-                guild.default_role: discord.PermissionOverwrite(send_messages=False)
-            }
-            channel = await guild.create_text_channel(QUEUE_CHANNEL_NAME, overwrites=overwrites)
-        except discord.Forbidden:
-            raise RuntimeError(f"Missing 'Manage Channels' permission to create #{QUEUE_CHANNEL_NAME} in HOME server.")
-        except Exception as e:
-            raise RuntimeError(f"Failed to create queue channel: {e}")
+    try:
+        thread = await ensure_bot_thread(bot, THREAD_MUSIC)
+    except Exception as exc:
+        raise RuntimeError(f"Failed to open the music queue thread: {exc}") from exc
+    if thread is None:
+        raise RuntimeError(
+            "Could not open the music queue thread in the home server's bot memory category."
+        )
 
     try:
-        pins = await channel.pins()
-    except discord.Forbidden:
-        raise RuntimeError(f"Missing 'Read Message History' / 'Manage Messages' to read pins in #{QUEUE_CHANNEL_NAME}.")
-    if pins:
-        return channel, pins[0]
-
-    try:
-        msg = await channel.send(QUEUE_HEADER)
-        await msg.pin()
-    except discord.Forbidden:
-        raise RuntimeError(f"Missing 'Send Messages' + 'Manage Messages' to pin queue header in this server.")
-    except Exception as e:
-        raise RuntimeError(f"Failed to pin queue header: {e}")
-
-    return channel, msg
+        message = await ensure_record(thread, "Queue:", QUEUE_HEADER)
+    except Exception as exc:
+        raise RuntimeError(f"Failed to pin the queue header: {exc}") from exc
+    if message is None:
+        raise RuntimeError("Failed to pin the queue header in the music queue thread.")
+    return thread, message
 
 
 async def load_queue(bot):
@@ -97,4 +78,5 @@ async def save_queue(bot, queue_list):
         lines.append(f"{artist}|{title}|{duration}")
 
     new_content = QUEUE_HEADER + "\n".join(lines)
-    await pinned.edit(content=new_content)
+    from core.discord_store import edit_record
+    await edit_record(pinned, new_content)

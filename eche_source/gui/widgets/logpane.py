@@ -20,6 +20,13 @@ _SUMMARY = Qt.ItemDataRole.UserRole
 _DETAIL = Qt.ItemDataRole.UserRole + 1
 
 
+class _LogDetail(QPlainTextEdit):
+    """The expansion is one tall row. The log pane scrolls through it."""
+
+    def wheelEvent(self, event):
+        event.ignore()
+
+
 class LogPane(QTreeWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -31,6 +38,8 @@ class LogPane(QTreeWidget):
         self.setAnimated(False)
         self.setUniformRowHeights(False)
         self.setWordWrap(False)
+        self.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.setFont(QFont("Consolas", 10))
         self.header().setStretchLastSection(True)
@@ -58,6 +67,10 @@ class LogPane(QTreeWidget):
         item.setExpanded(False)
         self.scrollToItem(item)
 
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._fit_open_details()
+
     def plain_text(self) -> str:
         lines: list[str] = []
         for index in range(self.topLevelItemCount()):
@@ -69,30 +82,57 @@ class LogPane(QTreeWidget):
         return "\n".join(lines)
 
     def _attach_detail(self, child: QTreeWidgetItem, detail: str) -> None:
-        editor = QPlainTextEdit()
+        editor = _LogDetail()
         editor.setObjectName("LogDetail")
         editor.setReadOnly(True)
         editor.setPlainText(detail)
         editor.setFont(QFont("Consolas", 10))
         editor.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
-        editor.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        editor.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         editor.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        height = _detail_height(detail)
-        editor.setFixedHeight(height)
         editor.setStyleSheet(
             "QPlainTextEdit#LogDetail {"
             f"background: {BG}; color: {TEXT}; border: none;"
             f"border-left: 2px solid {ACCENT}; padding: 6px 8px;"
             "}"
         )
-        child.setSizeHint(0, QSize(400, height))
+        child.setSizeHint(0, QSize(400, 72))
         self.setItemWidget(child, 0, editor)
+
+    def _fit_detail(self, item: QTreeWidgetItem) -> None:
+        """Make the open row as tall as its text, so the log can scroll to the end."""
+        child = item.child(0) if item is not None else None
+        editor = self.itemWidget(child, 0) if child is not None else None
+        if not isinstance(editor, QPlainTextEdit):
+            return
+        width = max(160, self.viewport().width() - 28)
+        editor.document().setTextWidth(width - 20)
+        spacing = max(editor.fontMetrics().lineSpacing(), 16)
+        blocks = max(1, editor.blockCount())
+        height = max(
+            72,
+            int(editor.document().size().height()) + 18,
+            blocks * spacing + 18,
+        )
+        editor.setFixedHeight(height)
+        child.setSizeHint(0, QSize(width, height))
+
+    def _fit_open_details(self) -> None:
+        for index in range(self.topLevelItemCount()):
+            item = self.topLevelItem(index)
+            if item is not None and item.isExpanded():
+                self._fit_detail(item)
 
     def _on_item_clicked(self, item: QTreeWidgetItem, _column: int) -> None:
         if item.parent() is not None or item.childCount() == 0:
             return
         item.setExpanded(not item.isExpanded())
         self._mark(item)
+        if item.isExpanded():
+            self._fit_detail(item)
+            child = item.child(0)
+            if child is not None:
+                self.scrollToItem(child, QAbstractItemView.ScrollHint.EnsureVisible)
 
     def _mark(self, item: QTreeWidgetItem) -> None:
         summary = str(item.data(0, _SUMMARY) or "")
@@ -112,6 +152,3 @@ class LogPane(QTreeWidget):
         super().keyPressEvent(event)
 
 
-def _detail_height(text: str) -> int:
-    lines = (text or "").count("\n") + 1
-    return min(260, max(72, lines * 16 + 16))

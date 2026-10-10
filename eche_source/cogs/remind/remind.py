@@ -12,7 +12,7 @@ class Remind(commands.Cog):
 
     @commands.Cog.listener()
     async def on_ready(self):
-        # Rebuild persistent reminders when the bot starts
+        # Rebuild timers from the reminders thread in bot memory.
         await self.handler.load_persistent_reminders()
 
     @commands.command(name="remind")

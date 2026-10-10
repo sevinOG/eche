@@ -1,5 +1,5 @@
 # charoverride.py — Owner-only next-reply override
-# Owner = Discord application owner (no hardcoded user IDs).
+# Owner = Settings → Security Owner IDs (application owner when that field is blank).
 
 import discord
 from discord.ext import commands
@@ -32,20 +32,27 @@ class CharOverride(commands.Cog):
         if message.reference.message_id != self.bot.override_waiting_for:
             return
 
-        # Only the application owner may complete the override
         if not await self.bot.is_owner(message.author):
             return
 
-        # --- VALID OVERRIDE TRIGGER ---
         user_text = message.content
+        from core.client import THREAD_COMPLETION_TOKENS, call_groq_turn, discord_chunks, settle_cut_reply
 
-        # Call your normal pipeline but with 2000-char limit
-        reply = await self.bot.generate_reply(
+        turn = await call_groq_turn(
             user_text,
-            max_chars=2000,
+            user_id=message.author.id,
+            max_completion_tokens=THREAD_COMPLETION_TOKENS,
+            tools=None,
         )
-
-        await message.channel.send(reply)
+        if turn.cut:
+            turn = await settle_cut_reply(
+                turn,
+                user_text,
+                message.author.id,
+                max_completion_tokens=THREAD_COMPLETION_TOKENS,
+            )
+        for chunk in discord_chunks(turn.reply or ""):
+            await message.channel.send(chunk)
 
         # Reset override
         self.bot.next_reply_override = False

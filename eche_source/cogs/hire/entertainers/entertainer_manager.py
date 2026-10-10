@@ -47,10 +47,11 @@ def register_entertainer_batch(
 
 async def rebuild_jobs_from_pins(bot):
     """
-    On startup, rebuild entertainer batches by scanning pinned messages
-    in #workers channels under memory-<user_id> categories in the HOME_SERVER only.
+    On startup, rebuild entertainer batches from pins in each user's
+    workers thread (bot memory / user-{id} / workers).
     """
 
+    from core.discord_store import THREAD_WORKERS, find_thread, list_pins, list_user_channels
     from core.home_id import home_server_id_from_env
     home_id = home_server_id_from_env()
     guild = bot.get_guild(home_id)
@@ -60,21 +61,12 @@ async def rebuild_jobs_from_pins(bot):
 
     now = datetime.utcnow()
 
-    for category in guild.categories:
-        if not category.name.startswith("memory-"):
-            continue
-
-        # Extract user ID from category name
-        try:
-            user_id = int(category.name.replace("memory-", ""))
-        except ValueError:
-            continue
-
-        workers = discord.utils.get(category.channels, name="workers")
+    for user_id, channel in list_user_channels(guild):
+        workers = await find_thread(channel, THREAD_WORKERS)
         if workers is None:
             continue
 
-        pins = await workers.pins()
+        pins = await list_pins(workers)
         if not pins:
             continue
 

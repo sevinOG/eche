@@ -236,7 +236,7 @@ if defined PORTABLE (
     > "%PORTABLE%\install.json" (
       echo {
       echo   "kind": "portable_app",
-      echo   "version": "3.1.2",
+      echo   "version": "2.1.0",
       echo   "built_from": "eche_source"
       echo }
     )

@@ -107,27 +107,49 @@ def configured_owner_id() -> int:
     return ids[0] if ids else 0
 
 
+def owner_setting_raw() -> str:
+    """Owner IDs text from settings, or from ECHE_OWNER_ID when settings omit it."""
+    raw = configured_owner_raw()
+    if raw is None:
+        raw = os.getenv("ECHE_OWNER_ID") or ""
+    return raw or ""
+
+
+def owner_decision(author_id: int | None, raw: str | None) -> bool | None:
+    """True or False when Owner IDs is filled in. None when the field is blank.
+
+    A blank field means the caller should use the Discord application owner.
+    A non-empty value with no valid id matches nobody.
+    """
+    text = (raw or "").strip()
+    if not text:
+        return None
+    return author_id in parse_owner_ids(text)
+
+
 def owner_match(author_id: int | None, configured_raw: str, app_owner: bool) -> bool:
     """
     A filled-in Owner ID list must include this person. A blank setting uses
     the Discord application owner. A non-empty value with no valid id matches
     nobody.
     """
-    raw = (configured_raw or "").strip()
-    if raw:
-        return author_id in parse_owner_ids(raw)
-    return bool(app_owner)
+    decided = owner_decision(author_id, configured_raw)
+    if decided is None:
+        return bool(app_owner)
+    return decided
 
 
 async def author_is_owner(bot, author) -> bool:
-    """True when this person may see and run admin tools."""
+    """True when this person is an owner in Settings → Security.
+
+    A blank Owner IDs field uses the Discord application owner. Command checks
+    go through Eche.is_owner, which uses this same list.
+    """
     if author is None:
         return False
-    raw = configured_owner_raw()
-    if raw is None:
-        raw = os.getenv("ECHE_OWNER_ID") or ""
-    if (raw or "").strip():
-        return owner_match(getattr(author, "id", None), raw, False)
+    decided = owner_decision(getattr(author, "id", None), owner_setting_raw())
+    if decided is not None:
+        return decided
     is_owner = getattr(bot, "is_owner", None)
     if is_owner is None:
         return False

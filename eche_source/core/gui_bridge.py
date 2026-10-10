@@ -168,9 +168,17 @@ async def _announce(bot, text: str) -> None:
     if guild is None:
         log("ANNOUNCE failed: home guild not found", channel="bridge")
         return
+    from core.discord_store import find_category
+
+    hidden = find_category(guild)
+    hidden_id = hidden.id if hidden is not None else None
     channel = guild.system_channel
+    if channel is not None and hidden_id and getattr(channel, "category_id", None) == hidden_id:
+        channel = None
     if channel is None:
         for ch in guild.text_channels:
+            if hidden_id and getattr(ch, "category_id", None) == hidden_id:
+                continue
             if ch.permissions_for(guild.me).send_messages:
                 channel = ch
                 break

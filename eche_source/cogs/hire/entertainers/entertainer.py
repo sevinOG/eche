@@ -46,18 +46,19 @@ class Entertainers(commands.Cog):
         if home_guild is None:
             return await ctx.send("❌ HOME_SERVER_ID invalid.")
 
-        category = discord.utils.get(home_guild.categories, name=f"memory-{ctx.author.id}")
-        if category is None:
+        from core.discord_store import THREAD_WORKERS, ensure_user_thread, user_channel
+
+        if user_channel(home_guild, ctx.author.id) is None:
             return await ctx.send(
                 f"❌ You are not opted in on the home server.\n"
                 f"Use `?forceoptin {ctx.author.mention}` there."
             )
 
-        workers_channel = discord.utils.get(category.channels, name="workers")
+        workers_channel = await ensure_user_thread(
+            home_guild, ctx.author.id, THREAD_WORKERS, ctx.author.name
+        )
         if workers_channel is None:
-            workers_channel = await home_guild.create_text_channel(
-                "workers", category=category
-            )
+            return await ctx.send("❌ Could not open your workers thread.")
 
         batch_id = str(uuid.uuid4())
         created_at = datetime.utcnow()

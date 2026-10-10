@@ -1,5 +1,5 @@
 # debug_commands.py — General Debug Commands (Owner Only)
-# Owner = Discord application owner (no hardcoded user IDs).
+# Owner = Settings → Security Owner IDs (application owner when that field is blank).
 
 import discord
 from discord.ext import commands
@@ -12,39 +12,36 @@ class DebugCommands(commands.Cog):
         self.bot = bot
 
     # ---------------------------------------------------------
-    # OPT-IN ALL USERS WHO HAVE A CONTEXT CATEGORY
+    # OPT-IN MEMBERS WHO ALREADY HAVE A USER CHANNEL
     # ---------------------------------------------------------
     @commands.command(name="context_optin_all")
     @commands.is_owner()
     async def context_optin_all(self, ctx):
+        from core.discord_store import list_user_ids
+        from core.opt_in_manager import ensure_user_category, save_opted_in
+
         guild = get_home_guild(self.bot)
+        if guild is None:
+            return await ctx.send("Home server not found.")
+        try:
+            await guild.fetch_channels()
+        except Exception:
+            pass
+
         count = 0
+        opted = self.bot.context_opted_in
+        for user_id in list_user_ids(guild):
+            member = guild.get_member(user_id)
+            if member is None or member.bot:
+                continue
+            if user_id in opted:
+                continue
+            await ensure_user_category(self.bot, member)
+            opted.add(user_id)
+            count += 1
 
-        for category in guild.categories:
-            for channel in category.channels:
-                # Look for channels named like: context-<snowflake>
-                if channel.name.startswith("context-"):
-                    try:
-                        user_id = int(channel.name.replace("context-", ""))
-                    except ValueError:
-                        continue
-
-                    member = guild.get_member(user_id)
-                    if not member:
-                        continue
-
-                    # Skip other bots; allow this bot
-                    if member.bot and member.id != self.bot.user.id:
-                        continue
-
-                    # Skip users already opted in
-                    if user_id in self.bot.context_opted_in:
-                        continue
-
-                    await self.bot.force_opt_in(member)
-                    count += 1
-
-        await ctx.send(f"Opted in **{count}** users who had context categories.")
+        save_opted_in(set(opted))
+        await ctx.send(f"Opted in **{count}** users who have a channel in bot memory.")
 
     # ---------------------------------------------------------
     # PING

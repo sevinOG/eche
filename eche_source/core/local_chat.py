@@ -16,12 +16,8 @@ def _strip_tags(text: str) -> str:
     return text
 
 
-def _system_prompt() -> str:
-    return (
-        "You are Eche in a private local desktop chat (not Discord). "
-        "Reply in character as plain text only. No XML tags, no chain-of-thought, "
-        "no meta commentary about prompts. Keep replies concise unless asked for detail."
-    )
+def _place_line() -> str:
+    return "Private desktop chat, not Discord."
 
 
 async def reply_local(user_text: str) -> str:
@@ -49,6 +45,16 @@ async def reply_local(user_text: str) -> str:
         # Ollama does not need a real key
         if not (os.environ.get("GROQ_API_KEY") or "").strip():
             os.environ["GROQ_API_KEY"] = "ollama"
+    elif backend == "openrouter":
+        os.environ["ECHE_PROVIDER"] = "openrouter"
+        model = (
+            cfg.get("openrouter_model") or cfg.get("groq_model") or "openrouter/free"
+        ).strip()
+        if model:
+            os.environ["GROQ_MODEL"] = model
+        or_key = (cfg.get("openrouter_api_key") or "").strip()
+        if or_key:
+            os.environ["OPENROUTER_API_KEY"] = or_key
     else:
         os.environ["ECHE_PROVIDER"] = "cloud"
         model = (cfg.get("cloud_model") or cfg.get("groq_model") or "").strip()
@@ -64,10 +70,10 @@ async def reply_local(user_text: str) -> str:
             history_lines.append(f"{role}: {content}")
 
     flat = (
-        _system_prompt()
+        _place_line()
         + "\n\n=== LOCAL HISTORY ===\n"
         + "\n".join(history_lines)
-        + f"\n\nUSER: {user_text}\n\nReply as Eche (plain text only):\n"
+        + f"\n\nUSER: {user_text}\n"
     )
 
     try:

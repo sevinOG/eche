@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -94,19 +95,31 @@ class PersonalityWindow(QWidget):
 
     def save_file(self):
         self.loader.set_busy(True, "Saving…")
+        window = self.settings_window
+        if window is not None and hasattr(window, "begin_save_spinner"):
+            window.begin_save_spinner("Saving…")
+        QTimer.singleShot(0, self._commit_save)
+
+    def _commit_save(self):
         try:
             from core.personality import save_personality_prompt
             path = save_personality_prompt(self.editor.toPlainText())
-            self.loader.set_state("online")
-            if self.settings_window and hasattr(self.settings_window, "flash_save_spinner"):
-                self.settings_window.flash_save_spinner()
-            QMessageBox.information(self, "Saved", f"Personality updated.\n{path}")
-        except Exception as e:
-            self.loader.set_state("error")
-            QMessageBox.critical(self, "Error", str(e))
-        finally:
-            from PyQt6.QtCore import QTimer
-            QTimer.singleShot(600, lambda: self.loader.set_state("offline"))
+        except Exception as exc:
+            self._finish_save(False, str(exc))
+            return
+        QTimer.singleShot(360, lambda: self._finish_save(True, path))
+
+    def _finish_save(self, ok: bool, detail: str):
+        if ok:
+            self.loader.set_state("online", "Saved")
+            QMessageBox.information(self, "Saved", f"Personality updated.\n{detail}")
+        else:
+            self.loader.set_state("error", "Save failed")
+            QMessageBox.critical(self, "Error", detail)
+        QTimer.singleShot(600, lambda: self.loader.set_state("offline"))
+        window = self.settings_window
+        if window is not None and hasattr(window, "end_save_spinner"):
+            window.end_save_spinner(ok)
 
     def reset_default(self):
         reply = QMessageBox.question(

@@ -11,6 +11,16 @@ LAWYER_COST = 50000
 CASE_FILE = "lawsuits.json"
 
 
+async def _post_case(msg, content: str):
+    """Edit the case message. Extra text continues in following messages."""
+    from core.client import discord_chunks
+
+    parts = discord_chunks(content) or ["⚖️"]
+    await msg.edit(content=parts[0], view=None)
+    for extra in parts[1:]:
+        await msg.channel.send(extra)
+
+
 # -----------------------------
 # CASE STORAGE HELPERS
 # -----------------------------
@@ -161,7 +171,7 @@ class DefenseModal(Modal, title="Submit Your Defense"):
             f"🏛️ Awaiting judge's decision..."
         )
 
-        await msg.edit(content=content, view=None)
+        await _post_case(msg, content)
 
         await interaction.response.send_message(
             "Defense submitted. The judge will now review the case.",
@@ -240,7 +250,7 @@ class DefenseView(View):
             f"⚖️ DEFAULT JUDGMENT ENTERED in favor of {self.plaintiff.mention}."
         )
 
-        await msg.edit(content=content, view=None)
+        await _post_case(msg, content)
 
     @discord.ui.button(label="Proceed with defense", style=discord.ButtonStyle.primary)
     async def defense_button(self, interaction: discord.Interaction, button: Button):
@@ -382,7 +392,7 @@ class Lawyer(commands.Cog):
             f"{judge_text}"
         )
 
-        await msg.edit(content=content, view=None)
+        await _post_case(msg, content)
 
 
 async def setup(bot):

@@ -120,6 +120,11 @@ class ContextWorker(QThread):
                     payload = None
                     return
 
+                try:
+                    await guild.fetch_channels()
+                except Exception:
+                    pass
+
                 if self.action == "list_users":
                     # Discord pins only — do not write local cache
                     users = await uc.discord_list_user_contexts(guild)
@@ -134,7 +139,7 @@ class ContextWorker(QThread):
                         }
                         for u in users
                     ]
-                    message = f"{len(payload)} users with memory categories in {guild.name}"
+                    message = f"{len(payload)} users with channels in bot memory on {guild.name}"
 
                 elif self.action == "fetch":
                     text = await uc.discord_fetch_user_context(guild, self.user_id)
@@ -204,7 +209,7 @@ class UserContextWindow(QMainWindow):
         title.setObjectName("Title")
         titles.addWidget(title)
         sub = QLabel(
-            "Reads and writes Discord memory pins (memory-{{user_id}} / context). "
+            "Reads and writes Discord memory pins (bot memory / user-{{user_id}} / context). "
             "Optional Save Local keeps a file snapshot under context/ — only when you ask."
         )
         sub.setObjectName("Subtitle")
@@ -359,7 +364,7 @@ class UserContextWindow(QMainWindow):
         if not self._server_id:
             return
         self._set_busy(True, "Loading users…")
-        self._log(f"Loading memory categories for {self._server_id}…")
+        self._log(f"Loading user channels for {self._server_id}…")
         self._start(
             ContextWorker("list_users", server_id=self._server_id),
             self._on_users,

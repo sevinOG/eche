@@ -14,8 +14,9 @@ class ForceOptIn(commands.Cog):
     @commands.is_owner()
     async def forceoptin(self, ctx, member: discord.Member = None):
         """
-        Force a user into the opt‑in system.
-        If no member is provided, bulk‑opt‑in all users who already have memory categories.
+        Force a user into the opt-in system.
+        If no member is provided, sync opted_in.json from user channels
+        already in the bot memory category.
         """
 
         # ---------------------------------------------------------
@@ -27,25 +28,15 @@ class ForceOptIn(commands.Cog):
             if guild is None:
                 return await ctx.send("❌ HOME_SERVER_ID is invalid or the bot is not in that server.")
 
+            from core.discord_store import list_user_ids
+
             opted_in = load_opted_in()
             added = 0
 
-            for category in guild.categories:
-                if not category.name.startswith("memory-"):
-                    continue
-
-                # Extract user ID from category name
-                try:
-                    user_id = int(category.name.replace("memory-", ""))
-                except ValueError:
-                    continue
-
-                # Skip bots or invalid members
+            for user_id in list_user_ids(guild):
                 member_obj = guild.get_member(user_id)
                 if member_obj is None or member_obj.bot:
                     continue
-
-                # Add to opted_in.json if not already present
                 if user_id not in opted_in:
                     opted_in.add(user_id)
                     added += 1
@@ -63,7 +54,7 @@ class ForceOptIn(commands.Cog):
         # Perform opt‑in using the centralized manager
         await opt_in(self.bot, member)
 
-        # Ensure their memory/category channels exist
+        # Ensure their user channel, context pins, and bank thread exist
         await ensure_user_category(self.bot, member)
 
         await ctx.send(f"✅ Forced opt‑in completed for **{member}**.")

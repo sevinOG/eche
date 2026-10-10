@@ -24,7 +24,6 @@ from core.debuglog import dprint
 ACCESS_ANYONE = "anyone"
 ACCESS_OWNER = "owner"
 
-DISCORD_LIMIT = 2000
 _FENCE_OVERHEAD = 8  # ```\n + \n```
 
 _TOOL_BLOCK = re.compile(r"<tool_call>(.*?)</tool_call>", re.IGNORECASE | re.DOTALL)
@@ -56,6 +55,8 @@ class ToolResult:
     detail: str = ""
     # When set, chat gets a model reply written from `text`, not `text` itself.
     for_model: bool = False
+    # When set, the channel gets nothing. The tool already posted, including its announcement.
+    quiet: bool = False
 
 
 @dataclass
@@ -82,18 +83,44 @@ def registered_names() -> set[str]:
     return set(_TOOLS)
 
 
+def default_tools_enabled() -> bool:
+    """Thread, lookup, and context stay available unless Default tools is saved off."""
+    stored = ""
+    try:
+        from core.secrets import load_all
+        stored = str(load_all().get("default_tools") or "").strip().lower()
+    except Exception as e:
+        dprint(f"[tools] default tools toggle unreadable: {e}")
+        stored = ""
+    if not stored:
+        return True
+    return stored in ("1", "true", "yes", "on")
+
+
 def _admin_visible(tool: Tool, *, speaker_is_owner: bool, admin_enabled: bool) -> bool:
     if tool.access != ACCESS_OWNER:
         return True
     return bool(speaker_is_owner and admin_enabled)
 
 
+def _offered(tool: Tool, *, public_on: bool, speaker_is_owner: bool, admin_enabled: bool) -> bool:
+    if tool.access != ACCESS_OWNER and not public_on:
+        return False
+    return _admin_visible(tool, speaker_is_owner=speaker_is_owner, admin_enabled=admin_enabled)
+
+
 def visible_names(*, speaker_is_owner: bool, admin_enabled: bool) -> set[str]:
     """Tool names the model is allowed to see on this turn."""
+    public_on = default_tools_enabled()
     return {
         tool.name
         for tool in _TOOLS.values()
-        if _admin_visible(tool, speaker_is_owner=speaker_is_owner, admin_enabled=admin_enabled)
+        if _offered(
+            tool,
+            public_on=public_on,
+            speaker_is_owner=speaker_is_owner,
+            admin_enabled=admin_enabled,
+        )
     }
 
 
@@ -109,10 +136,14 @@ def _resolve(name: str) -> Tool | None:
 
 def specs_for(*, speaker_is_owner: bool, admin_enabled: bool = False) -> list[dict]:
     """OpenAI-style tool list. Admin tools are omitted unless the toggle is on."""
+    public_on = default_tools_enabled()
     specs = []
     for tool in _TOOLS.values():
-        if not _admin_visible(
-            tool, speaker_is_owner=speaker_is_owner, admin_enabled=admin_enabled
+        if not _offered(
+            tool,
+            public_on=public_on,
+            speaker_is_owner=speaker_is_owner,
+            admin_enabled=admin_enabled,
         ):
             continue
         specs.append(
@@ -134,6 +165,9 @@ async def execute(name: str, arguments: dict | None, ctx: ToolContext) -> ToolRe
     tool = _resolve(name or "")
     if tool is None:
         return ToolResult(name=name or "", ran=False)
+
+    if tool.access != ACCESS_OWNER and not default_tools_enabled():
+        return ToolResult(name=tool.name, ran=False)
 
     if tool.access == ACCESS_OWNER:
         try:
@@ -189,6 +223,30 @@ def announcement(name: str) -> str:
     return f"Eche used *{name}*!"
 
 
+def tool_call_note(name: str, arguments: dict | None, body: str = "") -> str:
+    """One memory line so a later turn can see this tool call."""
+    args = arguments if isinstance(arguments, dict) else {}
+    label = (name or "tool").strip() or "tool"
+    extra = ""
+    if label == "thread":
+        title = " ".join(str(args.get("title") or "").split())
+        if title:
+            extra = f' title "{title[:80]}"'
+    elif label == "duckduckgo":
+        query = " ".join(str(args.get("query") or "").split())
+        if query:
+            extra = f' query "{query[:120]}"'
+    head = f"Called tool {label}{extra}."
+    text = "" if label == "context_raw" else (body or "").strip()
+    if text:
+        if len(text) > 400:
+            text = text[:399].rstrip() + "…"
+        head = f"{head} {text}"
+    if len(head) > 700:
+        head = head[:699].rstrip() + "…"
+    return head
+
+
 def format_tool_messages(name: str, body: str, *, fence: bool = True) -> list[str]:
     """
     Announcement, then the tool body.
@@ -197,42 +255,25 @@ def format_tool_messages(name: str, body: str, *, fence: bool = True) -> list[st
     it. An unfenced body is the answer itself. Each returned string fits in
     one message.
     """
+    from core.client import REPLY_MAX_CHARS, discord_chunks
+
     line = announcement(name)
     text = (body or "").strip()
     if not text:
         return [line]
     if not fence:
         combined = f"{line}\n{text}"
-        if len(combined) <= DISCORD_LIMIT:
-            return [combined]
-        return [line, *_split_text(text, DISCORD_LIMIT)]
+        return discord_chunks(combined)
 
     text = text.replace("```", "'''")
-    room = DISCORD_LIMIT - _FENCE_OVERHEAD
-    fenced = [f"```\n{piece}\n```" for piece in _split_text(text, room)]
+    room = REPLY_MAX_CHARS - _FENCE_OVERHEAD
+    fenced = [f"```\n{piece}\n```" for piece in discord_chunks(text, room)]
+    if not fenced:
+        return [line]
     combined = f"{line}\n{fenced[0]}"
-    if len(combined) <= DISCORD_LIMIT:
+    if len(combined) <= REPLY_MAX_CHARS:
         return [combined, *fenced[1:]]
     return [line, *fenced]
-
-
-def _split_text(text: str, size: int) -> list[str]:
-    if size < 1:
-        size = 1
-    parts: list[str] = []
-    i = 0
-    n = len(text)
-    while i < n:
-        end = min(i + size, n)
-        if end < n:
-            cut = text.rfind("\n", i, end)
-            if cut > i:
-                end = cut + 1
-        if end <= i:
-            end = min(i + size, n)
-        parts.append(text[i:end])
-        i = end
-    return parts
 
 
 def calls_from_model_text(text: str, names: set[str] | None = None) -> list[dict]:

@@ -4,7 +4,7 @@ import discord
 import random
 from datetime import timedelta
 from discord.ui import View, Select, Button
-from cogs.games._core import register_game
+from cogs.games._core import register_game, release_view
 
 COLORS = [
     ("red", "🔴", discord.ButtonStyle.red),
@@ -98,6 +98,7 @@ class SevinSaysButtons(View):
         self.save_callback = save_callback
         self.starting_balance = starting_balance
         self.balance = starting_balance
+        self.cashout = None
 
         for name, emoji, style in COLORS:
             self.add_item(ColorButton(name, emoji, style, self))
@@ -134,7 +135,11 @@ class SevinSaysButtons(View):
             color=discord.Color.gold()
         )
 
-        await self.message.edit(embed=embed, view=CashOutView(self))
+        # This row stays alive for the next round. The cash-out row owns
+        # the wait, so this clock must not close the game while they decide.
+        self.timeout = 90
+        self.cashout = CashOutView(self)
+        await self.message.edit(embed=embed, view=self.cashout)
 
     async def next_round(self):
         self.user_progress = []
@@ -143,8 +148,13 @@ class SevinSaysButtons(View):
         for child in self.children:
             child.disabled = False
 
+        release_view(self.cashout)
+        self.cashout = None
+        watch = len(self.sequence) * (self.settings["flash"] + self.settings["delay"]) + 5
+        self.timeout = watch + self.settings["timeout"]
         await self.message.edit(embed=self.make_wait_embed(), view=None)
         await self.show_sequence()
+        self.timeout = self.settings["timeout"]
         await self.message.edit(embed=self.make_prompt_embed(), view=self)
 
     async def fail(self, interaction):
@@ -160,6 +170,7 @@ class SevinSaysButtons(View):
         new_balance = round(self.starting_balance - self.initial_bet, 2)
         await self.save_callback(self.ctx.author, new_balance)
 
+        release_view(self)
         # Replace GUI with final embed — no new message
         await interaction.response.edit_message(embed=embed, view=None)
 
@@ -193,8 +204,7 @@ class SevinSaysButtons(View):
             color=discord.Color.purple()
         )
 
-    async def on_timeout(self):
-        # Final embed on timeout
+    async def conclude_idle(self):
         embed = discord.Embed(
             title="🧠 Sevin Says — Concluded",
             description=(
@@ -209,6 +219,10 @@ class SevinSaysButtons(View):
             await self.message.edit(embed=embed, view=None)
         except:
             pass
+
+    async def on_timeout(self):
+        release_view(self.cashout)
+        await self.conclude_idle()
 
 
 class CashOutView(View):
@@ -237,6 +251,8 @@ class CashOutView(View):
         for child in self.children:
             child.disabled = True
 
+        release_view(self)
+        release_view(self.controller)
         # Replace GUI with final embed — no new message
         await interaction.response.edit_message(embed=embed, view=None)
 
@@ -245,8 +261,13 @@ class CashOutView(View):
         for child in self.children:
             child.disabled = True
 
-        await interaction.response.edit_message(view=self)
+        release_view(self)
+        await interaction.response.edit_message(view=None)
         await self.controller.next_round()
+
+    async def on_timeout(self):
+        release_view(self.controller)
+        await self.controller.conclude_idle()
 
 
 class ColorButton(discord.ui.Button):

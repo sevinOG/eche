@@ -1,5 +1,4 @@
 
-```markdown
 # Eche
 
 Eche is an open-source Discord bot + desktop control panel, preloaded with games and utilities.
@@ -11,7 +10,7 @@ Without inference bot reference files and images stay stored on discord only.
 
 Tokens and secrets stay on your machine. See [PRIVACY.md](PRIVACY.md).
 
-**Version:** see [VERSION](VERSION) (currently **3.1.2**)
+**Version:** see [VERSION](VERSION) (currently **2.1.0**)
 
 **Repo:** https://github.com/sevinOG/eche
 
@@ -32,10 +31,6 @@ Or with winget (then **close and reopen** the terminal):
 winget install --id Git.Git -e --source winget --accept-package-agreements --accept-source-agreements
 winget install --id Python.Python.3.12 -e --source winget --accept-package-agreements --accept-source-agreements
 ```
-
-### Music / ?play
-
-`?play` needs FFmpeg. Install from GitHub and the build downloads a standalone `ffmpeg.exe` into the app (`_internal\ffmpeg.exe`, and beside `Eche.exe`). A separate FFmpeg install is only needed when that download fails. Then install from https://ffmpeg.org or run `winget install ffmpeg`, and restart Eche.
 
 ### 1) Download the installer
 
@@ -84,9 +79,11 @@ Builds portable app (first time ~2–3 min; needs Python on PATH)
 Eche.exe + _internal/  (onedir layout)
 ```
 
-**Music / ?play** uses the `ffmpeg.exe` downloaded during that build. It is inside `_internal` and beside `Eche.exe`. If playback says ffmpeg was not found, start Eche once while online so it can finish the download, or install FFmpeg from https://ffmpeg.org and restart.
-
 Default install location is typically `%LOCALAPPDATA%\Eche`.
+
+The install page keeps a spinner on through the download and the first build. That build is the long part. The window is still working while the spinner is moving.
+
+After Eche is installed, **Settings → Updates** can fetch `eche_source` from GitHub or build a local source folder. Eche closes first, because Windows cannot replace `Eche.exe` while it is open. A command window named **Eche update** finishes the build and starts Eche again. Installer directions live in [eche_installer_source/README.md](eche_installer_source/README.md).
 
 ---
 
@@ -213,6 +210,8 @@ No Eche cloud account. Tokens stay local except what you send to Discord / optio
 | `groq` package not installed | Source: `pip install -r requirements.txt` or `RUN_ECHE.bat`. EXE: rebuild with `SETUP_AND_BUILD.bat` |
 | Model still shows Llama | Settings → set Model ID to `qwen/qwen3.6-27b` → Save → restart bot |
 | No `Eche.exe` after install | Python on PATH; re-run install or `eche_source\SETUP_AND_BUILD.bat` |
+| Installer looks stuck near the end | The spinner and the clock on the install page mean the build is still running. The first one often takes several minutes. |
+| In-app update stops early | Settings → Updates. Eche closes on purpose. Leave the **Eche update** command window open until it starts Eche again. |
 | Black console on launch | Run `Eche.exe` next to `_internal` |
 | Build fails | Close `Eche.exe`, delete `build` and `dist` under `eche_source`, retry; prefer Python 3.12 |
 
@@ -220,8 +219,7 @@ No Eche cloud account. Tokens stay local except what you send to Discord / optio
 
 ## Version
 
-See root [VERSION](VERSION). Installer and app versions may differ slightly until both are rebuilt from the same tree.
-```
+See root [VERSION](VERSION). The source tree is **2.1.0**. A previously built `Eche.exe` or `Eche-Installer.exe` keeps its old version until that program is built again.
 
 **Official download (copy-paste):**  
 https://github.com/sevinOG/eche/raw/main/eche_installer/final/Eche-Installer.exe

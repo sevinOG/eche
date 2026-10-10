@@ -188,6 +188,21 @@ class Eche(commands.Bot):
             "reset_hour": 0
         }
 
+    async def is_owner(self, user):
+        """Security → Owner IDs, then the Discord application owner if that field is blank.
+
+        @commands.is_owner() and bot.is_owner() both land here. This does not
+        call author_is_owner, which calls back into is_owner when the field is blank.
+        """
+        from core.admin_tools import owner_decision, owner_setting_raw
+
+        if user is None:
+            return False
+        decided = owner_decision(getattr(user, "id", None), owner_setting_raw())
+        if decided is not None:
+            return decided
+        return await super().is_owner(user)
+
     # ---------------------------------------------------------
     # RAW GATEWAY EVENT DIAGNOSTICS
     # ---------------------------------------------------------
@@ -204,6 +219,14 @@ class Eche(commands.Bot):
             ready(str(self.user) if self.user else "")
         except Exception:
             pass
+
+        # Home layout: category "bot memory", channel "bot", thread music-queue.
+        # User channels are created when that person is stored.
+        try:
+            from cogs.music.music_queue_storage import ensure_queue_message
+            await ensure_queue_message(self)
+        except Exception as exc:
+            print(f">>> music queue thread: {exc}")
 
     # ---------------------------------------------------------
     # ⭐ GLOBAL BOT/BOT INTERACTION CHECK
@@ -240,12 +263,22 @@ class Eche(commands.Bot):
     async def on_command_error(self, ctx, error):
         if isinstance(error, commands.CommandNotFound):
             return
+        if isinstance(error, commands.NotOwner):
+            try:
+                await ctx.send("Only an owner from Settings → Security can use that command.")
+            except Exception:
+                pass
+            return
 
         print("COMMAND ERROR:", repr(error))
         print("ARGS:", error.args)
         try:
-            await ctx.send(f"Error: {error}")
-        except:
+            from core.client import discord_chunks
+
+            parts = discord_chunks(f"Error: {error}") or ["Error."]
+            for part in parts:
+                await ctx.send(part)
+        except Exception:
             pass
 
     # ---------------------------------------------------------

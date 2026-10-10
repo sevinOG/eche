@@ -194,7 +194,7 @@ _CONFIG_HINTS: list[tuple[str, str, str, str]] = [
         "Open Settings → Discord and paste your Home Server ID.\n\n"
         "Tip: Discord → Settings → Advanced → Developer Mode, then right-click "
         "your server icon → Copy Server ID.",
-        "Save Settings, then press Run Bot again.",
+        "Save Settings, then press Run again.",
     ),
     (
         "DISCORD_TOKEN",
@@ -207,7 +207,7 @@ _CONFIG_HINTS: list[tuple[str, str, str, str]] = [
         "discord token",
         "Discord token is missing",
         "No bot token was found. Set it under Settings → Discord.",
-        "Save Settings, then press Run Bot again.",
+        "Save Settings, then press Run again.",
     ),
     (
         "GROQ_API_KEY",
@@ -216,6 +216,13 @@ _CONFIG_HINTS: list[tuple[str, str, str, str]] = [
         "(default free setup: console.groq.com). The bot can still run games "
         "and economy without it.",
         "Optional for commands; required for AI conversation.",
+    ),
+    (
+        "OPENROUTER_API_KEY",
+        "OpenRouter API key is missing",
+        "OpenRouter is selected, and chat needs its key under Settings → AI & Model. "
+        "Create one at openrouter.ai/keys. The Groq key is a different field.",
+        "Save Settings, then press Run again.",
     ),
     (
         "install.ps1 not found",

@@ -1,23 +1,8 @@
 import discord
 from discord.ext import commands
-import random
 
-# Import showdown logic (no circular import now)
-from .showdown import do_holdem
-
-
-SUITS = ["♠", "♥", "♦", "♣"]
-RANKS = ["2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"]
-
-
-def generate_deck():
-    return [f"{rank}{suit}" for suit in SUITS for rank in RANKS]
-
-
-def card_value(rank):
-    if rank.isdigit():
-        return int(rank)
-    return {"J": 11, "Q": 12, "K": 13, "A": 14}[rank]
+from cogs.games._core import release_view
+from .showdown import do_holdem, prepare_table, send_hole_cards, table_text
 
 
 class HoldemGame:
@@ -135,100 +120,47 @@ class HoldemLobbyView(discord.ui.View):
         if self.started:
             return
         self.started = True
+        release_view(self)
 
         try:
             await self.message.edit(view=None)
-        except:
+        except Exception:
             pass
 
-        deck = generate_deck()
-        random.shuffle(deck)
-
-        self.player_states = {}
-        pot = 0
-        dealer_added = False
-
-        # Dealer fallback
-        if len(self.players) < 2:
-            dealer_member = self.ctx.guild.me
-            self.players[dealer_member.id] = dealer_member
-            dealer_added = True
-
+        try:
+            community, pot, notes = await prepare_table(self)
+        except Exception as exc:
             await self.message.edit(
                 embed=discord.Embed(
                     title="🃏 Hold'em",
-                    description="Not enough players joined. Starting heads-up vs dealer.",
-                    color=discord.Color.orange()
+                    description=f"The deal failed: {exc}",
+                    color=discord.Color.red(),
                 )
             )
+            return
+        if community is None:
+            await self.message.edit(
+                embed=discord.Embed(
+                    title="🃏 Hold'em",
+                    description="\n".join(notes) or "The table could not start.",
+                    color=discord.Color.orange(),
+                )
+            )
+            return
 
-        # Assign cards + balances
-        for pid, member in self.players.items():
-            if pid == self.ctx.guild.me.id and dealer_added:
-                bal = 0
-                current = 0
-                self.player_states[pid] = {
-                    "member": member,
-                    "starting_balance": bal,
-                    "current_balance": current,
-                    "cards": [],
-                    "active": True,
-                    "is_dealer": pid == self.ctx.guild.me.id and dealer_added
-                }
-                continue
-
-            bal, _ = await self.load_callback(member)
-            current = bal - self.betvalue
-            pot += self.betvalue
-
-            # Deal two unique hole cards per player
-            hole1 = deck.pop()
-            hole2 = deck.pop()
-            self.player_states[pid] = {
-                "member": member,
-                "starting_balance": bal,
-                "current_balance": current,
-                "cards": [hole1, hole2],
-                "active": True,
-                "is_dealer": pid == self.ctx.guild.me.id and dealer_added
-            }
-
-        # DM player cards
-        for state in self.player_states.values():
-            if state.get("is_dealer"):
-                continue
-            try:
-                dm = await state["member"].create_dm()
-                await dm.send(f"🃏 Your hole cards:\n{state['cards'][0]}  {state['cards'][1]}")
-            except:
-                pass
-
-        # Community cards
-        community = [deck.pop(), deck.pop(), deck.pop(), deck.pop(), deck.pop()]
-
-        desc = (
-            f"Players:\n" +
-            "\n".join(
-                f"- {s['member'].mention}{' (Dealer)' if s.get('is_dealer') else ''}"
-                for s in self.player_states.values()
-            ) +
-            "\n\n" +
-            f"Community Cards: {' '.join(community)}\n"
-            f"Pot: {pot}\n\n"
-            "Hold'em gameplay begins with simplified betting rounds.\n"
-            "This version will auto-evaluate community cards at end.\n"
-            "Hole cards shown to host only as simplified version."
-        )
-
+        await send_hole_cards(self, notes)
         table_embed = discord.Embed(
             title="🃏 Hold'em Table",
-            description=desc,
-            color=discord.Color.deep_red()
+            description=table_text(
+                self,
+                community,
+                pot,
+                notes,
+                "Hole cards are in each player's DMs. Showdown is next.",
+            ),
+            color=discord.Color.deep_red(),
         )
-
         await self.message.edit(embed=table_embed)
-
-        # Run showdown
         await do_holdem(self, community, pot)
 
 

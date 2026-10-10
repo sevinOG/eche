@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtGui import QFont
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 
 from gui.theme import APP_NAME
 from gui.widgets.loading import LoadingIndicator
@@ -48,9 +48,9 @@ class SummarizerWindow(QWidget):
         layout.addLayout(head)
 
         hint = QLabel(
-            "Used when Eche compresses Discord memory (Summary: block). "
-            "Keep the placeholder {combined_for_summary} so history is injected. "
-            "Same pattern as editing client.py / personality — plain text, restart bot after change."
+            "Used when Eche folds three recent lines into the Summary block. "
+            "Keep {existing_summary} and {new_lines} so the old memory and the new lines are inserted separately. "
+            "Plain text. The next summary reads the saved file."
         )
         hint.setObjectName("FieldHint")
         hint.setWordWrap(True)
@@ -103,25 +103,37 @@ class SummarizerWindow(QWidget):
 
     def save_file(self):
         self.loader.set_busy(True, "Saving…")
+        window = self.settings_window
+        if window is not None and hasattr(window, "begin_save_spinner"):
+            window.begin_save_spinner("Saving…")
+        QTimer.singleShot(0, self._commit_save)
+
+    def _commit_save(self):
         try:
             from core.summarizer_prompt import save_summarizer_prompt
             path = save_summarizer_prompt(self.editor.toPlainText())
-            self.path_label.setText(path)
-            self.loader.set_state("online")
-            if self.settings_window and hasattr(self.settings_window, "flash_save_spinner"):
-                self.settings_window.flash_save_spinner()
+        except Exception as exc:
+            self._finish_save(False, str(exc))
+            return
+        self.path_label.setText(path)
+        QTimer.singleShot(360, lambda: self._finish_save(True, path))
+
+    def _finish_save(self, ok: bool, detail: str):
+        if ok:
+            self.loader.set_state("online", "Saved")
             QMessageBox.information(
                 self,
                 "Saved",
-                f"Summarizer prompt updated:\n{path}\n\n"
+                f"Summarizer prompt updated:\n{detail}\n\n"
                 "Restart the bot so it reloads this file.",
             )
-        except Exception as e:
-            self.loader.set_state("error")
-            QMessageBox.critical(self, "Error", str(e))
-        finally:
-            from PyQt6.QtCore import QTimer
-            QTimer.singleShot(600, lambda: self.loader.set_state("offline"))
+        else:
+            self.loader.set_state("error", "Save failed")
+            QMessageBox.critical(self, "Error", detail)
+        QTimer.singleShot(600, lambda: self.loader.set_state("offline"))
+        window = self.settings_window
+        if window is not None and hasattr(window, "end_save_spinner"):
+            window.end_save_spinner(ok)
 
     def reset_default(self):
         reply = QMessageBox.question(

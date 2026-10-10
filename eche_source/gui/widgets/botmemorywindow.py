@@ -1,4 +1,7 @@
 # gui/widgets/botmemorywindow.py
+# Self context is the second pinned message in a user's context thread:
+#   bot memory / user-{id} / context
+# Fetch, save, and reset edit that message. They do not create a channel.
 
 from __future__ import annotations
 
@@ -13,9 +16,9 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QTextEdit,
     QLabel,
+    QLineEdit,
     QFrame,
     QMessageBox,
-    QSizePolicy,
 )
 
 from gui.theme import APP_NAME
@@ -26,6 +29,11 @@ try:
 except Exception:
     PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
+def _blank_for(user_id: str) -> str:
+    from core.discord_store import bot_memory_initial
+
+    return bot_memory_initial(user_id)
+
 
 def load_settings():
     from core.secrets import load_all
@@ -33,11 +41,12 @@ def load_settings():
 
 
 class BotMemoryWorker(QThread):
-    finished_fetch = pyqtSignal(bool, str, object) # success, content, pin_message_obj
+    finished_fetch = pyqtSignal(bool, str, object)  # success, content, unused
 
-    def __init__(self, action: str, new_content: str = ""):
+    def __init__(self, action: str, user_id: str, new_content: str = ""):
         super().__init__()
-        self.action = action # fetch, save, delete
+        self.action = action  # fetch, save, delete
+        self.user_id = (user_id or "").strip()
         self.new_content = new_content
 
     def run(self):
@@ -45,6 +54,14 @@ class BotMemoryWorker(QThread):
             import discord
             from dotenv import load_dotenv
             load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
+
+            if not self.user_id.isdigit() or len(self.user_id) < 15:
+                self.finished_fetch.emit(
+                    False,
+                    "Enter that person's Discord user ID (the long number).",
+                    None,
+                )
+                return
 
             settings = load_settings()
             token = (settings.get("discord_token") or "").strip() or os.getenv("DISCORD_TOKEN")
@@ -64,59 +81,74 @@ class BotMemoryWorker(QThread):
 
             client = discord.Client(intents=intents)
 
+            ok = False
             fetched_text = ""
-            target_pin = None
 
             @client.event
             async def on_ready():
-                nonlocal fetched_text, target_pin
+                nonlocal ok, fetched_text
                 try:
                     from core.home_id import parse_home_server_id
+                    from core.discord_store import (
+                        THREAD_CONTEXT,
+                        find_bot_record,
+                        find_thread,
+                        user_channel,
+                    )
+
                     guild_id = parse_home_server_id(str(home_server_id))
                     if not guild_id:
-                        self.finished_fetch.emit(
-                            False,
+                        fetched_text = (
                             "Home Server ID is not a Discord server ID. "
-                            "Copy Server ID, not the server icon link.",
-                            None,
+                            "Copy Server ID, not the server icon link."
                         )
-                        await client.close()
                         return
                     guild = client.get_guild(guild_id)
                     if not guild:
-                        guild = await client.fetch_guild(guild_id)
-                    
-                    category = discord.utils.get(guild.categories, name="bot-memory")
-                    channel = None
-                    if category:
-                        channel = discord.utils.get(category.channels, name="context")
-                    if not channel:
-                        # Fallback search all text channels
-                        channel = discord.utils.get(guild.text_channels, name="context")
-
-                    if not channel:
-                        fetched_text = "Self context channel not found yet (bot hasn't initialized it)."
-                        await client.close()
+                        try:
+                            guild = await client.fetch_guild(guild_id)
+                        except Exception:
+                            guild = None
+                    if guild is None:
+                        fetched_text = "Home server not found. Is the bot in that server?"
                         return
+                    try:
+                        await guild.fetch_channels()
+                    except Exception:
+                        pass
 
-                    pins = await channel.pins()
-                    if not pins:
-                        fetched_text = "No pinned self context message found yet."
-                        await client.close()
+                    channel = user_channel(guild, int(self.user_id))
+                    if channel is None:
+                        fetched_text = (
+                            f"No user-{self.user_id} channel in bot memory yet. "
+                            "Fetch does not create one."
+                        )
                         return
-
-                    pin = pins[0]
-                    target_pin = pin
+                    thread = await find_thread(channel, THREAD_CONTEXT)
+                    if thread is None:
+                        fetched_text = "That user has no context thread yet."
+                        return
+                    pin = await find_bot_record(thread)
+                    if pin is None:
+                        fetched_text = (
+                            "No bot self-context message in that context thread yet. "
+                            "A chat with this user creates it."
+                        )
+                        return
 
                     if self.action == "fetch":
-                        fetched_text = pin.content
+                        fetched_text = pin.content or ""
                     elif self.action == "save":
                         await pin.edit(content=self.new_content)
-                        fetched_text = pin.content
+                        fetched_text = self.new_content
                     elif self.action == "delete":
-                        await pin.edit(content="Self Conversation Data (Group Setting):\n\nSummary:\n(none yet)\n\nNew:\n")
-                        fetched_text = pin.content
-
+                        blank = _blank_for(self.user_id)
+                        await pin.edit(content=blank)
+                        fetched_text = blank
+                    else:
+                        fetched_text = f"Unknown action {self.action}"
+                        return
+                    ok = True
                 except Exception as ex:
                     fetched_text = f"Error communicating with Discord: {ex}"
                 finally:
@@ -125,8 +157,7 @@ class BotMemoryWorker(QThread):
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             loop.run_until_complete(client.start(token))
-
-            self.finished_fetch.emit(True, fetched_text, None)
+            self.finished_fetch.emit(ok, fetched_text, None)
         except Exception as e:
             self.finished_fetch.emit(False, str(e), None)
 
@@ -150,7 +181,11 @@ class BotMemoryWindow(QMainWindow):
         title.setObjectName("Title")
         titles.addWidget(title)
 
-        subtitle = QLabel("Displays and allows direct editing or resetting of the bot's pinned self-context message.")
+        subtitle = QLabel(
+            "The bot's self-context for one person lives in their context thread "
+            "(bot memory / user-{id} / context), next to that person's own pin. "
+            "Enter a user ID. Fetch does not create a channel."
+        )
         subtitle.setObjectName("Subtitle")
         subtitle.setWordWrap(True)
         titles.addWidget(subtitle)
@@ -161,18 +196,26 @@ class BotMemoryWindow(QMainWindow):
         head.addWidget(self.loader, alignment=Qt.AlignmentFlag.AlignTop)
         layout.addLayout(head)
 
+        id_row = QHBoxLayout()
+        id_label = QLabel("User ID")
+        id_row.addWidget(id_label)
+        self.user_id = QLineEdit()
+        self.user_id.setPlaceholderText("Discord user ID")
+        id_row.addWidget(self.user_id, stretch=1)
+        layout.addLayout(id_row)
+
         card = QFrame()
         card.setObjectName("Panel")
         card_layout = QVBoxLayout(card)
         card_layout.setContentsMargins(12, 10, 12, 12)
         card_layout.setSpacing(8)
 
-        head = QLabel("PINNED CONTEXT CONTENT")
-        head.setObjectName("PanelTitle")
-        card_layout.addWidget(head)
+        head_label = QLabel("PINNED SELF CONTEXT")
+        head_label.setObjectName("PanelTitle")
+        card_layout.addWidget(head_label)
 
         self.editor = QTextEdit()
-        self.editor.setPlaceholderText("Loading self memory from Discord...")
+        self.editor.setPlaceholderText("Enter a user ID, then Fetch from Discord.")
         card_layout.addWidget(self.editor, stretch=1)
         layout.addWidget(card, stretch=1)
 
@@ -197,49 +240,74 @@ class BotMemoryWindow(QMainWindow):
         layout.addLayout(row)
 
         self.worker = None
-        self.fetch_memory()
+
+    def _require_user_id(self) -> str | None:
+        user_id = self.user_id.text().strip()
+        if not user_id.isdigit() or len(user_id) < 15:
+            QMessageBox.warning(
+                self,
+                "User ID",
+                "Enter that person's Discord user ID (the long number).",
+            )
+            return None
+        return user_id
 
     def fetch_memory(self):
+        user_id = self._require_user_id()
+        if not user_id:
+            return
         self.loader.set_busy(True, "Fetching memory…")
         self.editor.setEnabled(False)
         self.editor.setPlainText("Connecting to Discord and fetching self context...")
-        self.worker = BotMemoryWorker("fetch")
+        self.worker = BotMemoryWorker("fetch", user_id)
         self.worker.finished_fetch.connect(self.on_worker_finished)
         self.worker.start()
 
     def save_memory(self):
+        user_id = self._require_user_id()
+        if not user_id:
+            return
         content = self.editor.toPlainText()
         if not content.strip():
             QMessageBox.warning(self, "Empty", "Content cannot be empty.")
             return
+        if len(content) > 2000:
+            QMessageBox.warning(
+                self,
+                "Too long",
+                "Discord messages must be 2000 characters or fewer.",
+            )
+            return
         self.loader.set_busy(True, "Saving changes…")
         self.editor.setEnabled(False)
-        self.worker = BotMemoryWorker("save", new_content=content)
+        self.worker = BotMemoryWorker("save", user_id, new_content=content)
         self.worker.finished_fetch.connect(self.on_worker_finished)
         self.worker.start()
 
     def delete_memory(self):
+        user_id = self._require_user_id()
+        if not user_id:
+            return
         reply = QMessageBox.question(
             self,
             "Reset memory?",
-            "Are you sure you want to reset the self context message to blank?",
+            "Reset this user's bot self-context to a blank summary?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
         self.loader.set_busy(True, "Resetting…")
         self.editor.setEnabled(False)
-        self.worker = BotMemoryWorker("delete")
+        self.worker = BotMemoryWorker("delete", user_id)
         self.worker.finished_fetch.connect(self.on_worker_finished)
         self.worker.start()
 
     def on_worker_finished(self, ok: bool, text: str, pin):
         self.loader.set_busy(False)
         self.editor.setEnabled(True)
+        self.editor.setPlainText(text or "")
         if ok:
-            self.editor.setPlainText(text)
             if self.main_window and hasattr(self.main_window, "append_log"):
                 self.main_window.append_log("[info] Self memory updated/fetched successfully.")
         else:
-            self.editor.setPlainText(text)
-            QMessageBox.warning(self, "Discord Error", text)
+            QMessageBox.warning(self, "Discord Error", text or "Could not reach Discord.")
