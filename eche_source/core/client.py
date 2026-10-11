@@ -1344,7 +1344,7 @@ def _format_system_prompt(
     voice: str | None = None,
 ) -> str:
     """One system message. Personality stays the voice block, once."""
-    if job == "plan":
+    if job in ("plan", "execute"):
         lines = []
     else:
         lines = [
@@ -1378,9 +1378,16 @@ def _format_system_prompt(
     elif job == "plan":
         lines.append(
             "Name the thread and write the plan. "
-            "Reply with Title: and then Plan:. "
+            "Reply with Title:, then Searches:, then Plan:. "
             "The message is the assignment. "
             "Do not post. Do not call tools. Do not search."
+        )
+    elif job == "execute":
+        lines.append(
+            "The message is the plan. Follow it. Do not add a topic that is not in it. "
+            "This round is one output. A search is only a duckduckgo call. "
+            "A post is only the next post. Finishing is only DONE. "
+            "Do not mix a search, a post, and DONE in one reply."
         )
     spoken = get_personality_prompt() if voice is None else voice
     spoken = (spoken or "").strip()

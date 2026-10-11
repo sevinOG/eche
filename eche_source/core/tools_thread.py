@@ -4,8 +4,8 @@
 # The channel reply stays short. This runs when they ask for a thread, or
 # agree to one that was offered. The thread is started on that message.
 # Phase 1 names the thread and writes the plan. It does not search or post.
-# Phase 2 looks facts up and writes the posts. It may search more than once.
-# A line that is only DONE ends phase 2. That word is not posted.
+# Phase 2 sees that plan only. Planned searches run first, one call a round.
+# Then each round is one post. A round that is only DONE ends it and is not posted.
 # At the start, a direct ask uses that message only. A more-room follow-up
 # ("about that", "yes", "I need more room to explain that") uses the previous message.
 
@@ -28,8 +28,14 @@ from core.tools import (
 # Phase 2 searches and posts. A bound so a missed DONE cannot run forever.
 THREAD_STEPS = 8
 _PLAN_TOKENS = 200
+# A search round is only the tool call. The post budget stays on the body.
+_SEARCH_ROUND_TOKENS = 64
+_SEARCH_CAP = 4
 _NOTES_CAP = 2000
-_FALLBACK_PLAN = "Cover the assignment in the subject. Stay on that breakdown."
+_FALLBACK_PLAN = (
+    "Explain the assignment in depth, one full post at a time. "
+    "Stay on that explanation. Do not add a different topic."
+)
 _ARCHIVE_MINUTES = (10080, 4320, 1440, 60)
 
 
@@ -173,6 +179,11 @@ _GENERIC_TOPIC = {
 }
 _TITLE_LINE = re.compile(r"^title\s*:\s*(.*)$", re.IGNORECASE)
 _PLAN_MARK = re.compile(r"^plan\s*:\s*(.*)$", re.IGNORECASE)
+_SEARCH_MARK = re.compile(r"^searches\s*:\s*(.*)$", re.IGNORECASE)
+_NONE_SEARCH = re.compile(
+    r"^(?:none|no|n/a|nothing|no search|no searches)\.?$",
+    re.IGNORECASE,
+)
 
 
 def ask_remainder(text: str) -> str:
@@ -555,42 +566,96 @@ def resolve_title(parsed: str, source: str) -> str:
     return thread_title({"title": label})
 
 
-def parse_name_plan(text: str) -> tuple[str, str]:
-    """Title and plan from a Title: / Plan: reply. Missing pieces stay empty."""
+def _query_piece(line: str) -> str | None:
+    """One planned lookup. A none-line and a long plan sentence are not queries."""
+    cleaned = re.sub(r"[*`_]", "", line or "").strip()
+    cleaned = re.sub(r"^[-*•]\s+", "", cleaned)
+    cleaned = re.sub(r"^\d+[.)]\s+", "", cleaned).strip().strip("\"'`")
+    cleaned = " ".join(cleaned.split())
+    if not cleaned or _NONE_SEARCH.match(cleaned):
+        return None
+    if len(cleaned) > 120:
+        return None
+    if (
+        _TITLE_LINE.match(cleaned)
+        or _PLAN_MARK.match(cleaned)
+        or _SEARCH_MARK.match(cleaned)
+    ):
+        return None
+    return cleaned
+
+
+def parse_name_plan(text: str) -> tuple[str, str, list[str]]:
+    """Title, plan, and planned lookups. Missing pieces stay empty."""
     title = ""
     plan_lines: list[str] = []
+    searches: list[str] = []
+    section = ""
     seen_title = False
-    seen_plan = False
     for line in (text or "").splitlines():
-        if not seen_plan:
-            cleaned = re.sub(r"[*`_]", "", line).strip()
-            plan_mark = _PLAN_MARK.match(cleaned)
-            if plan_mark:
-                seen_plan = True
-                extra = plan_mark.group(1).strip()
-                if extra:
-                    plan_lines.append(extra)
-                continue
-            title_mark = _TITLE_LINE.match(cleaned)
-            if title_mark and not seen_title:
-                seen_title = True
-                title = title_mark.group(1).strip()
-                continue
-            if seen_title and line.strip():
-                plan_lines.append(line.strip())
+        cleaned = re.sub(r"[*`_]", "", line).strip()
+        plan_mark = _PLAN_MARK.match(cleaned)
+        search_mark = _SEARCH_MARK.match(cleaned)
+        title_mark = _TITLE_LINE.match(cleaned)
+        if plan_mark:
+            section = "plan"
+            extra = plan_mark.group(1).strip()
+            if extra:
+                plan_lines.append(extra)
             continue
-        plan_lines.append(line)
-    return " ".join(title.split()), "\n".join(plan_lines).strip()
+        if search_mark and section != "plan":
+            section = "searches"
+            extra = search_mark.group(1).strip()
+            piece = _query_piece(extra) if extra else None
+            if piece:
+                searches.append(piece)
+            continue
+        if title_mark and not seen_title and section != "plan":
+            seen_title = True
+            section = "title"
+            title = title_mark.group(1).strip()
+            continue
+        if section == "searches":
+            if not cleaned:
+                continue
+            piece = _query_piece(cleaned)
+            if piece:
+                searches.append(piece)
+                continue
+            bare = re.sub(r"^[-*•]\s+", "", cleaned)
+            bare = re.sub(r"^\d+[.)]\s+", "", bare).strip()
+            if _NONE_SEARCH.match(bare):
+                continue
+            section = "plan"
+            plan_lines.append(line.strip())
+            continue
+        if section == "plan":
+            plan_lines.append(line)
+            continue
+        if seen_title and line.strip():
+            plan_lines.append(line.strip())
+    return " ".join(title.split()), "\n".join(plan_lines).strip(), searches
 
 
 def name_plan_prompt(brief: str) -> str:
-    """Phase 1. Name the thread and write the plan. No search and no posts."""
+    """Phase 1. Name the thread and outline the posts. No search and no posts."""
+    from core.client import REPLY_MAX_CHARS
+
     return (
         f"{brief}\n\n"
         "Name this thread and write the plan. Reply in this shape only:\n"
         "Title: a few words from the assignment\n"
+        "Searches:\n"
+        "- one lookup, or the word none\n"
         "Plan:\n"
-        "the points the posts will cover\n\n"
+        "the points, one full post each\n\n"
+        "Explain the assignment in depth. "
+        "Plan several posts when the topic needs it. "
+        "Each point is one later post and should use the thread room, "
+        f"up to {REPLY_MAX_CHARS} characters.\n"
+        "List a search only when a post needs a fact, score, date, news, or definition. "
+        "One query a line. Those searches run first, one a round, before any post.\n"
+        "A writing assignment that needs no facts uses Searches: none.\n"
         "The assignment above is the only message. Name and plan that.\n"
         "Do not use an older message.\n"
         "This phase does not post and does not search.\n"
@@ -609,70 +674,187 @@ def append_notes(notes: str, found: str) -> str:
     return combined[-_NOTES_CAP:].lstrip()
 
 
-def fill_prompt(subject: str, plan: str, already: str, notes: str, cut_note: str = "") -> str:
-    """Phase 2. One writing step. Another search is still allowed. DONE ends it."""
-    lookup = (notes or "").strip()
+def _fallback_plan(source: str) -> str:
+    """Used when phase 1 does not return a plan. This text is the whole assignment."""
+    words = " ".join(_without_tool_announce(source).split())
+    if len(words) > 280:
+        words = words[:279].rstrip() + "…"
+    if not words:
+        return _FALLBACK_PLAN
     return (
-        f"Subject:\n{subject}\n\n"
-        f"Plan. Stay on it:\n{plan}\n\n"
-        f"{cut_note}"
-        f"Already posted:\n{already}\n\n"
-        f"Notes:\n{lookup or '(none)'}\n\n"
-        "The reply is only the next post. Do not describe your steps or repeat these labels.\n"
-        "Do not announce a thread. Do not name anyone who is not in the assignment.\n"
-        "Call duckduckgo when the assignment needs a fact. You can call it more than once.\n"
-        "Every search has to name the assignment. Ignore notes about a different subject.\n"
-        "Do not invent reviews or public opinion that are not in the notes.\n"
-        "A writing assignment is written. Do not replace it with a search or a list of links.\n"
-        "If the notes are empty, still write the assignment.\n"
-        "If the notes say the lookup was blocked or could not be reached, "
-        "still write the assignment. Do not post that status as the reply. "
-        "Do not invent the missing facts.\n"
-        "If you cannot call the tool, reply with only "
-        '{"name":"duckduckgo","arguments":{"query":"..."}} and stop.\n'
-        "End on a complete sentence.\n"
-        "When the plan is finished, add a last line that is only DONE. That line is not posted.\n"
+        "Explain this in depth, one full post at a time: "
+        f"{words} Stay on that explanation. Do not add a different topic."
     )
 
 
-async def _name_and_plan(brief: str, source: str) -> tuple[str, str]:
-    """Phase 1. One completion, no tools. Returns the thread name and the plan."""
+def _planned_searches(raw: list[str], source: str) -> list[str]:
+    """Lookups the planner listed that still name the assignment. Capped."""
+    kept: list[str] = []
+    seen: set[str] = set()
+    for query in raw or []:
+        text = " ".join((query or "").split())
+        if not text or _NONE_SEARCH.match(text) or _STATUS_LINE.match(text):
+            continue
+        key = text.casefold()
+        if key in seen or not query_stays_on(text, source):
+            if text and key not in seen:
+                dprint(f"[tools] thread plan search dropped: {text!r}")
+            continue
+        seen.add(key)
+        kept.append(text)
+        if len(kept) >= _SEARCH_CAP:
+            break
+    return kept
+
+
+def _accept_plan(
+    parsed_plan: str,
+    parsed_searches: list[str],
+    source: str,
+) -> tuple[str, list[str]]:
+    """A short or empty plan is replaced, and its searches are not run."""
+    planned = usable_plan(parsed_plan)
+    if not planned:
+        return _fallback_plan(source), []
+    return planned, _planned_searches(parsed_searches, source)
+
+
+def search_round_prompt(plan: str, query: str) -> str:
+    """One planned lookup. The plan is the only assignment. No post and no DONE."""
+    return (
+        f"Plan. This is the only assignment. Follow it.\n{plan}\n\n"
+        "This round is only one duckduckgo call. Do not post. Do not write DONE.\n"
+        "Call duckduckgo with this query and no other:\n"
+        f"{query}\n"
+    )
+
+
+def body_round_prompt(plan: str, notes: str, already: str, cut_note: str = "") -> str:
+    """One post. The plan is the only assignment. No tool call in this round."""
+    from core.client import REPLY_MAX_CHARS
+
+    lookup = (notes or "").strip() or "(none)"
+    return (
+        "Plan. This is the only assignment. Follow it. "
+        "Do not add a topic that is not in it.\n"
+        f"{plan}\n\n"
+        f"{cut_note}"
+        f"Already posted:\n{already}\n\n"
+        f"Planned search results:\n{lookup}\n\n"
+        "This round is only the next post. Do not call a tool. "
+        "Do not write DONE in this post.\n"
+        "When every planned post is already written, reply with only DONE.\n"
+        "Explain that next point in depth. Use the room, "
+        f"up to {REPLY_MAX_CHARS} characters. End on a complete sentence.\n"
+        "Do not describe your steps or repeat these labels.\n"
+        "Do not announce a thread. Do not name anyone who is not in the plan.\n"
+        "Do not invent reviews, scores, dates, or news that are not in the planned search results.\n"
+        "If those results are empty, still write the plan. "
+        "Do not post a status line about a lookup.\n"
+    )
+
+
+def _lookup_note(query: str, text: str) -> str:
+    """Notes for later posts. A blocked or unreachable lookup adds nothing."""
+    from core.client import lookup_failed
+
+    body = (text or "").strip()
+    if not body or lookup_failed(body) or _STATUS_LINE.match(body):
+        return ""
+    label = " ".join((query or "").split())
+    return f"{label}\n{body}" if label else body
+
+
+def _only_tool_reply(text: str) -> bool:
+    """True when the reply is a duckduckgo call and nothing else."""
+    from core.tools import calls_from_model_text
+
+    raw = (text or "").strip()
+    if not raw or not calls_from_model_text(raw, {"duckduckgo"}):
+        return False
+    fence = re.fullmatch(
+        r"```(?:json)?\s*(.*?)\s*```",
+        raw,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    candidate = (fence.group(1) if fence else raw).strip()
+    return candidate.startswith("{") and candidate.endswith("}")
+
+
+def _drop_tool_lines(text: str) -> str:
+    """A body round does not post a tool call that arrived as text."""
+    from core.tools import calls_from_model_text
+
+    kept: list[str] = []
+    for line in (text or "").splitlines():
+        if calls_from_model_text(line.strip(), {"duckduckgo"}):
+            continue
+        kept.append(line)
+    return "\n".join(kept)
+
+
+async def _name_and_plan(brief: str, source: str) -> tuple[str, str, list[str]]:
+    """Phase 1. One completion, no tools. Returns the name, the plan, and searches."""
     from core.client import call_groq_turn
 
     title = resolve_title("", source)
-    plan = _FALLBACK_PLAN
+    plan = _fallback_plan(source)
+    searches: list[str] = []
+    for attempt in range(3):
+        try:
+            turn = await call_groq_turn(
+                name_plan_prompt(brief),
+                user_id=None,
+                max_completion_tokens=_PLAN_TOKENS,
+                tools=None,
+                include_tool_note=False,
+                job="plan",
+            )
+        except Exception as exc:
+            dprint(f"[tools] thread name failed: {exc}")
+            return title, plan, []
+        if turn.quota or backend_error_text(turn.reply):
+            return title, plan, []
+        raw, _done = finish_thread_part(turn.reply or "", turn.cut)
+        parsed_title, parsed_plan, parsed_searches = parse_name_plan(raw)
+        title = resolve_title(parsed_title, source)
+        plan, searches = _accept_plan(parsed_plan, parsed_searches, source)
+        if usable_plan(parsed_plan):
+            return title, plan, searches
+        if attempt < 2:
+            dprint("[tools] thread plan was empty, trying again")
+    return title, plan, searches
+
+
+async def _run_planned_lookup(ctx: ToolContext, query: str) -> str:
+    """Run the planner's query. The model's own query is not used."""
+    from core.tools import execute
+
     try:
-        turn = await call_groq_turn(
-            name_plan_prompt(brief),
-            user_id=None,
-            max_completion_tokens=_PLAN_TOKENS,
-            tools=None,
-            include_tool_note=False,
-            job="plan",
-        )
+        result = await execute("duckduckgo", {"query": query}, ctx)
     except Exception as exc:
-        dprint(f"[tools] thread name failed: {exc}")
-        return title, plan
-    if turn.quota or backend_error_text(turn.reply):
-        return title, plan
-    raw, _done = finish_thread_part(turn.reply or "", turn.cut)
-    parsed_title, parsed_plan = parse_name_plan(raw)
-    title = resolve_title(parsed_title, source)
-    planned = usable_plan(parsed_plan)
-    if planned:
-        plan = planned
-    return title, plan
+        dprint(f"[tools] thread lookup failed: {exc}")
+        return ""
+    return _lookup_note(query, getattr(result, "text", "") or "")
 
 
-async def _execute(ctx: ToolContext, thread, subject: str, plan: str, focus: str) -> str:
-    """Phase 2. Search as needed, post the parts, and stop when the model emits DONE."""
+async def _execute(
+    ctx: ToolContext,
+    thread,
+    plan: str,
+    searches: list[str],
+    focus: str,
+) -> str:
+    """Phase 2. Planned searches first, then one post a round. DONE is not posted.
+
+    `focus` only filters a planned query. It is not shown to the model.
+    """
     from core.client import (
         THREAD_COMPLETION_TOKENS,
         call_groq_turn,
         discord_chunks,
         last_sentence,
     )
-    from core.tools import execute
 
     # No user id: the person's pin is not injected into the posts.
     posted: list[str] = []
@@ -680,6 +862,29 @@ async def _execute(ctx: ToolContext, thread, subject: str, plan: str, focus: str
     resume_after = ""
     need_sentence = False
     search_tools = _duckduckgo_tools()
+
+    for query in searches or []:
+        if not query_stays_on(query, focus):
+            dprint(f"[tools] thread lookup skipped: {query!r}")
+            continue
+        try:
+            turn = await call_groq_turn(
+                search_round_prompt(plan, query),
+                user_id=None,
+                max_completion_tokens=_SEARCH_ROUND_TOKENS,
+                tools=search_tools,
+                include_tool_note=False,
+                job="execute",
+            )
+        except Exception as exc:
+            dprint(f"[tools] thread search round failed: {exc}")
+            turn = None
+        if turn is not None and (turn.quota or backend_error_text(turn.reply)):
+            dprint(f"[tools] thread search stopped: {(turn.reply or '')[:160]!r}")
+            break
+        found = await _run_planned_lookup(ctx, query)
+        if found:
+            notes = append_notes(notes, found)
 
     for _ in range(THREAD_STEPS):
         already = "\n\n".join(posted) if posted else "(nothing yet)"
@@ -695,15 +900,15 @@ async def _execute(ctx: ToolContext, thread, subject: str, plan: str, focus: str
                 "The previous attempt was cut off before a sentence finished. "
                 "Start this part with a complete sentence.\n\n"
             )
-        prompt = fill_prompt(subject, plan, already, notes, cut_note)
+        prompt = body_round_prompt(plan, notes, already, cut_note)
         try:
             turn = await call_groq_turn(
                 prompt,
                 user_id=None,
                 max_completion_tokens=THREAD_COMPLETION_TOKENS,
-                tools=search_tools,
+                tools=None,
                 include_tool_note=False,
-                job="thread",
+                job="execute",
             )
         except Exception as exc:
             dprint(f"[tools] thread fill failed: {exc}")
@@ -711,23 +916,12 @@ async def _execute(ctx: ToolContext, thread, subject: str, plan: str, focus: str
         if turn.quota or backend_error_text(turn.reply):
             dprint(f"[tools] thread fill stopped: {(turn.reply or '')[:160]!r}")
             break
-        if turn.tool_calls:
-            for call in turn.tool_calls:
-                if (call or {}).get("name") != "duckduckgo":
-                    continue
-                search_args = (call or {}).get("arguments") or {}
-                query = " ".join(str(search_args.get("query") or "").split())
-                if not query_stays_on(query, focus):
-                    dprint(f"[tools] thread lookup skipped: {query!r}")
-                    continue
-                try:
-                    result = await execute("duckduckgo", search_args, ctx)
-                except Exception as exc:
-                    dprint(f"[tools] thread lookup failed: {exc}")
-                    continue
-                notes = append_notes(notes, result.text or "")
+        reply = turn.reply or ""
+        if turn.tool_calls and not reply.strip():
             continue
-        body, done = finish_thread_part(turn.reply or "", turn.cut)
+        if _only_tool_reply(reply):
+            continue
+        body, done = finish_thread_part(_drop_tool_lines(reply), turn.cut)
         if not body or _STATUS_LINE.match(body.strip()):
             need_sentence = bool(turn.cut) and not body
             if done:
@@ -768,9 +962,8 @@ async def open_thread(ctx: ToolContext, arguments: dict) -> ToolResult:
         "Assignment to name and plan. Use only this.\n"
         f"{source}"
     )
-    title, plan = await _name_and_plan(brief, source)
+    title, plan, searches = await _name_and_plan(brief, source)
     arguments["title"] = title
-    subject = thread_subject(title, [("", source)])
 
     if isinstance(channel, discord.Thread):
         thread = channel
@@ -793,7 +986,7 @@ async def open_thread(ctx: ToolContext, arguments: dict) -> ToolResult:
             fence=False,
         )
 
-    body = await _execute(ctx, thread, subject, plan, source)
+    body = await _execute(ctx, thread, plan, searches, source)
     detail = thread_log_detail(title, plan, body)
     if not body:
         note = "I opened the thread, but I had nothing more to add." if opened else "I had nothing more to add."
