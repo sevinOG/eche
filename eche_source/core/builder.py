@@ -12,12 +12,20 @@ async def load_user_context(bot, user_id, username):
     Truncated to avoid Groq "prompt too long".
     """
     guild = get_home_guild(bot)
-    from core.discord_store import refresh_record
+    from core.discord_store import fetch_live
 
     channel, pinned = await ensure_context_channel(bot, guild, user_id, username)
     if not pinned:
         return "none", []
-    pinned = await refresh_record(pinned)
+    try:
+        pinned = await fetch_live(pinned)
+    except Exception as exc:
+        from core.debuglog import dprint
+
+        dprint(f"[builder] user context fetch failed: {exc}")
+        return "none", []
+    if pinned is None:
+        return "none", []
     from core.context_manager import parse_pin_sections
 
     _label, summary, recent = parse_pin_sections(pinned.content or "", "")
@@ -32,12 +40,20 @@ async def load_bot_context(bot, user_id, username=None):
     Load this user's copy of the bot's self-context from the home server.
     Truncated to avoid Groq "prompt too long".
     """
-    from core.discord_store import refresh_record
+    from core.discord_store import fetch_live
 
     channel, pinned = await ensure_bot_memory_channel(bot, user_id, username)
     if not pinned:
         return "none", []
-    pinned = await refresh_record(pinned)
+    try:
+        pinned = await fetch_live(pinned)
+    except Exception as exc:
+        from core.debuglog import dprint
+
+        dprint(f"[builder] bot context fetch failed: {exc}")
+        return "none", []
+    if pinned is None:
+        return "none", []
     from core.context_manager import parse_pin_sections
 
     _label, summary, recent = parse_pin_sections(pinned.content or "", "")

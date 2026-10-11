@@ -442,11 +442,27 @@ async def fold_long_memory(
         summary_room,
         title_from_label,
     )
-    from core.discord_store import edit_record, refresh_record
+    from core.discord_store import (
+        BOT_CONTEXT_HEADER,
+        OLD_BOT_CONTEXT_HEADER,
+        USER_CONTEXT_HEADER,
+        read_pinned_first,
+        same_discord_text,
+        write_pinned,
+    )
 
     rows = [str(line).strip() for line in notes if str(line).strip()]
-    pinned = await refresh_record(pinned)
-    content = getattr(pinned, "content", "") or ""
+    headers = (
+        (BOT_CONTEXT_HEADER, OLD_BOT_CONTEXT_HEADER)
+        if side == "bot"
+        else (USER_CONTEXT_HEADER,)
+    )
+    channel = getattr(pinned, "channel", None)
+    live, pins_ok = await read_pinned_first(channel, headers)
+    if not pins_ok:
+        print(f"[context_summarizer] {side} pin list could not be read.")
+        return None
+    content = getattr(live, "content", "") or "" if live is not None else ""
     label, summary_block, message_lines = parse_pin_sections(content, fallback_header)
     for line in message_lines:
         text = str(line).strip()
@@ -495,11 +511,20 @@ async def fold_long_memory(
         return False
 
     body = summary_only(title, chosen)
-    if body == content:
-        return True
-    try:
-        await edit_record(pinned, body)
-    except Exception as exc:
-        print(f"[context_summarizer] ERROR editing long-term pin: {exc}")
-        return False
-    return True
+    if content.startswith(OLD_BOT_CONTEXT_HEADER):
+        header = OLD_BOT_CONTEXT_HEADER
+    elif side == "bot":
+        header = BOT_CONTEXT_HEADER
+    else:
+        header = USER_CONTEXT_HEADER
+    if (
+        live is not None
+        and getattr(live, "pinned", False)
+        and same_discord_text(body, content)
+    ):
+        return live
+    written, note = await write_pinned(channel, header, body)
+    if written is None or note == "pin-failed":
+        print(f"[context_summarizer] {side} summary was not written ({note}).")
+        return None
+    return written

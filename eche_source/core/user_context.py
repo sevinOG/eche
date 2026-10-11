@@ -389,11 +389,11 @@ async def _user_context_message(guild, user_id: str | int, *, create: bool):
         THREAD_CONTEXT,
         USER_CONTEXT_HEADER,
         adopt_bot_record,
-        ensure_record,
         ensure_user_thread,
-        find_record,
         find_thread,
+        read_pinned,
         user_channel,
+        write_pinned,
     )
 
     if create:
@@ -403,11 +403,15 @@ async def _user_context_message(guild, user_id: str | int, *, create: bool):
         thread = await find_thread(channel, THREAD_CONTEXT) if channel else None
     if thread is None:
         return None, None
+    message, pins_ok = await read_pinned(thread, USER_CONTEXT_HEADER)
+    if not pins_ok:
+        return thread, None
     if create:
-        message = await ensure_record(thread, USER_CONTEXT_HEADER, f"Context for {user_id}:\n")
+        if message is None:
+            message, _note = await write_pinned(
+                thread, USER_CONTEXT_HEADER, f"Context for {user_id}:\n"
+            )
         await adopt_bot_record(thread, str(user_id))
-    else:
-        message = await find_record(thread, USER_CONTEXT_HEADER)
     return thread, message
 
 
@@ -450,6 +454,9 @@ async def discord_save_user_context(guild, user_id: str | int, content: str) -> 
         raise RuntimeError(f"No user-{user_id} channel in bot memory.")
     if message is None:
         raise RuntimeError(f"No context thread for user-{user_id}.")
-    from core.discord_store import edit_record
-    await edit_record(message, content)
-    return content
+    from core.discord_store import USER_CONTEXT_HEADER, write_pinned
+
+    written, note = await write_pinned(thread, USER_CONTEXT_HEADER, content)
+    if written is None:
+        raise RuntimeError(f"Could not write context for user-{user_id} ({note}).")
+    return getattr(written, "content", "") or content

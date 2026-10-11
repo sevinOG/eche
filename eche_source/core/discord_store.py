@@ -107,6 +107,28 @@ def cached_record(parent_id: int, header: str):
     return None
 
 
+def same_discord_text(left: str, right: str) -> bool:
+    """Discord may drop a trailing newline. The prose is what matters."""
+    return (left or "").strip() == (right or "").strip()
+
+
+def _forget_header(parent_id: int, header: str, *, keep_id=None) -> None:
+    """Drop cached copies of one pin. A deleted id must not block a new write."""
+    if not parent_id or not header:
+        return
+    parent_id = int(parent_id)
+    for key, stored in list(_records.items()):
+        if key[0] != parent_id:
+            continue
+        if keep_id is not None and getattr(stored, "id", None) == keep_id:
+            continue
+        content = getattr(stored, "content", "") or ""
+        if content.startswith(header) or str(key[1]).startswith(header):
+            _records.pop(key, None)
+            _missing.discard(key)
+    _missing.discard((parent_id, header))
+
+
 def forget_record(message) -> None:
     """Drop one message so the next lookup asks Discord again."""
     mid = getattr(message, "id", None)
@@ -144,6 +166,41 @@ def forget_parent(parent_id: int) -> None:
         _missing.discard(key)
     for key in [key for key in _threads if key[0] == parent_id]:
         _threads.pop(key, None)
+
+
+async def fetch_live(message):
+    """Discord's current copy of one message.
+
+    None means Discord reported the id gone (404). A rate limit or a network
+    error is raised instead, so a failed read is not treated as a missing pin.
+    A cached object is not a substitute.
+    """
+    if message is None:
+        return None
+    channel = getattr(message, "channel", None)
+    mid = getattr(message, "id", None)
+    if channel is None or mid is None or not hasattr(channel, "fetch_message"):
+        return None
+    try:
+        fresh = await channel.fetch_message(mid)
+    except discord.NotFound as exc:
+        dprint(f"[discord_store] fetch failed: {exc}")
+        forget_record(message)
+        parent_id = getattr(channel, "id", None)
+        if parent_id:
+            _pins_scanned.discard(int(parent_id))
+        return None
+    content = getattr(fresh, "content", "") or ""
+    for held in (message, fresh):
+        if getattr(held, "content", None) != content:
+            try:
+                held.content = content
+            except Exception:
+                pass
+    parent_id = getattr(channel, "id", None)
+    if parent_id:
+        remember_record(int(parent_id), fresh)
+    return fresh
 
 
 async def refresh_record(message):
@@ -281,14 +338,14 @@ def list_user_ids(guild) -> set[int]:
 
 
 async def list_pins(parent) -> list:
-    if parent is None:
-        return []
-    try:
-        pins = await parent.pins()
-    except Exception as exc:
-        dprint(f"[discord_store] pins failed: {exc}")
-        return []
-    return list(pins or [])
+    """Every pin on the parent. An unread list comes back empty here.
+
+    Bank and shop scan with this helper. A failed read stays empty for them.
+    The long-form pin path uses `_list_pins`, which keeps the failure apart
+    from a channel that really has no pin.
+    """
+    listed, _ok = await _list_pins(parent)
+    return listed
 
 
 async def find_record(parent, header: str, allow_history: bool = True):
@@ -309,14 +366,12 @@ async def find_record(parent, header: str, allow_history: bool = True):
         return hit
     found = None
     if parent_id not in _pins_scanned:
-        try:
-            listed = await parent.pins()
-        except Exception as exc:
+        listed, ok = await _list_pins(parent)
+        if not ok:
             # An unread pin list is not the same as an empty one. Remembering
             # the miss would hide the real message and create a second copy.
-            dprint(f"[discord_store] pins failed: {exc}")
             return None
-        for message in list(listed or []):
+        for message in listed:
             remember_record(parent_id, message)
             if found is None and (message.content or "").startswith(header):
                 found = message
@@ -534,10 +589,28 @@ async def _adopt_bot_record_locked(parent, label: str):
 
 
 async def adopt_bot_record(parent, label: str):
+    """The bot pin on Discord. Creates it when the pin list has none."""
     if parent is None:
         return None
-    async with _layout_lock:
-        return await _adopt_bot_record_locked(parent, label)
+    header = bot_memory_header(label)
+    message, pins_ok = await read_pinned_first(
+        parent, (BOT_CONTEXT_HEADER, OLD_BOT_CONTEXT_HEADER)
+    )
+    if not pins_ok:
+        print("[discord_store] could not read the bot context pin", flush=True)
+        return None
+    if message is None:
+        written, _note = await write_pinned(parent, BOT_CONTEXT_HEADER, bot_memory_initial(label))
+        return written
+    content = getattr(message, "content", "") or ""
+    if content.startswith(OLD_BOT_CONTEXT_HEADER):
+        written, _note = await write_pinned(
+            parent,
+            OLD_BOT_CONTEXT_HEADER,
+            renamed_bot_pin(header, content),
+        )
+        return written
+    return message
 
 
 async def find_bot_record(parent):
@@ -641,6 +714,145 @@ async def ensure_user_thread(guild, user_id, name: str, username: str | None = N
         return await _ensure_thread_locked(channel, name)
 
 
+def _first_pinned(listed, headers: tuple[str, ...]):
+    """The pin for the earliest header, then the newest pin with that header.
+
+    pins() is newest-first. Walking the headers first keeps "Eche with " ahead
+    of a later-pinned "Self Conversation Data" message.
+    """
+    for header in headers:
+        if not header:
+            continue
+        for message in listed:
+            if (getattr(message, "content", "") or "").startswith(header):
+                return message
+    return None
+
+
+def _mark_pinned(message) -> None:
+    """A message returned by the pin list is pinned, even if the payload omitted the flag."""
+    if message is None:
+        return
+    try:
+        message.pinned = True
+    except Exception:
+        pass
+
+
+async def _list_pins(parent):
+    """(messages, ok). A failed read is not an empty pin list.
+
+    discord.py 2.7 stops at 50 pins unless limit is None. A short page is not
+    proof that the header is absent. Older discord.py has no limit argument.
+    """
+    if parent is None or not hasattr(parent, "pins"):
+        return [], False
+    try:
+        try:
+            listed = parent.pins(limit=None)
+        except TypeError:
+            listed = parent.pins()
+        if hasattr(listed, "__aiter__"):
+            messages = [message async for message in listed]
+        elif hasattr(listed, "__await__"):
+            messages = await listed
+        else:
+            messages = listed
+    except Exception as exc:
+        dprint(f"[discord_store] pins failed: {exc}")
+        return [], False
+    return list(messages or []), True
+
+
+async def _cached_unpinned(parent_id: int, headers: tuple[str, ...]):
+    """A remembered id, only after the pin list was read and had no match.
+
+    NotFound forgets that id and tries the next header. Any other fetch error
+    is not an empty channel. A live message is returned so the next write can
+    edit it and retry pin instead of sending a second copy.
+    """
+    for header in headers:
+        cached = cached_record(parent_id, header)
+        if cached is None:
+            continue
+        try:
+            live = await fetch_live(cached)
+        except Exception as exc:
+            dprint(f"[discord_store] fetch failed: {exc}")
+            return None, False
+        if live is None:
+            _forget_header(parent_id, header)
+            continue
+        remember_record(parent_id, live)
+        return live, True
+    for header in headers:
+        _forget_header(parent_id, header)
+    return None, True
+
+
+async def _live_listed(listed, headers: tuple[str, ...]):
+    """(message or None, ok) for pins already listed.
+
+    Header order wins, then newest-first. A 404 skips that id. Any other
+    fetch error is not an empty list: ok is False and the caller must not
+    send a replacement.
+    """
+    for header in headers:
+        if not header:
+            continue
+        for message in listed:
+            if not (getattr(message, "content", "") or "").startswith(header):
+                continue
+            try:
+                live = await fetch_live(message)
+            except Exception as exc:
+                dprint(f"[discord_store] fetch failed: {exc}")
+                return None, False
+            if live is None:
+                continue
+            return live, True
+    return None, True
+
+
+async def _read_pinned_unlocked(parent, headers: tuple[str, ...]):
+    """Pin read without the layout lock. Callers that already hold it use this."""
+    if parent is None or not headers:
+        return None, False
+    listed, ok = await _list_pins(parent)
+    if not ok:
+        return None, False
+    parent_id = int(parent.id)
+    live, fetch_ok = await _live_listed(listed, headers)
+    if not fetch_ok:
+        return None, False
+    if live is None:
+        return await _cached_unpinned(parent_id, headers)
+    keep_id = getattr(live, "id", None)
+    for header in headers:
+        _forget_header(parent_id, header, keep_id=keep_id)
+    remember_record(parent_id, live)
+    _mark_pinned(live)
+    return live, True
+
+
+async def read_pinned_first(parent, headers: tuple[str, ...]):
+    """The pinned message for the first matching header, fetched this call.
+
+    Returns (message or None, pins_ok). pins_ok is False when the pin list or
+    the fetch could not be completed. None with pins_ok means the list was
+    read and no live message has that header.
+    """
+    if parent is None or not headers:
+        return None, False
+    async with _layout_lock:
+        return await _read_pinned_unlocked(parent, headers)
+
+
+async def read_pinned(parent, header: str):
+    """Fetched pin starting with `header`, and whether the pin list was read."""
+    return await read_pinned_first(parent, (header,))
+
+
 async def find_pinned_record(parent, header: str):
     """The pinned message that starts with `header`, or None.
 
@@ -650,32 +862,129 @@ async def find_pinned_record(parent, header: str):
     if parent is None or not header:
         return None
     async with _layout_lock:
-        try:
-            listed = await parent.pins()
-        except Exception as exc:
-            dprint(f"[discord_store] pins failed: {exc}")
+        listed, ok = await _list_pins(parent)
+        if not ok:
             return None
-        parent_id = int(parent.id)
-        found = None
-        for message in list(listed or []):
-            if (getattr(message, "content", "") or "").startswith(header):
-                found = message
-                break
+        found = _first_pinned(listed, (header,))
         if found is None:
             return None
+        parent_id = int(parent.id)
         keep_id = getattr(found, "id", None)
-        for key, stored in list(_records.items()):
-            if key[0] != parent_id:
-                continue
-            if not (getattr(stored, "content", "") or "").startswith(header):
-                continue
-            if getattr(stored, "id", None) == keep_id:
-                continue
-            _records.pop(key, None)
-            _missing.discard(key)
-        _missing.discard((parent_id, header))
+        _forget_header(parent_id, header, keep_id=keep_id)
         remember_record(parent_id, found)
         return found
+
+
+async def _create_pinned(parent, header: str, content: str):
+    """Send a new pin. The caller already holds the layout lock."""
+    listed, ok = await _list_pins(parent)
+    if not ok:
+        return None, "pins-failed"
+    found, fetch_ok = await _live_listed(listed, (header,))
+    if not fetch_ok:
+        return None, "pins-failed"
+    if found is not None:
+        _mark_pinned(found)
+        remember_record(int(parent.id), found)
+        return found, "found"
+    try:
+        message = await parent.send(content)
+    except Exception as exc:
+        dprint(f"[discord_store] could not write {header!r}: {exc}")
+        return None, "create-failed"
+    remember_record(int(parent.id), message)
+    _missing.discard((int(parent.id), header))
+    return message, "created"
+
+
+async def _pin_message(message) -> bool:
+    """True when the message is pinned. A failed pin stays on Discord."""
+    if message is None:
+        return False
+    if getattr(message, "pinned", False):
+        return True
+    try:
+        await message.pin()
+    except Exception as exc:
+        print(
+            f"[discord_store] message {getattr(message, 'id', '?')} is stored but not pinned: {exc}",
+            flush=True,
+        )
+        return False
+    _mark_pinned(message)
+    return True
+
+
+async def _finish_pinned(message, content: str, note: str):
+    """Fetch the write. pin-failed keeps the message and does not delete it."""
+    pinned_ok = await _pin_message(message)
+    try:
+        live = await fetch_live(message)
+    except Exception as exc:
+        dprint(f"[discord_store] confirm fetch failed: {exc}")
+        return None, "not-confirmed"
+    if live is None or not same_discord_text(getattr(live, "content", ""), content):
+        return None, "not-confirmed"
+    if not pinned_ok:
+        return live, "pin-failed"
+    return live, note
+
+
+async def _write_pinned_unlocked(parent, header: str, content: str):
+    message, pins_ok = await _read_pinned_unlocked(parent, (header,))
+    if not pins_ok:
+        return None, "pins-failed"
+    if message is None:
+        message, note = await _create_pinned(parent, header, content)
+        if message is None:
+            return None, note
+        if note == "created":
+            return await _finish_pinned(message, content, "created")
+    if not same_discord_text(getattr(message, "content", ""), content):
+        try:
+            await edit_record(message, content)
+        except Exception as exc:
+            try:
+                gone = await fetch_live(message)
+            except Exception as fetch_exc:
+                dprint(f"[discord_store] edit failed: {exc}")
+                dprint(f"[discord_store] confirm fetch failed: {fetch_exc}")
+                return None, "edit-failed"
+            if gone is not None:
+                dprint(f"[discord_store] edit failed: {exc}")
+                return None, "edit-failed"
+            created, create_note = await _create_pinned(parent, header, content)
+            if created is None:
+                return None, create_note
+            if create_note == "created":
+                return await _finish_pinned(created, content, "created")
+            if not same_discord_text(getattr(created, "content", ""), content):
+                try:
+                    await edit_record(created, content)
+                except Exception as edit_exc:
+                    dprint(f"[discord_store] edit failed: {edit_exc}")
+                    return None, "edit-failed"
+            return await _finish_pinned(created, content, "edited")
+        note = "edited"
+    else:
+        note = "unchanged"
+    return await _finish_pinned(message, content, note)
+
+
+async def write_pinned(parent, header: str, content: str):
+    """Put `content` on the Discord pin. Create the pin when the list has none.
+
+    Returns (message, note). The message was fetched after the write and its
+    text matches. note is pins-failed, create-failed, edit-failed,
+    not-confirmed, pin-failed, created, edited, unchanged, or missing-parent.
+
+    pin-failed means the text is on Discord and the pin did not stick. The
+    message is kept. Callers that clear a local buffer must not clear it.
+    """
+    if parent is None or not header:
+        return None, "missing-parent"
+    async with _layout_lock:
+        return await _write_pinned_unlocked(parent, header, content)
 
 
 async def lookup_record(parent, header: str, allow_history: bool = False):
