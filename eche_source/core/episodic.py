@@ -347,10 +347,6 @@ async def append_episodic(bot, guild_id, guild_name, lines: list[str]) -> None:
     guild_id = int(guild_id)
     async with _lock(guild_id):
         recent = push_recent(guild_id, fresh)
-        print(
-            f"[episodic] {recent_path(guild_id)} has {len(recent)} line(s)",
-            flush=True,
-        )
         if len(recent) < FOLD_AFTER:
             return
         print(
