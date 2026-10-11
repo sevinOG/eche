@@ -10,9 +10,6 @@ import os
 
 KEEP = 3
 FOLD_EVERY = 3
-# While a fold is failing, hold extra lines so one is not dropped before it
-# has been summarized. A successful fold trims back to KEEP.
-HOLD_CAP = 8
 
 
 def _directory(user_id: int) -> str:
@@ -53,7 +50,11 @@ def _load(user_id: int, side: str) -> dict:
     return {
         "pending": max(0, pending),
         "stash": [str(line) for line in stash if str(line).strip()] if isinstance(stash, list) else [],
-        "messages": [str(line) for line in messages if str(line).strip()] if isinstance(messages, list) else [],
+        "messages": (
+            [str(line) for line in messages if str(line).strip()][-KEEP:]
+            if isinstance(messages, list)
+            else []
+        ),
     }
 
 
@@ -83,8 +84,8 @@ def push(user_id: int, side: str, text: str) -> tuple[list[str], int]:
     state = _load(int(user_id), side)
     state["messages"].append(body)
     state["pending"] = int(state["pending"]) + 1
-    cap = KEEP if state["pending"] < FOLD_EVERY else HOLD_CAP
-    state["messages"] = state["messages"][-cap:]
+    # Newest stays in the last slot. The oldest drops once three are stored.
+    state["messages"] = state["messages"][-KEEP:]
     _save(int(user_id), side, state)
     path = _path(int(user_id), side)
     print(
@@ -136,7 +137,7 @@ def has_stash(user_id: int, side: str) -> bool:
 
 
 def clear_folded(user_id: int, side: str) -> None:
-    """The summary landed. Keep the last few messages and drop the stash."""
+    """The summary landed. The three messages stay. The stash does not."""
     state = _load(int(user_id), side)
     state["pending"] = 0
     state["stash"] = []
