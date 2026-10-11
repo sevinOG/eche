@@ -251,6 +251,11 @@ def _clip_prose(text: str, limit: int) -> str:
     return window
 
 
+def same_episode_text(left: str, right: str) -> bool:
+    """Discord may drop the trailing newline. The prose is what matters."""
+    return (left or "").strip() == (right or "").strip()
+
+
 def prompt_episode(body: str) -> str:
     """The summary prose only. Raw lines stay in the local file."""
     from core.client import drop_safety_preamble
@@ -262,17 +267,30 @@ def prompt_episode(body: str) -> str:
     return _clip_prose(text, PROMPT_CHARS)
 
 
+async def _episode_message(thread, prefix: str):
+    """The pinned episode. History is used only after a pin list with no match."""
+    from core.discord_store import find_pinned_record, lookup_record, refresh_record
+
+    message = await find_pinned_record(thread, prefix)
+    if message is None:
+        message = await lookup_record(thread, prefix, allow_history=True)
+    if message is None:
+        return None
+    fresh = await refresh_record(message)
+    return fresh or message
+
+
 async def load_episodic(bot, guild_id) -> str:
     """This server's episode lines, or empty when it has none yet."""
     if not guild_id:
         return ""
-    from core.discord_store import THREAD_EPISODIC, ensure_bot_thread, lookup_record
+    from core.discord_store import THREAD_EPISODIC, ensure_bot_thread
 
     thread = await ensure_bot_thread(bot, THREAD_EPISODIC)
     if thread is None:
         return ""
     prefix = episode_prefix(guild_id)
-    message = await lookup_record(thread, prefix)
+    message = await _episode_message(thread, prefix)
     if message is None:
         return ""
     return episode_body(getattr(message, "content", "") or "", prefix)
@@ -332,6 +350,7 @@ async def append_episodic(bot, guild_id, guild_name, lines: list[str]) -> None:
         edit_record,
         ensure_bot_thread,
         ensure_record,
+        refresh_record,
     )
 
     guild_id = int(guild_id)
@@ -356,10 +375,8 @@ async def append_episodic(bot, guild_id, guild_name, lines: list[str]) -> None:
             return
         prefix = episode_prefix(guild_id)
         heading = episode_heading(guild_id, guild_name)
-        message = await lookup_existing(thread, prefix)
-        current = ""
-        if message is not None:
-            current = getattr(message, "content", "") or ""
+        message = await _episode_message(thread, prefix)
+        current = getattr(message, "content", "") or "" if message is not None else ""
         previous, _log = split_episode(episode_body(current, prefix))
         room = summary_room(heading)
         folded = await _fold_stored(previous, recent, room)
@@ -392,11 +409,42 @@ async def append_episodic(bot, guild_id, guild_name, lines: list[str]) -> None:
                     flush=True,
                 )
                 return
+            live = await refresh_record(message)
+            message = live or message
             current = getattr(message, "content", "") or ""
-        if packed != current:
+        elif not same_episode_text(packed, current):
             await edit_record(message, packed)
+            live = await refresh_record(message)
+            # A failed re-read returns the same object. Its text was copied
+            # locally by the edit and is not proof the pin changed.
+            if live is None or live is message:
+                print(
+                    f"[episodic] summary was not written to the pin; keeping {len(recent)} lines",
+                    flush=True,
+                )
+                return
+            message = live
+            current = getattr(message, "content", "") or ""
+        if not same_episode_text(packed, current):
+            print(
+                f"[episodic] summary was not written to the pin; keeping {len(recent)} lines",
+                flush=True,
+            )
+            return
+        if not getattr(message, "pinned", False):
+            try:
+                await message.pin()
+            except Exception as exc:
+                mid = getattr(message, "id", "?")
+                print(
+                    f"[episodic] summary is on message {mid} but it is not pinned: {exc}",
+                    flush=True,
+                )
         clear_recent(guild_id)
-        print(f"[episodic] summary stored for guild {guild_id}", flush=True)
+        print(
+            f"[episodic] summary stored for guild {guild_id} on message {getattr(message, 'id', '?')}",
+            flush=True,
+        )
 
 
 async def lookup_existing(thread, prefix: str):

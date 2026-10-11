@@ -641,6 +641,43 @@ async def ensure_user_thread(guild, user_id, name: str, username: str | None = N
         return await _ensure_thread_locked(channel, name)
 
 
+async def find_pinned_record(parent, header: str):
+    """The pinned message that starts with `header`, or None.
+
+    A cached history copy is not good enough. Episode folds were editing
+    that copy and leaving the pin the person is looking at unchanged.
+    """
+    if parent is None or not header:
+        return None
+    async with _layout_lock:
+        try:
+            listed = await parent.pins()
+        except Exception as exc:
+            dprint(f"[discord_store] pins failed: {exc}")
+            return None
+        parent_id = int(parent.id)
+        found = None
+        for message in list(listed or []):
+            if (getattr(message, "content", "") or "").startswith(header):
+                found = message
+                break
+        if found is None:
+            return None
+        keep_id = getattr(found, "id", None)
+        for key, stored in list(_records.items()):
+            if key[0] != parent_id:
+                continue
+            if not (getattr(stored, "content", "") or "").startswith(header):
+                continue
+            if getattr(stored, "id", None) == keep_id:
+                continue
+            _records.pop(key, None)
+            _missing.discard(key)
+        _missing.discard((parent_id, header))
+        remember_record(parent_id, found)
+        return found
+
+
 async def lookup_record(parent, header: str, allow_history: bool = False):
     """Find a stored message. Does not create one and does not pin."""
     if parent is None or not header:
