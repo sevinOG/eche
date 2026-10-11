@@ -101,6 +101,11 @@ async def read_raw_context(bot, user_id, username=None) -> str | None:
     _channel, pinned = await ensure_context_channel(bot, guild, user_id, username)
     if pinned is None:
         return None
+    from core.discord_store import refresh_record
+
+    pinned = await refresh_record(pinned)
+    if pinned is None:
+        return None
     return pinned.content or ""
 
 

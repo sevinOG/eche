@@ -48,6 +48,16 @@ _CONTEXT_RAW = (
 )
 
 
+def _show_as_text(content: str) -> str:
+    """The pin, with mentions broken so it can be posted outside a code fence."""
+    text = content.replace("```", "'''")
+    text = text.replace("<@", "<@\u200b")
+    text = text.replace("<#", "<#\u200b")
+    text = text.replace("@everyone", "@\u200beveryone")
+    text = text.replace("@here", "@\u200bhere")
+    return text
+
+
 async def show_own_context(ctx: ToolContext, arguments: dict) -> ToolResult:
     """Always the speaker. Model arguments are ignored on purpose."""
     del arguments
@@ -61,7 +71,9 @@ async def show_own_context(ctx: ToolContext, arguments: dict) -> ToolResult:
         return ToolResult(text="I couldn't read your context.")
     if not content.strip():
         return ToolResult(text="(no context stored yet)")
-    return ToolResult(text=content)
+    # A code fence was what Discord cut off. Plain text still splits only
+    # when one message would pass the Discord limit.
+    return ToolResult(text=_show_as_text(content), fence=False)
 
 
 def register_builtin_tools() -> None:
