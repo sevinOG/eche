@@ -1,5 +1,5 @@
 # gui/widgets/settingswindow.py
-# Multi-page settings: Discord | AI | Media | Memory | Economy | Security | Updates
+# Multi-page settings: Discord | Provider | Media | Memory | Economy | Security | Updates
 # Cloud, OpenRouter, and Ollama: hide unused fields; each mode keeps its own model.
 
 from __future__ import annotations
@@ -105,7 +105,7 @@ class SettingsWindow(QWidget):
 
     PAGES = (
         ("Discord", "discord"),
-        ("AI & Model", "ai"),
+        ("Provider & Model", "ai"),
         ("Media APIs", "media"),
         ("Memory & Prompts", "memory"),
         ("Economy", "economy"),
@@ -142,7 +142,7 @@ class SettingsWindow(QWidget):
         title.setObjectName("Title")
         titles.addWidget(title)
         subtitle = QLabel(
-            f"v{APP_VERSION} · Portable paths · ℹ teaches each AI option"
+            f"v{APP_VERSION} · Portable paths · ℹ teaches each SI option"
         )
         subtitle.setObjectName("Subtitle")
         subtitle.setWordWrap(True)
@@ -379,8 +379,8 @@ class SettingsWindow(QWidget):
         body.addLayout(prov_row)
 
         layout.addWidget(self._card(
-            "AI provider & model",
-            "Provider = who runs the AI. Groq, OpenRouter, and Ollama each keep their own fields.",
+            "Provider & model",
+            "Provider = who runs the SI. Groq, OpenRouter, and Ollama each keep their own fields.",
             body,
         ))
         layout.addStretch(1)

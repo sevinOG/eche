@@ -212,15 +212,15 @@ _CONFIG_HINTS: list[tuple[str, str, str, str]] = [
     (
         "GROQ_API_KEY",
         "Provider API key is missing",
-        "Chat needs a provider API key under Settings → AI & Model "
+        "Chat needs a provider API key under Settings → Provider & Model "
         "(default free setup: console.groq.com). The bot can still run games "
         "and economy without it.",
-        "Optional for commands; required for AI conversation.",
+        "Optional for commands; required for SI conversation.",
     ),
     (
         "OPENROUTER_API_KEY",
         "OpenRouter API key is missing",
-        "OpenRouter is selected, and chat needs its key under Settings → AI & Model. "
+        "OpenRouter is selected, and chat needs its key under Settings → Provider & Model. "
         "Create one at openrouter.ai/keys. The Groq key is a different field.",
         "Save Settings, then press Run again.",
     ),

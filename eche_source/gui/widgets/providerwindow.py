@@ -1,5 +1,5 @@
 # gui/widgets/providerwindow.py
-# Edit core/client.py — the code that talks to your AI provider.
+# Edit core/client.py — the code that talks to your SI provider.
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ GROQ_KEYS_URL = "https://console.groq.com/keys"
 PROVIDER_HELP = """
 # What is a “provider”?
 
-A **provider** is the company (or your own computer) that **runs the AI model**.
+A **provider** is the company (or your own computer) that **runs the SI model**.
 Eche does **not** invent answers by itself — it sends a message over the internet
 to a provider, and the provider’s model writes the reply.
 
@@ -49,10 +49,10 @@ You do **not** have to stay with Groq forever.
 
 1. Open [console.groq.com](https://console.groq.com/) and create a free account  
 2. Create an API key under **API Keys**  
-3. Paste that key in **Settings → AI & Model → Provider API Key**  
+3. Paste that key in **Settings → Provider & Model → Provider API Key**  
 4. Keep the model id (or pick another live model from Groq’s docs)  
 
-OpenRouter and local Ollama are in **Settings → AI & Model**. Pick OpenRouter,
+OpenRouter and local Ollama are in **Settings → Provider & Model**. Pick OpenRouter,
 paste its key, and set a model id from openrouter.ai/models. Other OpenAI-style
 hosts can still be pointed at by editing this file’s **URL**, **key**, and **model**.
 
@@ -133,7 +133,7 @@ class ProviderWindow(QWidget):
         # (Removed local models browser from ProviderWindow)
 
         note = QLabel(
-            "This file is the “phone line” to your AI provider. "
+            "This file is the “phone line” to your SI provider. "
             "Default is **Cloud / Groq** (free tier at console.groq.com). "
             "Prefer the Settings dropdown for Groq, OpenRouter, or Ollama — edit this file for advanced URL tweaks. "
             "Look near the top for GROQ_API_URL, OPENROUTER_API_URL, OLLAMA_API_URL, _provider_backend(), and DEFAULT_MODEL. "

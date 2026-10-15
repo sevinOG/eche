@@ -400,7 +400,7 @@ def _format_http_error(status: int, body: str, model: str, url: str) -> str:
         if backend == "openrouter":
             return (
                 f"{label} auth failed (HTTP 401). "
-                f"Check the OpenRouter API Key in Settings → AI & Model. "
+                f"Check the OpenRouter API Key in Settings → Provider & Model. "
                 f"model=`{model}`. Body: {snippet}"
             )
         return (
@@ -498,7 +498,7 @@ def _missing_key_error() -> str:
     if _provider_backend() == "openrouter":
         return (
             "OPENROUTER_API_KEY is missing (required for OpenRouter). "
-            "Paste a key in Settings → AI & Model → OpenRouter API Key, Save, "
+            "Paste a key in Settings → Provider & Model → OpenRouter API Key, Save, "
             "then restart the bot. "
             f"[{_config_snapshot()}]"
         )

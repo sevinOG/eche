@@ -9,7 +9,7 @@ Eche has **no cloud account** and **no Eche backend**.
 | Data | Where it lives | Leaves the machine? |
 |------|----------------|---------------------|
 | Discord bot token | Local config / DPAPI-protected store under your install folder | Only to **Discord** when the bot connects (required for Discord) |
-| Groq / other LLM API keys | Local settings / env | Only to the **provider you configure** (e.g. Groq) when AI replies run |
+| Groq / other LLM API keys | Local settings / env | Only to the **provider you configure** (e.g. Groq) when SI replies run |
 | Unsplash keys (`US_ACCESS_TOKEN`, etc.) | Local env / settings | Only to **Unsplash** when you use the image search command |
 | Home server / guild IDs | Local settings / env | Used only by your bot process |
 
@@ -33,7 +33,7 @@ These are **local files** (or Discord channels your bot creates in **your** serv
 | Feature | Provider | Typical data sent |
 |---------|----------|-------------------|
 | Discord bot online | Discord | Messages/events your bot is allowed to see; token for auth |
-| AI chat (if enabled) | e.g. Groq | Prompt text you/the bot builds (may include recent context) + API key |
+| SI chat (if enabled) | e.g. Groq | Prompt text you/the bot builds (may include recent context) + API key |
 | Image search (`?image`) | Unsplash | Search query + access key |
 | Music / downloads (if used) | YouTube / other via yt-dlp | URLs and public media metadata |
 

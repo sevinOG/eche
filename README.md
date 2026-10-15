@@ -123,7 +123,7 @@ Copy `dist\Eche-Installer.exe` to `eche_installer\final\` for the public downloa
 
 ---
 
-## AI provider (Groq)
+## SI provider (Groq)
 
 Cloud mode uses the official **`groq`** Python SDK. Default model:
 
@@ -186,7 +186,7 @@ eche/
 
 1. Launch **Eche.exe** (not a random `.bat` if the EXE exists).
 2. Settings → Discord bot token (stored locally).
-3. **AI & Model** → Cloud (Groq) → API key from [console.groq.com](https://console.groq.com/) → Model ID `qwen/qwen3.6-27b` if needed → **Save**.
+3. **Provider & Model** → Cloud (Groq) → API key from [console.groq.com](https://console.groq.com/) → Model ID `qwen/qwen3.6-27b` if needed → **Save**.
 4. Run the bot from the control panel.
 
 If you only have source: install Python → `SETUP_AND_BUILD.bat` once → use `..\eche\Eche.exe` or `dist\Eche\Eche.exe`.

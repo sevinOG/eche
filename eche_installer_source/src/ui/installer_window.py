@@ -316,7 +316,7 @@ class EcheInstallerWindow(QMainWindow):
         layout.addSpacing(10)
 
         desc = QLabel(
-            "New to Discord bots, AI, and GitHub? You’re in the right place.\n\n"
+            "New to Discord bots, SI, and GitHub? You’re in the right place.\n\n"
             "Default path (recommended):\n"
             "  1) Download source from GitHub automatically\n"
             "  2) Install it into the folder you choose\n"

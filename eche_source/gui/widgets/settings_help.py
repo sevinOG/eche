@@ -21,12 +21,12 @@ FIELD_HELP: dict[str, tuple[str, str]] = {
         "Anyone with this token controls your bot. Eche stores it encrypted for **your "
         "Windows user only**. Never post it in chat or commit it to GitHub.\n\n"
         "### How it fits the bigger picture\n"
-        "Discord is just the **chat room**. The AI “brain” is separate (see Provider API Key).",
+        "Discord is just the **chat room**. The SI “brain” is separate (see Provider API Key).",
     ),
     "inf_api_key": (
         "Provider API Key (Cloud only)",
         "### What is this?\n"
-        "A **provider** runs large AI models on their computers. For **Cloud (Groq)** you "
+        "A **provider** runs large SI models on their computers. For **Cloud (Groq)** you "
         "need an API key from [console.groq.com](https://console.groq.com/).\n\n"
         "### Local Ollama\n"
         "When **Local — Ollama** is selected, this field is **hidden**. Ollama does not "
@@ -68,7 +68,7 @@ FIELD_HELP: dict[str, tuple[str, str]] = {
         "Pasting the server icon link also works. Eche reads the ID from that link.\n\n"
         "### Why it matters\n"
         "Without a home server, the bot cannot create the bot memory category. "
-        "This is required even if you skip the AI provider key.",
+        "This is required even if you skip the SI provider key.",
     ),
     "groq_model": (
         "Model ID (Cloud)",
@@ -126,7 +126,7 @@ FIELD_HELP: dict[str, tuple[str, str]] = {
     "summarizer_model": (
         "Summarizer model",
         "### What is this?\n"
-        "Every third turn, Eche asks an AI to fold the recent lines into the "
+        "Every third turn, Eche asks an SI to fold the recent lines into the "
         "long-term summary. A new detail is added to the subject it already "
         "belongs to. The summary is shortened only when it nears Discord's "
         "pin limit. That call can use a **different** model than chat.\n\n"
@@ -138,7 +138,7 @@ FIELD_HELP: dict[str, tuple[str, str]] = {
     "summarizer_prompt": (
         "Summarizer prompt file",
         "### What is this?\n"
-        "The instruction sheet the bot gives the AI when it folds recent lines "
+        "The instruction sheet the bot gives the SI when it folds recent lines "
         "into long-term memory. Same idea as Personality, but for memory only.\n\n"
         "### Default path\n"
         "`config/summarizer_prompt.txt` in this package.\n\n"
@@ -152,7 +152,7 @@ FIELD_HELP: dict[str, tuple[str, str]] = {
     "personality": (
         "Personality (the bot’s character sheet)",
         "### What is this?\n"
-        "A plain-English instruction sheet that is added to **every** AI chat call. "
+        "A plain-English instruction sheet that is added to **every** SI chat call. "
         "It sets tone, humor, boundaries, and identity — without training a new model.\n\n"
         "### Examples of what you might write\n"
         "- “You are a chill server butler who keeps answers short.”\n"
@@ -163,9 +163,9 @@ FIELD_HELP: dict[str, tuple[str, str]] = {
         "Change one sentence at a time and test. Small wording changes can matter a lot.",
     ),
     "provider": (
-        "Provider code (client.py) — the phone line to the AI",
+        "Provider code (client.py) — the phone line to the SI",
         "### What is this editor?\n"
-        "It opens `core/client.py`, the program code that **calls the AI provider**.\n\n"
+        "It opens `core/client.py`, the program code that **calls the SI provider**.\n\n"
         "Near the **top of the file** you will see URLs for Groq and Ollama, key/model "
         "helpers, and `call_groq(...)`.\n\n"
         "### Do I need to edit code on day one?\n"
@@ -177,7 +177,7 @@ FIELD_HELP: dict[str, tuple[str, str]] = {
     "unifier": (
         "Unifier (how the prompt is assembled)",
         "### What is this?\n"
-        "Before the AI answers, Eche sends one short system message: a few job lines, "
+        "Before the SI answers, Eche sends one short system message: a few job lines, "
         "the personality as Voice, and a short tool list when tools are offered. "
         "The **unifier / builder** file is the user turn: today, the two memory pins, "
         "and the latest message.\n\n"

@@ -440,7 +440,7 @@ class MainWindow(QMainWindow):
         )
 
         dlg = QDialog(self)
-        dlg.setWindowTitle("No AI provider key")
+        dlg.setWindowTitle("No SI provider key")
         dlg.setMinimumWidth(440)
         lay = QVBoxLayout(dlg)
         lay.setContentsMargins(18, 18, 18, 18)
@@ -458,14 +458,14 @@ class MainWindow(QMainWindow):
         if backend == "openrouter":
             setup = (
                 "OpenRouter is selected.\n"
-                "1. Open Settings → AI & Model\n"
+                "1. Open Settings → Provider & Model\n"
                 "2. Create a key at openrouter.ai/keys\n"
                 "3. Paste it under OpenRouter API Key → Save"
             )
         else:
             setup = (
                 "Default free setup:\n"
-                "1. Open Settings → AI & Model\n"
+                "1. Open Settings → Provider & Model\n"
                 "2. Get a free key at console.groq.com\n"
                 "3. Paste it under Provider API Key → Save\n\n"
                 "OpenRouter is in the same dropdown if you want that instead."
@@ -490,7 +490,7 @@ class MainWindow(QMainWindow):
         cancel.setObjectName("ghost")
         cancel.clicked.connect(dlg.reject)
         row.addWidget(cancel)
-        cont = QPushButton("Run without AI chat")
+        cont = QPushButton("Run without SI chat")
         cont.setObjectName("primary")
         cont.clicked.connect(dlg.accept)
         row.addWidget(cont)
