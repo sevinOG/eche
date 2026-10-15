@@ -10,6 +10,9 @@ import os
 
 _LOCKS: dict[int, asyncio.Lock] = {}
 MAX_STORE = 1900
+# Condense before the pin sits against the cap. A full-size rewrite is cut
+# off by the completion budget while still looking short enough to store.
+_SOFT_STORE = 1500
 PROMPT_CHARS = 600
 _LINE_CHARS = 140
 FOLD_AFTER = 5
@@ -95,15 +98,62 @@ def summary_fits(heading: str, summary: str) -> bool:
     return len(render_summary(heading, summary)) <= MAX_STORE
 
 
+def _message_len(heading: str, summary: str) -> int:
+    return len(render_summary(heading, summary or ""))
+
+
+def _crowded(heading: str, summary: str) -> bool:
+    """The pin is full enough that the next full-size rewrite will be cut off."""
+    return bool((summary or "").strip()) and _message_len(heading, summary) >= _SOFT_STORE
+
+
+def _cut_off(summary: str) -> bool:
+    """A long reply that does not end on a sentence was stopped mid-thought."""
+    body = " ".join((summary or "").split())
+    if len(body) < 400:
+        return False
+    return body[-1] not in ".!?"
+
+
+def needs_condense(heading: str, folded: str) -> bool:
+    """True when the summary must be shortened before it is stored."""
+    if not (folded or "").strip():
+        return False
+    if not summary_fits(heading, folded) or _crowded(heading, folded):
+        return True
+    return _cut_off(folded)
+
+
+def condense_room(heading: str) -> int:
+    """Character budget for the shorten pass. Smaller than a full pin."""
+    return max(400, summary_room(heading) // 2)
+
+
 def stored_episode(heading: str, fresh: str, condensed: str) -> str:
-    """Prose to store. A pass that runs past the pin is cut on a sentence."""
-    for text in (fresh, condensed):
-        if text and summary_fits(heading, text):
+    """Prose to store. A pass that runs past the pin is cut on a sentence.
+
+    A shorter condense wins over a summary that still fills the pin. A cut-off
+    reply is not stored whole.
+    """
+    fresh = fresh or ""
+    condensed = condensed or ""
+    short = condense_room(heading)
+    for text in (condensed, fresh):
+        if (
+            text
+            and summary_fits(heading, text)
+            and not _crowded(heading, text)
+            and not _cut_off(text)
+        ):
             return text
+    for text in (condensed, fresh):
+        clipped = _clip_prose(text, short, finish=True)
+        if clipped and summary_fits(heading, clipped) and not _cut_off(clipped):
+            return clipped
     room = summary_room(heading)
     for text in (condensed, fresh):
-        clipped = _clip_prose(text or "", room)
-        if clipped and summary_fits(heading, clipped):
+        clipped = _clip_prose(text, room, finish=True)
+        if clipped and summary_fits(heading, clipped) and not _cut_off(clipped):
             return clipped
     return ""
 
@@ -236,15 +286,23 @@ def turn_lines(
     return [ask_line(user_text, day), *acts]
 
 
-def _clip_prose(text: str, limit: int) -> str:
-    """Shorten on a sentence boundary. A stump is not given an ellipsis."""
+def _clip_prose(text: str, limit: int, *, finish: bool = False) -> str:
+    """Shorten on a sentence boundary. A stump is not given an ellipsis.
+
+    finish drops a long reply that was cut off before a sentence, instead of
+    storing the broken tail.
+    """
     text = " ".join((text or "").split())
-    if len(text) <= limit:
+    if not text:
+        return ""
+    if len(text) <= limit and not (finish and _cut_off(text)):
         return text
     window = text[:limit].rstrip()
     cut = max(window.rfind("."), window.rfind("!"), window.rfind("?"))
-    if cut >= max(40, limit // 3):
+    if cut >= max(40, min(limit, len(window)) // 3):
         return window[: cut + 1].strip()
+    if finish:
+        return ""
     space = window.rfind(" ")
     if space >= 40:
         return window[:space].rstrip()
@@ -380,12 +438,12 @@ async def append_episodic(bot, guild_id, guild_name, lines: list[str]) -> None:
             )
             return
         chosen = folded
-        if not summary_fits(heading, folded):
+        if needs_condense(heading, folded):
             print(
-                f"[episodic] summary is {len(folded)} characters; condensing",
+                f"[episodic] summary is {_message_len(heading, folded)} characters; condensing",
                 flush=True,
             )
-            condensed = await _condense_stored(previous, folded, room)
+            condensed = await _condense_stored(previous, folded, condense_room(heading))
             chosen = stored_episode(heading, folded, condensed)
         if not chosen:
             print(
@@ -394,6 +452,12 @@ async def append_episodic(bot, guild_id, guild_name, lines: list[str]) -> None:
             )
             return
         packed = render_summary(heading, chosen)
+        if len(packed) > MAX_STORE:
+            print(
+                f"[episodic] summary is {len(packed)} characters; keeping {len(recent)} lines",
+                flush=True,
+            )
+            return
         written, note = await write_pinned(thread, prefix, packed)
         if written is None or note == "pin-failed":
             print(
