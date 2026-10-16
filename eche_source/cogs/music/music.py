@@ -250,7 +250,24 @@ def youtube_cookie_file() -> str | None:
     return None
 
 
-def ydl_options() -> dict:
+def _node_binary() -> str | None:
+    """Node binary for yt-dlp's player challenge. The GUI PATH can miss it."""
+    found = shutil.which("node") or shutil.which("node.exe")
+    if found and os.path.isfile(found):
+        return found
+    local = os.environ.get("LOCALAPPDATA") or ""
+    candidates = [
+        os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "nodejs", "node.exe"),
+        os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), "nodejs", "node.exe"),
+        os.path.join(local, "Programs", "node", "node.exe") if local else "",
+    ]
+    for path in candidates:
+        if path and os.path.isfile(path):
+            return path
+    return None
+
+
+def ydl_options(*, use_cookies: bool = False) -> dict:
     opts = {
         "format": "bestaudio/best",
         "quiet": True,
@@ -262,29 +279,32 @@ def ydl_options() -> dict:
         "ignoreerrors": False,
         "geo_bypass": True,
         "nocheckcertificate": True,
-        # A signed-in YouTube request has no playable formats until the player
-        # challenge is solved. Node is installed; deno is not.
-        "js_runtimes": {"node": {}},
-        "remote_components": ["ejs:github"],
     }
-    node = shutil.which("node") or shutil.which("node.exe")
+    node = _node_binary()
     if node:
+        # Deno is not installed. A signed-in request has no playable formats
+        # until this runtime solves the player challenge.
         opts["js_runtimes"] = {"node": {"path": node}}
-    cookie = youtube_cookie_file()
-    if cookie:
-        opts["cookiefile"] = cookie
+        opts["remote_components"] = ["ejs:github"]
+    # Cookies without that solution leave only storyboard images, and
+    # bestaudio then raises "Requested format is not available" for ordinary
+    # songs. Callers pass use_cookies only for the sign-in retry.
+    if use_cookies and node:
+        cookie = youtube_cookie_file()
+        if cookie:
+            opts["cookiefile"] = cookie
     return opts
 
 
 @contextmanager
-def youtube_dl():
+def youtube_dl(*, use_cookies: bool = False):
     """Open yt-dlp without letting it rewrite the saved cookie file."""
     if yt_dlp is None:
         raise TrackError(
             "Music needs `yt-dlp` in this portable build. "
             "Rebuild with `pip install -r requirements.txt` then `install.bat`."
         )
-    opts = ydl_options()
+    opts = ydl_options(use_cookies=use_cookies)
     notes = _YtdlNotes()
     opts["logger"] = notes
     temp_cookie = None
@@ -301,6 +321,69 @@ def youtube_dl():
     finally:
         if temp_cookie and os.path.isfile(temp_cookie):
             os.remove(temp_cookie)
+
+
+def _playable_info(info):
+    """Video dict that carries a stream URL, whether it is a search entry or not."""
+    if not isinstance(info, dict):
+        return None
+    entries = info.get("entries")
+    if entries:
+        try:
+            entry = entries[0]
+        except Exception:
+            return None
+        info = entry if isinstance(entry, dict) else None
+    if not isinstance(info, dict):
+        return None
+    if info.get("url"):
+        return info
+    formats = info.get("formats") or info.get("requested_formats") or []
+    if any(isinstance(fmt, dict) and fmt.get("url") for fmt in formats):
+        return info
+    return None
+
+
+def _extract_once(url, *, use_cookies: bool):
+    notes = None
+    try:
+        with youtube_dl(use_cookies=use_cookies) as ydl:
+            notes = ydl._eche_notes
+            return ydl.extract_info(url, download=False), notes, None
+    except TrackError:
+        raise
+    except Exception as exc:
+        return None, notes, exc
+
+
+def extract_youtube(url):
+    """Logged-out extract. Cookies are retried only when that pass cannot play.
+
+    Returns (info, notes, error). error is None when a stream URL was found.
+    """
+    info, notes, exc = _extract_once(url, use_cookies=False)
+    playable = _playable_info(info) if exc is None else None
+    if playable and not _info_age_locked(playable):
+        return info, notes, None
+
+    blob = f"{notes.text() if notes else ''}\n{exc or ''}"
+    can_retry = bool(youtube_cookie_file() and _node_binary() and not _empty_search(blob))
+    if not can_retry:
+        return info, notes, exc
+
+    info2, notes2, exc2 = _extract_once(url, use_cookies=True)
+    playable2 = _playable_info(info2) if exc2 is None else None
+    if playable2 and not _info_age_locked(playable2):
+        return info2, notes2, None
+    if playable:
+        return info, notes, None
+
+    merged = _YtdlNotes()
+    if notes is not None:
+        merged.lines.extend(notes.lines)
+    if notes2 is not None:
+        merged.lines.extend(notes2.lines)
+    return info2 if info2 is not None else info, merged, exc2 if exc2 is not None else exc
 
 FFMPEG_OPTIONS = {
     "before_options": (
@@ -354,14 +437,13 @@ class Music(commands.Cog):
             return None
 
         # Search via yt-dlp. A None entry used to raise TypeError here.
-        notes = None
+        # Logged-out first: signed-in cookies without a solved challenge make
+        # bestaudio fail for ordinary songs.
         try:
-            with youtube_dl() as ydl:
-                notes = ydl._eche_notes
-                info = ydl.extract_info(f"ytsearch1:{query}", download=False)
+            info, notes, exc = extract_youtube(f"ytsearch1:{query}")
         except TrackError:
             raise
-        except Exception as exc:
+        if exc is not None:
             print("MUSIC EXTRACT:", _clean_failure(str(exc)))
             self._raise_track_failure(notes, exc)
             return None
@@ -393,14 +475,11 @@ class Music(commands.Cog):
 
         piped_url = self.build_piped_url(video_id)
 
-        notes = None
         try:
-            with youtube_dl() as ydl:
-                notes = ydl._eche_notes
-                info = ydl.extract_info(piped_url, download=False)
+            info, notes, exc = extract_youtube(piped_url)
         except TrackError:
             raise
-        except Exception as exc:
+        if exc is not None:
             print("MUSIC EXTRACT:", _clean_failure(str(exc)))
             self._raise_track_failure(notes, exc)
             return None, None
