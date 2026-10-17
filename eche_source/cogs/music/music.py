@@ -405,6 +405,9 @@ class Music(commands.Cog):
         self.vc = None
         self.playing = False
         self.queue_loaded = False
+        self._load_error = None
+        self._queue_lock = asyncio.Lock()
+        self._starting = False
 
     # ---------------------------------------------------------
     # ALWAYS build a valid search query
@@ -524,20 +527,28 @@ class Music(commands.Cog):
     # ---------------------------------------------------------
     # Load queue once
     # ---------------------------------------------------------
+    async def _load_queue_once(self):
+        # The pin lives on the home server. Voice still plays where the command ran.
+        if self.queue_loaded:
+            return
+        self._load_error = None
+        try:
+            self.queue = await load_queue(self.bot)
+        except Exception as exc:
+            self.queue = []
+            self._load_error = exc
+        self.queue_loaded = True
+
     async def ensure_queue_loaded(self, ctx):
-        # Queue is now always stored in the bot's HOME server (to avoid permission errors in other servers).
-        # Voice playback still happens in the server where the user ran the command.
-        if not self.queue_loaded:
-            try:
-                self.queue = await load_queue(self.bot)
-            except Exception as e:
-                await ctx.send(f"⚠️ Queue error: {e}")
-                self.queue = []
-            self.queue_loaded = True
+        async with self._queue_lock:
+            await self._load_queue_once()
+            err = self._load_error
+        if err:
+            await ctx.send(f"⚠️ Queue error: {err}")
 
     async def update_queue_message(self, ctx):
         try:
-            await save_queue(self.bot, self.queue)
+            await save_queue(self.bot, self.queue, self.current)
         except Exception as e:
             await ctx.send(f"⚠️ Failed to save queue: {e}")
 
@@ -585,47 +596,84 @@ class Music(commands.Cog):
     # PLAY NEXT — fully hardened
     # ---------------------------------------------------------
     async def play_next(self, ctx):
-        if not self.queue:
-            self.playing = False
-            self.current = None
+        async with self._queue_lock:
+            # An early playback callback must not pop the next song or clear the pin
+            # while this start is still resolving the current one.
+            if self._starting:
+                return
+            voice = self.vc
+            if voice is not None and getattr(voice, "is_playing", lambda: False)():
+                return
+            if not self.queue:
+                self.playing = False
+                self.current = None
+                await self.update_queue_message(ctx)
+                return
+            self._starting = True
+            self.playing = True
+            self.current = self.queue.pop(0)
             await self.update_queue_message(ctx)
-            return
 
-        self.playing = True
-        self.current = self.queue.pop(0)
-        await self.update_queue_message(ctx)
+        try:
+            await self._start_current(ctx)
+        finally:
+            self._starting = False
 
+    async def _start_current(self, ctx):
         ffmpeg_path = await self._resolve_ffmpeg(ctx)
         if not ffmpeg_path:
-            self.queue.insert(0, self.current)
-            self.current = None
-            self.playing = False
-            await self.update_queue_message(ctx)
+            async with self._queue_lock:
+                if self.current is not None:
+                    self.queue.insert(0, self.current)
+                self.current = None
+                self.playing = False
+                await self.update_queue_message(ctx)
             return
 
-        # ALWAYS build a valid query
-        query = self.build_query(self.current)
+        current = self.current
+        if current is None:
+            return
+        query = self.build_query(current)
         if not query:
             await ctx.send("❌ Invalid queue entry. Skipping.")
+            async with self._queue_lock:
+                self.current = None
+                self._starting = False
             return await self.play_next(ctx)
 
-        # Extract audio URL from Piped
+        # The lookup blocks. Run it off the bot loop so more ?play commands can
+        # record themselves in the thread while this song is still resolving.
         try:
-            info, audio_url = self.extract_audio_url(query)
+            info, audio_url = await asyncio.to_thread(self.extract_audio_url, query)
         except TrackError as err:
             await ctx.send(str(err))
+            async with self._queue_lock:
+                self.current = None
+                self._starting = False
             return await self.play_next(ctx)
 
         if not info or not audio_url:
             await ctx.send(f"❌ Could not extract audio for {query}. Skipping.")
+            async with self._queue_lock:
+                self.current = None
+                self._starting = False
             return await self.play_next(ctx)
 
-        # Update metadata
-        self.current["artist"] = info.get("uploader", "Unknown")
-        self.current["title"] = info.get("title", "Unknown Title")
-        self.current["duration"] = info.get("duration") or 0
+        current = self.current
+        if current is None:
+            return
 
-        await self.send_now_playing(ctx, self.current)
+        current["artist"] = info.get("uploader", "Unknown")
+        current["title"] = info.get("title", "Unknown Title")
+        current["duration"] = info.get("duration") or 0
+        async with self._queue_lock:
+            if self.current is not current:
+                return
+            await self.update_queue_message(ctx)
+
+        if self.current is not current or not self.playing:
+            return
+        await self.send_now_playing(ctx, current)
 
         try:
             # Full path. discord.py's default is the bare name "ffmpeg", which
@@ -647,10 +695,15 @@ class Music(commands.Cog):
                 f"file exists: {os.path.isfile(ffmpeg_path)}"
                 f"{extra}"
             )
-            self.queue.insert(0, self.current)
-            self.current = None
-            self.playing = False
-            await self.update_queue_message(ctx)
+            async with self._queue_lock:
+                if self.current is current:
+                    self.queue.insert(0, current)
+                    self.current = None
+                    self.playing = False
+                    await self.update_queue_message(ctx)
+            return
+
+        if self.current is not current or not self.playing or self.vc is None:
             return
 
         def after_playback(error):
@@ -659,15 +712,22 @@ class Music(commands.Cog):
                 self.bot.loop
             )
 
-        self.vc.play(source, after=after_playback)
+        try:
+            self.vc.play(source, after=after_playback)
+        except Exception as exc:
+            await ctx.send(f"❌ Could not start playback: {exc}")
+            async with self._queue_lock:
+                if self.current is current:
+                    self.queue.insert(0, current)
+                    self.current = None
+                    self.playing = False
+                    await self.update_queue_message(ctx)
 
     # ---------------------------------------------------------
     # COMMAND: play
     # ---------------------------------------------------------
     @commands.command()
     async def play(self, ctx, *, query=None):
-        await self.ensure_queue_loaded(ctx)
-
         if yt_dlp is None:
             return await ctx.send(
                 "Music needs `yt-dlp` in this portable build. "
@@ -677,36 +737,42 @@ class Music(commands.Cog):
         if not await self.ensure_vc(ctx):
             return
 
+        # Record the song before the slow lookup. Several ?play commands can
+        # then all show up in the music-queue thread while the first one resolves.
         if query is None:
-            if self.playing:
+            async with self._queue_lock:
+                await self._load_queue_once()
+                already = self.playing
+                empty = not self.queue
+                if not already and not empty:
+                    self.playing = True
+            if already:
                 return await ctx.send("Already playing.")
-            if not self.queue:
+            if empty:
                 return await ctx.send("Queue is empty.")
             await ctx.send("Resuming playback…")
             return await self.play_next(ctx)
 
-        try:
-            info, audio_url = self.extract_audio_url(query)
-        except TrackError as err:
-            return await ctx.send(str(err))
-
-        if not info:
-            return await ctx.send("No results found.")
-
         entry = {
-            "artist": info.get("uploader", "Unknown"),
-            "title": info.get("title", "Unknown Title"),
-            "duration": info.get("duration") or 0,
-            "url": query,  # always store the original query
+            "artist": "",
+            "title": query,
+            "duration": 0,
+            "url": query,
         }
-
-        self.queue.append(entry)
-        await self.update_queue_message(ctx)
-
-        if not self.playing:
+        async with self._queue_lock:
+            await self._load_queue_once()
+            self.queue.append(entry)
+            start = not self.playing
+            if start:
+                self.playing = True
+            await self.update_queue_message(ctx)
+            err = self._load_error
+        if err:
+            await ctx.send(f"⚠️ Queue error: {err}")
+        if start:
             await self.play_next(ctx)
         else:
-            await ctx.send(f"Added: **{entry['artist']} | {entry['title']}**")
+            await ctx.send(f"Added: **{query}**")
 
     @commands.command()
     async def skip(self, ctx):
@@ -718,26 +784,32 @@ class Music(commands.Cog):
 
     @commands.command()
     async def stop(self, ctx):
-        await self.ensure_queue_loaded(ctx)
-
-        if self.vc:
+        async with self._queue_lock:
+            await self._load_queue_once()
             self.queue.clear()
+            self.current = None
+            self.playing = False
             await self.update_queue_message(ctx)
+        if self.vc:
             self.vc.stop()
-            await ctx.send("Stopped and cleared queue.")
+        await ctx.send("Stopped and cleared queue.")
 
     @commands.command()
     async def queue(self, ctx):
         await self.ensure_queue_loaded(ctx)
 
-        if not self.queue:
-            return await ctx.send("Queue is empty.")
-
-        msg = "\n".join(
-            f"{i+1}. {item['artist']} | {item['title']}"
+        lines = []
+        if self.current:
+            artist = self.current.get("artist") or "Unknown"
+            title = self.current.get("title") or "Unknown Title"
+            lines.append(f"▶ {artist} | {title}")
+        lines.extend(
+            f"{i+1}. {item.get('artist') or 'Unknown'} | {item.get('title') or 'Unknown Title'}"
             for i, item in enumerate(self.queue)
         )
-        await ctx.send(f"**Current Queue:**\n{msg}")
+        if not lines:
+            return await ctx.send("Queue is empty.")
+        await ctx.send("**Current Queue:**\n" + "\n".join(lines))
 
 
 async def setup(bot):
