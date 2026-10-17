@@ -129,31 +129,52 @@ def condense_room(heading: str) -> int:
     return max(400, summary_room(heading) // 2)
 
 
+def _ready_summary(heading: str, text: str) -> bool:
+    """Finished prose that still has room under the soft cap."""
+    return bool(
+        text
+        and summary_fits(heading, text)
+        and not _crowded(heading, text)
+        and not _cut_off(text)
+    )
+
+
 def stored_episode(heading: str, fresh: str, condensed: str) -> str:
     """Prose to store. A pass that runs past the pin is cut on a sentence.
 
-    A shorter condense wins over a summary that still fills the pin. A cut-off
-    reply is not stored whole.
+    A finished summary under the soft cap wins. A cut-off reply keeps its
+    last finished sentence. When the reply never reached a sentence, a
+    word clip under the soft cap is stored so the pin can move.
     """
     fresh = fresh or ""
     condensed = condensed or ""
+    ready = [text for text in (condensed, fresh) if _ready_summary(heading, text)]
+    if ready:
+        return max(ready, key=len)
     short = condense_room(heading)
-    for text in (condensed, fresh):
-        if (
-            text
-            and summary_fits(heading, text)
-            and not _crowded(heading, text)
-            and not _cut_off(text)
-        ):
-            return text
-    for text in (condensed, fresh):
-        clipped = _clip_prose(text, short, finish=True)
-        if clipped and summary_fits(heading, clipped) and not _cut_off(clipped):
-            return clipped
     room = summary_room(heading)
+    finished: list[str] = []
+    for limit in (short, room):
+        for text in (condensed, fresh):
+            clipped = _clip_prose(text, limit, finish=True)
+            if (
+                clipped
+                and len(clipped) >= 80
+                and summary_fits(heading, clipped)
+                and not _cut_off(clipped)
+                and not _crowded(heading, clipped)
+            ):
+                finished.append(clipped)
+    if finished:
+        return max(finished, key=len)
     for text in (condensed, fresh):
-        clipped = _clip_prose(text, room, finish=True)
-        if clipped and summary_fits(heading, clipped) and not _cut_off(clipped):
+        clipped = _clip_prose(text, short, finish=False)
+        if (
+            clipped
+            and len(clipped) >= 80
+            and summary_fits(heading, clipped)
+            and not _crowded(heading, clipped)
+        ):
             return clipped
     return ""
 
@@ -211,7 +232,15 @@ def episode_summary_text(raw: str) -> str:
     if not text or text.upper().startswith("ERROR"):
         return ""
     low = text.lower()
-    if "existing summary:" in low or "new summary:" in low:
+    # The condense prompt names its sections. A reply that opens with that
+    # label is still the summary. A second copy of the label is the prompt.
+    for label in ("existing summary:", "new summary:", "summary:"):
+        idx = low.find(label)
+        if 0 <= idx <= 48:
+            text = text[idx + len(label) :].strip()
+            low = text.lower()
+            break
+    if not text or "existing summary:" in low or "new summary:" in low:
         return ""
     return text
 
@@ -225,7 +254,8 @@ def fold_prompt(summary: str, recent: list[str], limit: int) -> str:
         "Summarize this server's public episode. Reply with the summary only.\n"
         "Finished prose about the server, not notes to yourself.\n"
         "Update the summary with the recent lines. Keep earlier topics that still matter.\n"
-        "Keep topics people raised and tools that ran.\n"
+        "Keep the subjects people raised and the tools that ran.\n"
+        "Stay general. Name the subject. Leave out quotes, numbers, links, and fine detail.\n"
         "Drop greetings, agreements, and one-off reactions.\n"
         "Plain prose. No bullet list. "
         f"Stay under {room} characters.\n\n"
@@ -241,7 +271,8 @@ def condense_prompt(existing: str, fresh: str, limit: int) -> str:
     room = max(1, int(limit))
     return (
         "Condense this server episode into one summary. Reply with the summary only.\n"
-        "Use the existing summary and the new summary. Keep topics people raised and tools that ran.\n"
+        "Use the existing summary and the new summary. Keep the subjects people raised and the tools that ran.\n"
+        "Stay general. Name the subject. Leave out quotes, numbers, links, and fine detail.\n"
         "Drop greetings, agreements, and one-off reactions.\n"
         "Plain prose. No bullet list. "
         f"Stay under {room} characters.\n\n"
@@ -299,7 +330,11 @@ def _clip_prose(text: str, limit: int, *, finish: bool = False) -> str:
         return text
     window = text[:limit].rstrip()
     cut = max(window.rfind("."), window.rfind("!"), window.rfind("?"))
-    if cut >= max(40, min(limit, len(window)) // 3):
+    # A prompt clip ignores a tiny first sentence and keeps a longer word
+    # clip. A stored episode keeps that sentence: the other choice is to
+    # leave the pin unchanged.
+    floor = 40 if finish else max(40, min(limit, len(window)) // 3)
+    if cut >= floor:
         return window[: cut + 1].strip()
     if finish:
         return ""

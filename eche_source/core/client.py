@@ -1864,13 +1864,16 @@ async def call_groq_raw(
     messages = [{"role": "user", "content": prompt}]
 
     if backend == "cloud":
+        # Thinking models spend this budget on a trace and the summary comes
+        # back empty. The SDK default asks for the answer only. A model that
+        # rejects that retries without it. OpenRouter uses the REST path
+        # below and does not send reasoning_effort.
         result = await _groq_sdk_call(
             messages,
             model=use_model,
             max_completion_tokens=max_completion_tokens,
             temperature=0.4,
             top_p=0.95,
-            reasoning_effort=None,
             stream=False,
         )
         if isinstance(result, dict) and "error" in result:
