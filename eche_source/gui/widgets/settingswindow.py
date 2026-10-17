@@ -29,6 +29,7 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QRadioButton,
     QButtonGroup,
+    QSpinBox,
 )
 
 from gui.theme import APP_NAME, APP_VERSION
@@ -382,6 +383,25 @@ class SettingsWindow(QWidget):
             "Provider & model",
             "Provider = who runs the SI. Groq, OpenRouter, and Ollama each keep their own fields.",
             body,
+        ))
+        token_body = QVBoxLayout()
+        token_body.setSpacing(12)
+        token_body.addLayout(self._token_block(
+            "Channel output tokens",
+            "One mention or reply in the channel. Default 64. Two or three sentences.",
+            "channel_completion_tokens",
+            "channel_completion_tokens",
+        ))
+        token_body.addLayout(self._token_block(
+            "Thread output tokens",
+            "One post inside a thread. Default 316.",
+            "thread_completion_tokens",
+            "thread_completion_tokens",
+        ))
+        layout.addWidget(self._card(
+            "Output tokens",
+            "How long a reply can run. Save applies on the next message.",
+            token_body,
         ))
         layout.addStretch(1)
         return page
@@ -811,6 +831,57 @@ class SettingsWindow(QWidget):
         block.addWidget(edit)
         return block
 
+    def _token_limits(self) -> tuple[int, int, int, int]:
+        from core.client import (
+            CHAT_COMPLETION_TOKENS,
+            COMPLETION_TOKEN_MAX,
+            COMPLETION_TOKEN_MIN,
+            THREAD_COMPLETION_TOKENS,
+        )
+        return (
+            COMPLETION_TOKEN_MIN,
+            COMPLETION_TOKEN_MAX,
+            CHAT_COMPLETION_TOKENS,
+            THREAD_COMPLETION_TOKENS,
+        )
+
+    def _token_block(self, label: str, hint: str, key: str, help_key: str) -> QVBoxLayout:
+        low, high, channel_default, thread_default = self._token_limits()
+        default = channel_default if key == "channel_completion_tokens" else thread_default
+        block = QVBoxLayout()
+        block.setSpacing(4)
+        top = QHBoxLayout()
+        top.setSpacing(8)
+        lab = QLabel(label)
+        lab.setObjectName("FieldLabel")
+        top.addWidget(lab)
+        top.addStretch()
+        if help_key in FIELD_HELP:
+            top.addWidget(self._info_button(help_key), alignment=Qt.AlignmentFlag.AlignTop)
+        block.addLayout(top)
+        hint_label = QLabel(hint)
+        hint_label.setObjectName("FieldHint")
+        hint_label.setWordWrap(True)
+        block.addWidget(hint_label)
+        spin = QSpinBox()
+        spin.setRange(low, high)
+        spin.setSingleStep(1)
+        spin.setMinimumHeight(34)
+        spin.setValue(self._saved_token(key, default))
+        if key == "channel_completion_tokens":
+            self.channel_token_spin = spin
+        else:
+            self.thread_token_spin = spin
+        block.addWidget(spin)
+        return block
+
+    def _saved_token(self, key: str, default: int) -> int:
+        from core.client import clamp_completion_tokens
+        raw = (self.data.get(key) or "").strip()
+        if not raw:
+            return default
+        return clamp_completion_tokens(raw, default)
+
     def _apply_provider_ui(self):
         if not hasattr(self, "provider_combo"):
             return
@@ -870,6 +941,15 @@ class SettingsWindow(QWidget):
             self.security_admin_box.blockSignals(True)
             self.security_admin_box.setChecked(flag_on(self.data.get("admin_tools"), ""))
             self.security_admin_box.blockSignals(False)
+        if hasattr(self, "channel_token_spin"):
+            low, high, channel_default, thread_default = self._token_limits()
+            del low, high
+            self.channel_token_spin.setValue(
+                self._saved_token("channel_completion_tokens", channel_default)
+            )
+            self.thread_token_spin.setValue(
+                self._saved_token("thread_completion_tokens", thread_default)
+            )
 
     def _refresh_ollama_models(self):
         if not hasattr(self, "ollama_model_combo"):
@@ -1060,6 +1140,9 @@ class SettingsWindow(QWidget):
         else:
             payload["groq_model"] = payload["cloud_model"]
 
+        if hasattr(self, "channel_token_spin"):
+            payload["channel_completion_tokens"] = str(self.channel_token_spin.value())
+            payload["thread_completion_tokens"] = str(self.thread_token_spin.value())
         if hasattr(self, "project_path_edit"):
             payload["project_path"] = self.project_path_edit.text().strip()
         if hasattr(self, "security_admin_box"):

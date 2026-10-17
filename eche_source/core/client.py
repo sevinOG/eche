@@ -39,10 +39,80 @@ REPLY_MAX_CHARS = 1900
 # One completion token can be several characters. Budgets use this so a
 # finished message cannot reach REPLY_MAX_CHARS.
 CHARS_PER_TOKEN = 6
-# Short channel reply. 125 tokens is about 750 characters at the ratio above.
-CHAT_COMPLETION_TOKENS = 125
+# Channel reply: two or three sentences, one paragraph. A longer answer asks
+# for a thread instead of posting the rest here.
+CHAT_COMPLETION_TOKENS = 64
 # One thread post. Further posts are separate completions, each under the same cap.
 THREAD_COMPLETION_TOKENS = max(16, REPLY_MAX_CHARS // CHARS_PER_TOKEN)
+# Settings can move either budget. These are the edges of that control.
+COMPLETION_TOKEN_MIN = 16
+COMPLETION_TOKEN_MAX = 8192
+_TOKEN_CACHE: dict = {}
+
+
+def clamp_completion_tokens(raw, default: int) -> int:
+    """A settings value inside the output-token range. Blank or junk stays at default."""
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return int(default)
+    if value < COMPLETION_TOKEN_MIN:
+        return COMPLETION_TOKEN_MIN
+    if value > COMPLETION_TOKEN_MAX:
+        return COMPLETION_TOKEN_MAX
+    return value
+
+
+def _completion_setting(key: str, env_name: str, default: int) -> int:
+    """Saved output budget. The settings file wins over the env copied at launch."""
+    path = ""
+    stamp = None
+    try:
+        from core.paths import user_dir
+        from core.secrets import settings_path
+
+        path = settings_path(user_dir())
+        stamp = os.path.getmtime(path) if os.path.isfile(path) else None
+    except Exception:
+        path = ""
+        stamp = None
+    env_raw = (os.environ.get(env_name) or "").strip()
+    cache_key = (path, stamp, env_raw)
+    cached = _TOKEN_CACHE.get(key)
+    if cached is None or cached[0] != cache_key:
+        raw = ""
+        if path:
+            try:
+                from core.paths import user_dir
+                from core.secrets import public_value
+
+                raw = public_value(key, user_dir())
+            except Exception:
+                raw = ""
+        if not raw:
+            raw = env_raw
+        value = default if not raw else clamp_completion_tokens(raw, default)
+        _TOKEN_CACHE[key] = (cache_key, value)
+        cached = _TOKEN_CACHE[key]
+    return cached[1]
+
+
+def channel_completion_tokens() -> int:
+    """Tokens for one channel reply. Settings → Provider & Model, else 64."""
+    return _completion_setting(
+        "channel_completion_tokens",
+        "ECHE_CHANNEL_TOKENS",
+        CHAT_COMPLETION_TOKENS,
+    )
+
+
+def thread_completion_tokens() -> int:
+    """Tokens for one thread post. Settings → Provider & Model, else 316."""
+    return _completion_setting(
+        "thread_completion_tokens",
+        "ECHE_THREAD_TOKENS",
+        THREAD_COMPLETION_TOKENS,
+    )
 
 
 def tokens_for(char_budget: int) -> int:
@@ -1361,10 +1431,15 @@ def _format_system_prompt(
         )
     if job == "channel":
         lines.append(
-            "The channel reply is a few sentences. "
-            "When they need the long version and did not ask for a thread, ask once. "
+            "The channel reply is two or three sentences, one paragraph. "
+            "Stop there. "
+            "When the answer needs more and they did not ask for a thread, ask once to open one. "
             "When they asked for a thread, or agreed to one you offered, call the thread tool. "
             "Talking about a thread does not open it."
+        )
+    elif job == "plain":
+        lines.append(
+            "The reply is two or three sentences, one paragraph. Stop there."
         )
     elif job == "thread":
         lines.append(
@@ -1589,7 +1664,7 @@ def _error_turn(error_msg: str) -> ModelTurn:
 async def call_groq_turn(
     prompt: str,
     user_id: int | None = None,
-    max_completion_tokens: int = CHAT_COMPLETION_TOKENS,
+    max_completion_tokens: int | None = None,
     tools: list | None = None,
     extra_system: str | None = None,
     images: list | None = None,
@@ -1602,6 +1677,12 @@ async def call_groq_turn(
     A quota miss returns no tool calls, so the caller does not run tools
     or start another request on that turn.
     """
+    if max_completion_tokens is None:
+        max_completion_tokens = channel_completion_tokens()
+    else:
+        max_completion_tokens = clamp_completion_tokens(
+            max_completion_tokens, CHAT_COMPLETION_TOKENS
+        )
     memory_block = ""
     if user_id is not None:
         try:
@@ -1735,13 +1816,15 @@ async def settle_cut_reply(
     prompt: str,
     user_id: int | None = None,
     *,
-    max_completion_tokens: int = CHAT_COMPLETION_TOKENS,
+    max_completion_tokens: int | None = None,
     images: list | None = None,
 ) -> ModelTurn:
     """Post only finished sentences when the token cap stopped the model.
 
     One repair call when the cut reply contains no finished sentence.
     """
+    if max_completion_tokens is None:
+        max_completion_tokens = channel_completion_tokens()
     if turn.quota or turn.tool_calls or not turn.cut:
         return turn
     finished = complete_sentences(turn.reply or "")
@@ -1776,7 +1859,7 @@ async def settle_cut_reply(
 async def call_groq(
     prompt: str,
     user_id: int | None = None,
-    max_completion_tokens: int = CHAT_COMPLETION_TOKENS,
+    max_completion_tokens: int | None = None,
     job: str = "plain",
 ):
     """

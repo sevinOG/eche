@@ -36,12 +36,13 @@ class CharOverride(commands.Cog):
             return
 
         user_text = message.content
-        from core.client import THREAD_COMPLETION_TOKENS, call_groq_turn, discord_chunks, settle_cut_reply
+        from core.client import call_groq_turn, discord_chunks, settle_cut_reply, thread_completion_tokens
 
+        budget = thread_completion_tokens()
         turn = await call_groq_turn(
             user_text,
             user_id=message.author.id,
-            max_completion_tokens=THREAD_COMPLETION_TOKENS,
+            max_completion_tokens=budget,
             tools=None,
         )
         if turn.cut:
@@ -49,7 +50,7 @@ class CharOverride(commands.Cog):
                 turn,
                 user_text,
                 message.author.id,
-                max_completion_tokens=THREAD_COMPLETION_TOKENS,
+                max_completion_tokens=budget,
             )
         for chunk in discord_chunks(turn.reply or ""):
             await message.channel.send(chunk)

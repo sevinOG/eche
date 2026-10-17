@@ -260,6 +260,35 @@ FIELD_HELP: dict[str, tuple[str, str]] = {
         "on the main window. Off, and mute, timeout, kick, and ban are not "
         "sent to the model.",
     ),
+    "channel_completion_tokens": (
+        "Channel output tokens",
+        "### What is this?\n"
+        "The length of one reply in a channel, when someone mentions Eche or "
+        "replies to it. The number is completion tokens, the budget the model "
+        "is allowed to write.\n\n"
+        "### Default\n"
+        "64. That is about two or three sentences, one paragraph. "
+        "A longer answer asks to open a thread.\n\n"
+        "### Range\n"
+        "16 through 8192. A reply longer than Discord allows is sent as the "
+        "next message in the channel.\n\n"
+        "### When it changes\n"
+        "Save Settings. The next channel reply uses the new number.",
+    ),
+    "thread_completion_tokens": (
+        "Thread output tokens",
+        "### What is this?\n"
+        "The length of one post inside a thread. Each later post is its own "
+        "reply with the same budget.\n\n"
+        "### Default\n"
+        "316. That is about one Discord message. A longer post continues in "
+        "the following message.\n\n"
+        "### Range\n"
+        "16 through 8192.\n\n"
+        "### When it changes\n"
+        "Save Settings. The next thread post uses the new number. The short "
+        "planning step before those posts keeps its own budget.",
+    ),
     "security": (
         "Security folders",
         "### Owner\n"

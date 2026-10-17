@@ -20,7 +20,7 @@ from core.message_media import collect_discord_media
 # --- REST-BASED GROQ CLIENT ---
 from core.client import (
     call_groq_turn,
-    CHAT_COMPLETION_TOKENS,
+    channel_completion_tokens,
     settle_cut_reply,
 )
 
@@ -99,8 +99,8 @@ class OnMessage(commands.Cog):
     async def _speak_lookup(self, prompt: str, notes: str) -> tuple[str, bool]:
         """Answer the same turn from the lookup notes. The notes themselves are not sent."""
         from core.client import (
-            CHAT_COMPLETION_TOKENS,
             call_groq_turn,
+            channel_completion_tokens,
             lookup_failed,
             lookup_prompt,
         )
@@ -109,7 +109,7 @@ class OnMessage(commands.Cog):
             turn = await call_groq_turn(
                 follow,
                 user_id=None,
-                max_completion_tokens=CHAT_COMPLETION_TOKENS,
+                max_completion_tokens=channel_completion_tokens(),
                 include_tool_note=False,
             )
         except Exception as exc:
@@ -304,7 +304,7 @@ class OnMessage(commands.Cog):
 
         # 3. Call the model. The token cap is the reply length.
         # Tools ride on this same request. A quota miss does not run them.
-        completion_tokens = CHAT_COMPLETION_TOKENS
+        completion_tokens = channel_completion_tokens()
         try:
             speaker_is_owner = await author_is_owner(self.bot, message.author)
         except Exception:

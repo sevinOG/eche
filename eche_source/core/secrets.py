@@ -39,6 +39,8 @@ PUBLIC_KEYS = (
     "admin_tools",          # "1" while the Admin tools toggle is on
     "default_tools",        # "0" hides thread, lookup, and context. Blank stays on.
     "owner_id",             # Discord user ids for owner commands and admin tools
+    "channel_completion_tokens",  # channel reply budget; blank uses 64
+    "thread_completion_tokens",   # one thread post; blank uses 316
 )
 
 # Map settings key -> environment variable used by the bot
@@ -55,6 +57,8 @@ ENV_MAP = {
     "summarizer_prompt_path": "SUMMARIZER_PROMPT_PATH",
     "admin_tools": "ECHE_ADMIN_TOOLS",
     "owner_id": "ECHE_OWNER_ID",
+    "channel_completion_tokens": "ECHE_CHANNEL_TOKENS",
+    "thread_completion_tokens": "ECHE_THREAD_TOKENS",
 }
 
 _SECRETS_FILENAME = "secrets.dpapi.json"
@@ -67,6 +71,18 @@ def _user_root() -> str:
         return ensure_user_layout()
     except Exception:
         return os.getcwd()
+
+
+def public_value(key: str, root: str | None = None) -> str:
+    """One saved settings value. Blank when that key has never been set."""
+    if key not in PUBLIC_KEYS:
+        return ""
+    root = root or _user_root()
+    try:
+        data = _read_json(settings_path(root))
+    except Exception:
+        return ""
+    return str(data.get(key) or "").strip()
 
 
 def settings_path(root: str | None = None) -> str:

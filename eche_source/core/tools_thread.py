@@ -850,10 +850,10 @@ async def _execute(
     `focus` only filters a planned query. It is not shown to the model.
     """
     from core.client import (
-        THREAD_COMPLETION_TOKENS,
         call_groq_turn,
         discord_chunks,
         last_sentence,
+        thread_completion_tokens,
     )
 
     # No user id: the person's pin is not injected into the posts.
@@ -905,7 +905,7 @@ async def _execute(
             turn = await call_groq_turn(
                 prompt,
                 user_id=None,
-                max_completion_tokens=THREAD_COMPLETION_TOKENS,
+                max_completion_tokens=thread_completion_tokens(),
                 tools=None,
                 include_tool_note=False,
                 job="execute",
