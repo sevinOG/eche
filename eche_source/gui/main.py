@@ -42,7 +42,6 @@ from gui.theme import APP_TITLE, APP_VERSION, BG, BG_ELEVATED, apply_theme
 from gui.widgets.settingswindow import SettingsWindow
 from gui.widgets.unifierpanel import UnifierPanel
 from gui.widgets.cogmanager import CogManagerWindow
-from gui.widgets.botmemorywindow import BotMemoryWindow
 from gui.widgets.loading import LoadingIndicator
 from gui.widgets.logpane import LogPane
 from gui.widgets.dialogs import (
@@ -187,7 +186,7 @@ class MainWindow(QMainWindow):
 
         self.cog_manager_window = None
         self.settings_window = None
-        self.bot_memory_window = None
+        self.context_window = None
         self._tb_buffer: list[str] = []
         self._tb_active = False
         self._local_worker = None
@@ -207,11 +206,8 @@ class MainWindow(QMainWindow):
         self.loading = LoadingIndicator()
 
         self.update_button = self._bar_button("Update", "ghost", self.on_update_clicked)
-        self.bot_context_button = self._bar_button(
-            "Bot context", "ghost", self.open_bot_memory_window
-        )
         self.context_button = self._bar_button(
-            "Context editor", "ghost", self.open_user_context_window
+            "Context editor", "ghost", self.open_context_editor
         )
         self.economy_button = self._bar_button(
             "Economy editor", "ghost", self.open_economy_window
@@ -223,7 +219,6 @@ class MainWindow(QMainWindow):
 
         for btn in (
             self.update_button,
-            self.bot_context_button,
             self.context_button,
             self.economy_button,
             self.cog_manager_button,
@@ -1059,9 +1054,9 @@ class MainWindow(QMainWindow):
             pass
 
         try:
-            if self.bot_memory_window:
-                self.bot_memory_window.close()
-                self.bot_memory_window = None
+            if self.context_window:
+                self.context_window.close()
+                self.context_window = None
         except Exception:
             pass
 
@@ -1280,20 +1275,13 @@ class MainWindow(QMainWindow):
         self.cog_manager_window.raise_()
         self.cog_manager_window.activateWindow()
 
-    def open_bot_memory_window(self):
-        if not self.bot_memory_window:
-            self.bot_memory_window = BotMemoryWindow(main_window=self)
-        self.bot_memory_window.show()
-        self.bot_memory_window.raise_()
-        self.bot_memory_window.activateWindow()
-
-    def open_user_context_window(self):
-        if not getattr(self, "user_context_window", None):
-            from gui.widgets.usercontextwindow import UserContextWindow
-            self.user_context_window = UserContextWindow(main_window=self)
-        self.user_context_window.show()
-        self.user_context_window.raise_()
-        self.user_context_window.activateWindow()
+    def open_context_editor(self):
+        if not self.context_window:
+            from gui.widgets.contexteditor import ContextEditorWindow
+            self.context_window = ContextEditorWindow(main_window=self)
+        self.context_window.show()
+        self.context_window.raise_()
+        self.context_window.activateWindow()
 
     def on_unifier_content_saved(self, path: str, content: str):
         self.append_log(f"[INFO] Content saved to: {path}")

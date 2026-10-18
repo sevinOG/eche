@@ -184,26 +184,21 @@ FIELD_HELP: dict[str, tuple[str, str]] = {
         "### Where it saves\n"
         "Package file `core/builder.py` (plain text). Restart the bot after saving.",
     ),
-    "bot_memory": (
-        "Self Memory (what the bot remembers about itself)",
+    "context_editor": (
+        "Context editor",
         "### What is this?\n"
-        "On the home Discord server, the category `bot memory` has one channel per user. "
-        "That user's `context` thread holds two pinned notes: their context, and the bot's "
-        "self-context for them (summary + recent lines).\n\n"
-        "### How it differs from user context\n"
-        "- **Self memory** = what the bot remembers with that person\n"
-        "- **User context** = what it remembers about that person\n\n"
+        "One window for the pins on the home server. Pick User, Bot, or Episodic, "
+        "then enter an id.\n\n"
+        "### User\n"
+        "What Eche remembers about that person. Enter their Discord user ID.\n\n"
+        "### Bot\n"
+        "What Eche remembers about itself with that person. Same user ID. "
+        "Fetch does not create a channel. Reset clears that pin to a blank summary.\n\n"
+        "### Episodic\n"
+        "That server's episode, stored in the home bot channel. Enter the server ID. "
+        "The pin starts with Episodic and that id.\n\n"
         "### Editing\n"
-        "Enter a user ID, then fetch. This does not create a channel. "
-        "Be careful — the pin is live on Discord.",
-    ),
-    "user_context": (
-        "User Context (memory of each person)",
-        "### What is this?\n"
-        "For each opted-in user, Discord has a channel `user-{user id}` in `bot memory`, "
-        "with a `context` thread and a pinned note (Summary + New lines).\n\n"
-        "### What you can do here\n"
-        "Browse by server, open a user’s pin, edit it, save back to Discord.",
+        "Fetch, edit, then save. The pin is live on Discord.",
     ),
     "project_path": (
         "eche_source folder (dev tree)",

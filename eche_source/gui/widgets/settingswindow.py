@@ -476,8 +476,7 @@ class SettingsWindow(QWidget):
         body = QVBoxLayout()
         body.setSpacing(10)
         hint = QLabel(
-            "Deeper editors: system personality, orchestration (unifier), "
-            "self-memory, and per-user context by Discord server."
+            "Deeper editors: system personality, the unifier, and the context pins."
         )
         hint.setObjectName("FieldHint")
         hint.setWordWrap(True)
@@ -490,8 +489,7 @@ class SettingsWindow(QWidget):
         editors = [
             ("Edit Personality", "personality", self.open_personality_window),
             ("Unifier", "unifier", self.open_unifier_window),
-            ("Self Memory (Bot)", "bot_memory", self.open_bot_memory_window),
-            ("User Context by Server", "user_context", self.open_user_context_window),
+            ("Context editor", "context_editor", self.open_context_editor),
         ]
         for i, (text, help_key, slot) in enumerate(editors):
             cell = QHBoxLayout()
@@ -1034,21 +1032,17 @@ class SettingsWindow(QWidget):
         self.summarizer_window.raise_()
         self.summarizer_window.activateWindow()
 
-    def open_bot_memory_window(self):
-        from gui.widgets.botmemorywindow import BotMemoryWindow
-        if not hasattr(self, "bot_memory_window") or not self.bot_memory_window:
-            self.bot_memory_window = BotMemoryWindow(main_window=self.main_window)
-        self.bot_memory_window.show()
-        self.bot_memory_window.raise_()
-        self.bot_memory_window.activateWindow()
-
-    def open_user_context_window(self):
-        from gui.widgets.usercontextwindow import UserContextWindow
-        if not hasattr(self, "user_context_window") or not self.user_context_window:
-            self.user_context_window = UserContextWindow(main_window=self.main_window)
-        self.user_context_window.show()
-        self.user_context_window.raise_()
-        self.user_context_window.activateWindow()
+    def open_context_editor(self):
+        main = self.main_window
+        if main is not None and hasattr(main, "open_context_editor"):
+            main.open_context_editor()
+            return
+        from gui.widgets.contexteditor import ContextEditorWindow
+        if not getattr(self, "context_window", None):
+            self.context_window = ContextEditorWindow(main_window=self.main_window)
+        self.context_window.show()
+        self.context_window.raise_()
+        self.context_window.activateWindow()
 
     def open_economy_window(self):
         main = self.main_window
