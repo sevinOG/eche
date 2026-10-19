@@ -603,7 +603,7 @@ def parse_name_plan(text: str) -> tuple[str, str, list[str]]:
             if extra:
                 plan_lines.append(extra)
             continue
-        if search_mark and section != "plan":
+        if search_mark:
             section = "searches"
             extra = search_mark.group(1).strip()
             piece = _query_piece(extra) if extra else None
@@ -654,7 +654,8 @@ def name_plan_prompt(brief: str) -> str:
         "Each point is one later post and should use the thread room, "
         f"up to {REPLY_MAX_CHARS} characters.\n"
         "List a search only when a post needs a fact, score, date, news, or definition. "
-        "One query a line. Those searches run first, one a round, before any post.\n"
+        "One query a line. A Searches list after Plan still counts. "
+        "Those searches run first, one a round, before any post.\n"
         "A writing assignment that needs no facts uses Searches: none.\n"
         "The assignment above is the only message. Name and plan that.\n"
         "Do not use an older message.\n"
@@ -741,10 +742,10 @@ def body_round_prompt(plan: str, notes: str, already: str, cut_note: str = "") -
         f"{cut_note}"
         f"Already posted:\n{already}\n\n"
         f"Planned search results:\n{lookup}\n\n"
-        "This round is only the next post. Do not call a tool. "
-        "Do not write DONE in this post.\n"
-        "When every planned post is already written, reply with only DONE.\n"
-        "Explain that next point in depth. Use the room, "
+        "If a point in the plan is not in Already posted, write that post and nothing else. "
+        "Do not write DONE in that post.\n"
+        "If every planned point is already in Already posted, reply with only DONE.\n"
+        "A post uses the room, "
         f"up to {REPLY_MAX_CHARS} characters. End on a complete sentence.\n"
         "Do not describe your steps or repeat these labels.\n"
         "Do not announce a thread. Do not name anyone who is not in the plan.\n"
@@ -783,10 +784,10 @@ def _only_tool_reply(text: str) -> bool:
 
 def _drop_tool_lines(text: str) -> str:
     """A body round does not post a tool call that arrived as text."""
-    from core.tools import calls_from_model_text
+    from core.tools import calls_from_model_text, without_tool_calls
 
     kept: list[str] = []
-    for line in (text or "").splitlines():
+    for line in without_tool_calls(text or "", {"duckduckgo"}).splitlines():
         if calls_from_model_text(line.strip(), {"duckduckgo"}):
             continue
         kept.append(line)
@@ -873,8 +874,8 @@ async def _execute(
                 user_id=None,
                 max_completion_tokens=_SEARCH_ROUND_TOKENS,
                 tools=search_tools,
-                include_tool_note=False,
-                job="execute",
+                include_tool_note=True,
+                job="search",
             )
         except Exception as exc:
             dprint(f"[tools] thread search round failed: {exc}")

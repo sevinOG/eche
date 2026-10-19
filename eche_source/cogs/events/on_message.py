@@ -111,6 +111,7 @@ class OnMessage(commands.Cog):
                 user_id=None,
                 max_completion_tokens=channel_completion_tokens(),
                 include_tool_note=False,
+                job="lookup",
             )
         except Exception as exc:
             dprint(f"[on_message] lookup reply failed: {exc}")
@@ -124,6 +125,7 @@ class OnMessage(commands.Cog):
                 turn,
                 follow,
                 None,
+                job="lookup",
             )
             if turn.quota:
                 return turn.reply, True

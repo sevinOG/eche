@@ -238,7 +238,8 @@ def tool_use_note(tools: list | None = None) -> str:
         if line:
             lines.append(f"- {line}")
     lines.append(
-        "If you cannot call a tool the normal way, reply with only "
+        "Call a tool by itself. Do not write the answer in that same reply. "
+        "If you cannot call a tool the normal way, include "
         '{"name":"TOOL","arguments":{...}}.'
     )
     return "\n".join(lines)
@@ -1414,7 +1415,7 @@ def _format_system_prompt(
     voice: str | None = None,
 ) -> str:
     """One system message. Personality stays the voice block, once."""
-    if job in ("plan", "execute"):
+    if job in ("plan", "execute", "search"):
         lines = []
     else:
         lines = [
@@ -1435,7 +1436,9 @@ def _format_system_prompt(
             "Stop there. "
             "When the answer needs more and they did not ask for a thread, ask once to open one. "
             "When they asked for a thread, or agreed to one you offered, call the thread tool. "
-            "Talking about a thread does not open it."
+            "Talking about a thread does not open it. "
+            "A fact, score, news, date, or definition is a duckduckgo call, not a guess. "
+            "Call the tool by itself. Do not also write the answer."
         )
     elif job == "plain":
         lines.append(
@@ -1450,19 +1453,32 @@ def _format_system_prompt(
             "You can call duckduckgo more than once when a fact is needed. "
             "A last line that is only DONE ends the tool and is not posted."
         )
+    elif job == "lookup":
+        lines.append(
+            "The lookup for this turn is already in the message under Lookup notes. "
+            "Answer the most recent message from those notes, in two or three sentences. "
+            "Follow the instruction under the notes. "
+            "Do not call a tool. Do not ask for a thread."
+        )
     elif job == "plan":
         lines.append(
             "Name the thread and write the plan. "
-            "Reply with Title:, then Searches:, then Plan:. "
+            "Use Title:, Searches:, and Plan:. Searches may come after Plan. "
             "The message is the assignment. "
             "Do not post. Do not call tools. Do not search."
+        )
+    elif job == "search":
+        lines.append(
+            "This round is one duckduckgo call for the query in the message. "
+            "Do not post. Do not write DONE. Do not answer the question yourself."
         )
     elif job == "execute":
         lines.append(
             "The message is the plan. Follow it. Do not add a topic that is not in it. "
-            "This round is one output. A search is only a duckduckgo call. "
-            "A post is only the next post. Finishing is only DONE. "
-            "Do not mix a search, a post, and DONE in one reply."
+            "If a planned point is not in Already posted, write that post and nothing else. "
+            "Do not put DONE in that post. "
+            "If every planned point is already posted, reply with only DONE. "
+            "Do not call a tool. Do not search."
         )
     spoken = get_personality_prompt() if voice is None else voice
     spoken = (spoken or "").strip()
@@ -1818,6 +1834,7 @@ async def settle_cut_reply(
     *,
     max_completion_tokens: int | None = None,
     images: list | None = None,
+    job: str | None = None,
 ) -> ModelTurn:
     """Post only finished sentences when the token cap stopped the model.
 
@@ -1845,6 +1862,7 @@ async def settle_cut_reply(
             tools=None,
             images=images,
             include_tool_note=False,
+            job=job,
         )
     except Exception:
         turn.reply = ""

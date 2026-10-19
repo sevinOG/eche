@@ -296,14 +296,9 @@ def calls_from_model_text(text: str, names: set[str] | None = None) -> list[dict
     if found:
         return found
 
-    candidate = raw
-    fence = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", raw, flags=re.IGNORECASE | re.DOTALL)
-    if fence:
-        candidate = fence.group(1).strip()
-    if candidate.startswith("{") and candidate.endswith("}"):
-        found = _calls_in_blob(candidate, folded)
-        if found:
-            return found
+    found = _json_calls_in_text(raw, folded)
+    if found:
+        return found
 
     compact = re.sub(r"\s+", " ", raw).strip()
     if _TYPED_COMMAND.fullmatch(compact) and "context_raw" in folded:
@@ -311,20 +306,27 @@ def calls_from_model_text(text: str, names: set[str] | None = None) -> list[dict
     return []
 
 
-def _calls_in_blob(blob: str, folded: dict[str, str]) -> list[dict]:
+def without_tool_calls(text: str, names: set[str] | None = None) -> str:
+    """Drop a typed tool call. Words around it stay."""
+    known = names if names is not None else registered_names()
+    raw = text or ""
+    if not raw or not known:
+        return raw
+    folded = {n.casefold(): n for n in known}
+    spans = _tool_json_spans(raw, folded)
+    if not spans:
+        return raw
+    kept = []
+    cursor = 0
+    for start, end in spans:
+        kept.append(raw[cursor:start])
+        cursor = end
+    kept.append(raw[cursor:])
+    return "".join(kept)
+
+
+def _calls_from_data(data, folded: dict[str, str]) -> list[dict]:
     out: list[dict] = []
-    for match in _FN_TAG.finditer(blob or ""):
-        canon = folded.get(match.group(1).casefold())
-        if canon:
-            out.append({"name": canon, "arguments": {}})
-    if out:
-        return out
-
-    try:
-        data = json.loads(blob)
-    except Exception:
-        return []
-
     items = data if isinstance(data, list) else [data]
     for item in items:
         if not isinstance(item, dict):
@@ -345,3 +347,52 @@ def _calls_in_blob(blob: str, folded: dict[str, str]) -> list[dict]:
             args = {}
         out.append({"name": canon, "arguments": args})
     return out
+
+
+def _tool_json_spans(text: str, folded: dict[str, str]) -> list[tuple[int, int]]:
+    """Spans of JSON objects that name a known tool. Other braces stay."""
+    spans: list[tuple[int, int]] = []
+    decoder = json.JSONDecoder()
+    index = 0
+    while index < len(text):
+        start = text.find("{", index)
+        if start < 0:
+            break
+        try:
+            data, end = decoder.raw_decode(text, start)
+        except Exception:
+            index = start + 1
+            continue
+        if _calls_from_data(data, folded):
+            spans.append((start, end))
+        index = end
+    return spans
+
+
+def _json_calls_in_text(text: str, folded: dict[str, str]) -> list[dict]:
+    found: list[dict] = []
+    decoder = json.JSONDecoder()
+    index = 0
+    while index < len(text):
+        start = text.find("{", index)
+        if start < 0:
+            break
+        try:
+            data, end = decoder.raw_decode(text, start)
+        except Exception:
+            index = start + 1
+            continue
+        found.extend(_calls_from_data(data, folded))
+        index = end
+    return found
+
+
+def _calls_in_blob(blob: str, folded: dict[str, str]) -> list[dict]:
+    out: list[dict] = []
+    for match in _FN_TAG.finditer(blob or ""):
+        canon = folded.get(match.group(1).casefold())
+        if canon:
+            out.append({"name": canon, "arguments": {}})
+    if out:
+        return out
+    return _json_calls_in_text(blob or "", folded)
