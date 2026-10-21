@@ -73,14 +73,14 @@ if not exist "%PY%" (
 )
 
 echo [1/5] Dependencies...
-"%PY%" -m pip install -q -r "%SCRIPT_DIR%requirements.txt"
-if errorlevel 1 echo [WARN] pip had issues - continuing
-"%PY%" -c "import PyInstaller; print('PyInstaller', PyInstaller.__version__)" 2>nul
+"%PY%" -m pip install -q --require-hashes -r "%SCRIPT_DIR%requirements.txt"
 if errorlevel 1 (
-  echo [INFO] Installing PyInstaller...
-  "%PY%" -m pip install -q "pyinstaller>=6.0"
+  echo [FATAL] Pinned dependency install failed.
+  echo        requirements.txt lists exact files. A newer release is refused.
+  if not defined NOPAUSE pause
+  exit /b 1
 )
-"%PY%" -c "import PyInstaller" 2>nul
+"%PY%" -c "import PyInstaller; print('PyInstaller', PyInstaller.__version__)" 2>nul
 if errorlevel 1 (
   echo [FATAL] PyInstaller still not importable after install.
   if not defined NOPAUSE pause

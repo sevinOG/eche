@@ -40,13 +40,7 @@ if not exist ".venv\Scripts\python.exe" (
 )
 
 echo [2/3] Installing libraries ^(this can take several minutes^)...
-".venv\Scripts\python.exe" -m pip install -U pip
-if errorlevel 1 (
-  echo pip upgrade failed
-  pause
-  exit /b 1
-)
-".venv\Scripts\python.exe" -m pip install -r requirements.txt
+".venv\Scripts\python.exe" -m pip install --require-hashes -r requirements.txt
 if errorlevel 1 (
   echo pip install failed - check your internet connection
   pause

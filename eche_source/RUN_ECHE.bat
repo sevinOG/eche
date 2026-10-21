@@ -20,7 +20,7 @@ if exist "dist\Eche.exe" (
 rem Source mode: run the GUI with Python
 if exist ".venv\Scripts\python.exe" (
   echo Refreshing dependencies...
-  ".venv\Scripts\python.exe" -m pip install -q -r requirements.txt
+  ".venv\Scripts\python.exe" -m pip install -q --require-hashes -r requirements.txt
   if errorlevel 1 (
     echo pip install failed — check internet / requirements.txt
     pause
@@ -48,8 +48,7 @@ if errorlevel 1 (
 echo Creating private .venv and installing libraries...
 python -m venv .venv
 if errorlevel 1 ( echo venv failed & pause & exit /b 1 )
-".venv\Scripts\python.exe" -m pip install -U pip
-".venv\Scripts\python.exe" -m pip install -r requirements.txt
+".venv\Scripts\python.exe" -m pip install --require-hashes -r requirements.txt
 if errorlevel 1 (
   echo pip install failed — check internet
   pause
