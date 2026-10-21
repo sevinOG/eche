@@ -239,12 +239,36 @@ _CONFIG_HINTS: list[tuple[str, str, str, str]] = [
 ]
 
 
+def is_reconnect_noise(text: str) -> bool:
+    """Library reconnect traces. They stay in the log and do not open a dialog.
+
+    Voice close 1006, the 30-second voice poll timeout, and the aiohttp reader
+    cancel are discord.py reconnecting. A timeout or cancel anywhere else still
+    counts as a real error.
+    """
+    low = (text or "").lower()
+    if not low:
+        return False
+    if "clientconnectordnserror" in low or "getaddrinfo failed" in low:
+        return True
+    voice = "voice_state.py" in low
+    if voice and "connectionclosed" in low and "1006" in low:
+        return True
+    if voice and ("timeouterror" in low or "cancellederror" in low):
+        return True
+    if "shard id none" in low and "websocket closed with 1006" in low:
+        return True
+    if "cancellederror" in low and ("client_ws.py" in low or "reader_py.py" in low):
+        return True
+    return False
+
+
 def looks_like_traceback(text: str) -> bool:
     if not text:
         return False
-    t = text.strip().lower()
-    if "clientconnectordnserror" in t or "getaddrinfo failed" in t:
+    if is_reconnect_noise(text):
         return False
+    t = text.strip().lower()
     if "Traceback (most recent call last):" in t or t.startswith("Traceback (most recent call last)"):
         return True
     return "File \"" in t and "line " in t and ("Error:" in t or "Exception:" in t)
@@ -318,6 +342,9 @@ def present_failure(parent, text: str, *, log_fn=None, default_title: str = "Som
             log_fn(f"[ERROR] {text}")
         except Exception:
             pass
+
+    if is_reconnect_noise(text):
+        return
 
     kind = classify_error(text)
     if kind == "traceback":
