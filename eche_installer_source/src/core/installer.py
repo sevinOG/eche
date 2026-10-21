@@ -315,13 +315,13 @@ class Installer:
                     self.log(f"Could not create .venv (exit {code})")
                     return None
             self.progress(-1, "Installing Python packages. This can take several minutes…")
-            self._run_logged([str(venv_py), "-m", "pip", "install", "-U", "pip"], eche_source)
             req = self._run_logged(
-                [str(venv_py), "-m", "pip", "install", "-r", "requirements.txt"],
+                [str(venv_py), "-m", "pip", "install", "--require-hashes", "-r", "requirements.txt"],
                 eche_source,
             )
             if req != 0:
-                self.log(f"pip install returned {req}. Continuing to the app build.")
+                self.log(f"pip install returned {req}. The pinned packages were not installed.")
+                return None
             env = os.environ.copy()
             env["ECHE_NO_PAUSE"] = "1"
             self.progress(-1, "Building Eche.exe. This often takes several minutes…")

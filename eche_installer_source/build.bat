@@ -47,8 +47,8 @@ echo [INFO] Using: %PY%
 REM --- Ensure PyInstaller is importable (do NOT use pyinstaller.exe) ---
 "%PY%" -c "import PyInstaller" 2>nul
 if errorlevel 1 (
-  echo [INFO] Installing PyInstaller into this Python...
-  "%PY%" -m pip install -q pyinstaller
+  echo [INFO] Installing pinned PyInstaller into this Python...
+  "%PY%" -m pip install -q --require-hashes -r "%WORKSPACE%\eche_source\requirements.txt"
   if errorlevel 1 (
     echo [FATAL] Could not install PyInstaller
     pause
@@ -59,8 +59,8 @@ if errorlevel 1 (
 REM --- Ensure PyQt6 for the installer GUI freeze ---
 "%PY%" -c "import PyQt6" 2>nul
 if errorlevel 1 (
-  echo [INFO] Installing PyQt6...
-  "%PY%" -m pip install -q PyQt6
+  echo [INFO] Installing pinned PyQt6...
+  "%PY%" -m pip install -q --require-hashes -r "%WORKSPACE%\eche_source\requirements.txt"
 )
 
 if not exist "%SPEC%" (
