@@ -22,6 +22,7 @@ SECRET_KEYS = (
     "openrouter_api_key",  # OPENROUTER_API_KEY
     "us_access_token",   # US_ACCESS_TOKEN (Unsplash)
     "us_secret_token",   # US_SECRET_TOKEN (Unsplash)
+    "xai_api_key",       # XAI_API_KEY (Grok Imagine)
 )
 
 # UPDATED PUBLIC KEYS (per your request)
@@ -41,6 +42,12 @@ PUBLIC_KEYS = (
     "owner_id",             # Discord user ids for owner commands and admin tools
     "channel_completion_tokens",  # channel reply budget; blank uses 64
     "thread_completion_tokens",   # one thread post; blank uses 316
+    "asset_owner_only",           # "1" limits ?asset and the asset tool to owners. Blank means everyone.
+    "tool_duckduckgo",            # "0" leaves lookup out of the prompt. Blank stays on.
+    "tool_thread",                # "0" leaves thread out of the prompt. Blank stays on.
+    "tool_context_raw",           # "0" leaves context out of the prompt. Blank stays on.
+    "tool_asset",                 # "0" leaves the asset tool out of the prompt. Blank stays on.
+    "prompt_episodic",            # "0" leaves the server episode out of the prompt. Blank stays on.
 )
 
 # Map settings key -> environment variable used by the bot
@@ -50,6 +57,7 @@ ENV_MAP = {
     "openrouter_api_key": "OPENROUTER_API_KEY",
     "us_access_token": "US_ACCESS_TOKEN",
     "us_secret_token": "US_SECRET_TOKEN",
+    "xai_api_key": "XAI_API_KEY",
     "home_server_id": "HOME_SERVER_ID",
     "groq_model": "GROQ_MODEL",
     "provider_backend": "ECHE_PROVIDER",

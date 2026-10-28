@@ -148,6 +148,24 @@ def strict_prefix(bot, message):
     return []          # safe: “no prefixes”
 
 
+def is_asset_command(content: str) -> bool:
+    """True only when discord.py will run ?asset.
+
+    The prefix has to be the first character. Whitespace right after ?
+    is kept, because strip_after_prefix is off, and the command name is
+    the next word. ?asset and ?Asset count. A leading space, ?assets,
+    and ?assetory do not.
+    """
+    text = content or ""
+    if not text.startswith("?"):
+        return False
+    rest = text[1:]
+    if not rest or rest[0].isspace():
+        return False
+    word = rest.split(None, 1)[0]
+    return word.casefold() == "asset"
+
+
 class Eche(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
@@ -306,6 +324,7 @@ class Eche(commands.Bot):
             "cogs.music.music",
             "cogs.charoverride",
             "cogs.image_search",
+            "cogs.asset",
             "cogs.convert",
             "cogs.flash",
             "cogs.hire.lawyer.lawyer",

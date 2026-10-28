@@ -69,11 +69,16 @@ async def reply_local(user_text: str) -> str:
         if content:
             history_lines.append(f"{role}: {content}")
 
+    history = "\n".join(history_lines) if history_lines else "(none)"
     flat = (
         _place_line()
-        + "\n\n=== LOCAL HISTORY ===\n"
-        + "\n".join(history_lines)
-        + f"\n\nUSER: {user_text}\n"
+        + "\n\nBackground. Earlier turns of this desktop chat.\n\n"
+        + "=== LOCAL HISTORY ===\n"
+        + history
+        + "\n\n=== MOST RECENT MESSAGE ===\n"
+        + "USER:\n"
+        + user_text
+        + "\n"
     )
 
     try:

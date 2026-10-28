@@ -56,6 +56,43 @@ FIELD_HELP: dict[str, tuple[str, str]] = {
         "A second secret Unsplash sometimes uses. Treat it like a password. "
         "Most simple searches only need the Access Token.",
     ),
+    "xai_api_key": (
+        "Grok API key (Imagine)",
+        "### What is this?\n"
+        "The key Eche sends to xAI when someone asks for a picture or a video. "
+        "`?asset` and the asset tool both use it.\n\n"
+        "### How to get one\n"
+        "1. Open the [xAI console](https://console.x.ai/)\n"
+        "2. Create an API key\n"
+        "3. Paste it here and click **Save Settings**\n\n"
+        "### Safety\n"
+        "Stored encrypted for your Windows user only. A picture or a video is billed to this key. "
+        "Leave the field blank on a later save to keep the key you already stored.",
+    ),
+    "asset_access": (
+        "Who can ask for an asset",
+        "### Owner only\n"
+        "Off, anyone can use `?asset` and Eche can make an asset when they ask. "
+        "On, only the Owner IDs on the Security page can.\n\n"
+        "A video is a short 480p clip, up to 8 seconds. "
+        "Attach a picture to edit it, or ask for a video of that picture. "
+        "Attach a video to edit the video.",
+    ),
+    "prompt_tools": (
+        "Tools in the prompt",
+        "### What these boxes do\n"
+        "Each box puts that tool in the prompt Eche sees. Off, and the model is not offered it. "
+        "A blank install leaves them on.\n\n"
+        "The main window **Default tools** switch still turns lookup, thread, context, and asset off together. "
+        "These boxes can turn one of them off while the switch stays on.\n\n"
+        "### Episodic memory\n"
+        "Off, and this server's episode is left out of the prompt. Eche still stores it, "
+        "so turning the box back on brings it back.\n\n"
+        "### Asset\n"
+        "This box only controls whether the model may call the tool. "
+        "`?asset` still works for whoever Media settings allows.\n\n"
+        "Admin tools stay on the Security page.",
+    ),
     "home_server_id": (
         "Home Server ID (which Discord server is “home”)",
         "### What is this?\n"
@@ -177,9 +214,11 @@ FIELD_HELP: dict[str, tuple[str, str]] = {
     "unifier": (
         "Unifier (how the prompt is assembled)",
         "### What is this?\n"
-        "Before the SI answers, Eche sends one short system message: a few job lines, "
-        "the personality as Voice, and a short tool list when tools are offered. "
-        "The **unifier / builder** file is the user turn: today, the two memory pins, "
+        "Before the SI answers, Eche sends one system message: Voice, the task, "
+        "the shape of the reply, and a tool list only for the tools offered on that turn. "
+        "Voice is left off the plan and the search. "
+        "The **unifier / builder** file is the user turn: today, a background line, "
+        "the two memory clouds, the recent lines, this server's episode, "
         "and the latest message.\n\n"
         "### Where it saves\n"
         "Package file `core/builder.py` (plain text). Restart the bot after saving.",

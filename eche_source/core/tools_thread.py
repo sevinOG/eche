@@ -454,11 +454,26 @@ async def _create_thread(message, title: str):
     return None
 
 
+_SEARCH_TOOL_DESCRIPTION = (
+    "Call duckduckgo with the query in the message. Do not change it."
+)
+
+
+def _search_tool_spec(spec: dict) -> dict:
+    """This round already names the query. The channel description does not."""
+    function = spec.get("function") if isinstance(spec.get("function"), dict) else {}
+    copied = dict(spec)
+    updated = dict(function)
+    updated["description"] = _SEARCH_TOOL_DESCRIPTION
+    copied["function"] = updated
+    return copied
+
+
 def _duckduckgo_tools() -> list[dict]:
     from core.tools import specs_for
 
     return [
-        spec
+        _search_tool_spec(spec)
         for spec in specs_for(speaker_is_owner=False, admin_enabled=False)
         if spec.get("function", {}).get("name") == "duckduckgo"
     ]
@@ -638,30 +653,9 @@ def parse_name_plan(text: str) -> tuple[str, str, list[str]]:
 
 
 def name_plan_prompt(brief: str) -> str:
-    """Phase 1. Name the thread and outline the posts. No search and no posts."""
-    from core.client import REPLY_MAX_CHARS
-
-    return (
-        f"{brief}\n\n"
-        "Name this thread and write the plan. Reply in this shape only:\n"
-        "Title: a few words from the assignment\n"
-        "Searches:\n"
-        "- one lookup, or the word none\n"
-        "Plan:\n"
-        "the points, one full post each\n\n"
-        "Explain the assignment in depth. "
-        "Plan several posts when the topic needs it. "
-        "Each point is one later post and should use the thread room, "
-        f"up to {REPLY_MAX_CHARS} characters.\n"
-        "List a search only when a post needs a fact, score, date, news, or definition. "
-        "One query a line. A Searches list after Plan still counts. "
-        "Those searches run first, one a round, before any post.\n"
-        "A writing assignment that needs no facts uses Searches: none.\n"
-        "The assignment above is the only message. Name and plan that.\n"
-        "Do not use an older message.\n"
-        "This phase does not post and does not search.\n"
-        "Do not announce a thread. Do not name anyone who is not in the assignment."
-    )
+    """Phase 1 user turn. The plan rules live in the system message."""
+    text = (brief or "").strip() or "(none)"
+    return f"Assignment:\n{text}"
 
 
 def append_notes(notes: str, found: str) -> str:
@@ -721,38 +715,36 @@ def _accept_plan(
 
 
 def search_round_prompt(plan: str, query: str) -> str:
-    """One planned lookup. The plan is the only assignment. No post and no DONE."""
-    return (
-        f"Plan. This is the only assignment. Follow it.\n{plan}\n\n"
-        "This round is only one duckduckgo call. Do not post. Do not write DONE.\n"
-        "Call duckduckgo with this query and no other:\n"
-        f"{query}\n"
-    )
+    """One planned lookup. The call rules live in the system message."""
+    return f"Plan:\n{(plan or '').strip()}\n\nQuery:\n{(query or '').strip()}"
 
 
-def body_round_prompt(plan: str, notes: str, already: str, cut_note: str = "") -> str:
-    """One post. The plan is the only assignment. No tool call in this round."""
-    from core.client import REPLY_MAX_CHARS
-
+def body_round_prompt(
+    plan: str,
+    notes: str,
+    already: str,
+    continue_after: str = "",
+    unfinished: bool = False,
+) -> str:
+    """One post. The plan, what is already up, and the search notes. Rules stay in the system message."""
     lookup = (notes or "").strip() or "(none)"
-    return (
-        "Plan. This is the only assignment. Follow it. "
-        "Do not add a topic that is not in it.\n"
-        f"{plan}\n\n"
-        f"{cut_note}"
-        f"Already posted:\n{already}\n\n"
-        f"Planned search results:\n{lookup}\n\n"
-        "If a point in the plan is not in Already posted, write that post and nothing else. "
-        "Do not write DONE in that post.\n"
-        "If every planned point is already in Already posted, reply with only DONE.\n"
-        "A post uses the room, "
-        f"up to {REPLY_MAX_CHARS} characters. End on a complete sentence.\n"
-        "Do not describe your steps or repeat these labels.\n"
-        "Do not announce a thread. Do not name anyone who is not in the plan.\n"
-        "Do not invent reviews, scores, dates, or news that are not in the planned search results.\n"
-        "If those results are empty, still write the plan. "
-        "Do not post a status line about a lookup.\n"
-    )
+    posted = (already or "").strip() or "(nothing yet)"
+    parts = [
+        "Plan:",
+        (plan or "").strip(),
+        "",
+        "Already posted:",
+        posted,
+        "",
+        "Search results:",
+        lookup,
+    ]
+    sentence = (continue_after or "").strip()
+    if sentence:
+        parts.extend(["", "Continue after:", sentence])
+    elif unfinished:
+        parts.extend(["", "Continue after:", "(no finished sentence)"])
+    return "\n".join(parts)
 
 
 def _lookup_note(query: str, text: str) -> str:
@@ -874,7 +866,7 @@ async def _execute(
                 user_id=None,
                 max_completion_tokens=_SEARCH_ROUND_TOKENS,
                 tools=search_tools,
-                include_tool_note=True,
+                include_tool_note=False,
                 job="search",
             )
         except Exception as exc:
@@ -889,19 +881,13 @@ async def _execute(
 
     for _ in range(THREAD_STEPS):
         already = "\n\n".join(posted) if posted else "(nothing yet)"
-        cut_note = ""
-        if resume_after:
-            cut_note += (
-                "The previous post was cut off. Continue after this sentence. "
-                "Do not repeat it:\n"
-                f"{resume_after}\n\n"
-            )
-        if need_sentence:
-            cut_note += (
-                "The previous attempt was cut off before a sentence finished. "
-                "Start this part with a complete sentence.\n\n"
-            )
-        prompt = body_round_prompt(plan, notes, already, cut_note)
+        prompt = body_round_prompt(
+            plan,
+            notes,
+            already,
+            continue_after=resume_after,
+            unfinished=need_sentence and not resume_after,
+        )
         try:
             turn = await call_groq_turn(
                 prompt,

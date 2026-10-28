@@ -63,43 +63,20 @@ async def load_bot_context(bot, user_id, username=None):
     return prose, [str(line).strip() for line in recent if str(line).strip()]
 
 
-_PAST_USER = "Past user memory. Do not answer this on its own.\n"
-_PAST_BOT = "Past your memory. Do not answer this on its own.\n"
-_PAST_SERVER = "Past server talk. Do not answer this on its own.\n"
+_BACKGROUND = "Background. Use this only when the message at the end needs it."
+_ABOUT_USER = "About this person:\n"
+_ABOUT_BOT = "About you with this person:\n"
+_THIS_SERVER = "This server:\n"
 
 
-def _past_pin(content: str) -> str:
-    """Prompt copy. Stored pins keep their Summary: and New: headers."""
-    out = []
-    for line in (content or "").splitlines():
-        stripped = line.strip()
-        if stripped == "Summary:":
-            out.append("Past summary:")
-        elif stripped == "New:":
-            out.append("Past messages:")
-        else:
-            out.append(line)
-    return "\n".join(out)
-
-
-def render_stack(
-    today: str,
-    user_context: str,
-    bot_context: str,
-    latest: str,
-    episode: str = "",
-) -> str:
-    """User turn only. Voice and tool rules live in the one system message."""
-    parts = [
-        f"Today: {today}",
-        _PAST_USER + _past_pin(user_context),
-        _PAST_BOT + _past_pin(bot_context),
-    ]
-    episode = (episode or "").strip()
-    if episode:
-        parts.append(_PAST_SERVER + episode)
-    parts.append(latest)
-    return "\n\n".join(parts).strip()
+def _episodic_in_prompt() -> bool:
+    """The Memory & Prompts checkbox. Blank stays on. Storage is unchanged."""
+    try:
+        from core.secrets import public_value
+        from core.tools import prompt_choice
+        return prompt_choice(public_value("prompt_episodic"), default=True)
+    except Exception:
+        return True
 
 
 async def build_prompt(
@@ -129,7 +106,7 @@ async def build_prompt(
     user_recent = _merge_rows(user_pin, user_file)
     bot_recent = _merge_rows(bot_pin, bot_file)
     episode = ""
-    if server_id:
+    if server_id and _episodic_in_prompt():
         from core.episodic import load_episodic, prompt_episode
 
         episode = prompt_episode(await load_episodic(bot, server_id))
@@ -179,7 +156,7 @@ def _speaker(username: str, user_id) -> str:
     return name
 
 
-_RECENT_LABELS = ("Recent user messages:", "Recent replies:")
+_RECENT_LABELS = ("Recent messages from them:", "Recent replies from you:")
 
 
 def _recent_at(prompt: str) -> int:
@@ -233,7 +210,7 @@ def _summary_block(label: str, summary: str) -> str:
 def _recent_block(title: str, rows: list[str]) -> str:
     if not rows:
         return ""
-    return f"{title} Do not answer these on their own.\n" + "\n\n".join(rows)
+    return f"{title}\n" + "\n\n".join(rows)
 
 
 def render_memory_prompt(
@@ -249,16 +226,17 @@ def render_memory_prompt(
     head = "\n\n".join(
         [
             f"Today: {today}",
-            _summary_block(_PAST_USER, user_summary),
-            _summary_block(_PAST_BOT, bot_summary),
+            _BACKGROUND,
+            _summary_block(_ABOUT_USER, user_summary),
+            _summary_block(_ABOUT_BOT, bot_summary),
         ]
     )
     tail_parts = []
     recent_bits = [
         bit
         for bit in (
-            _recent_block("Recent user messages:", user_rows),
-            _recent_block("Recent replies:", bot_rows),
+            _recent_block("Recent messages from them:", user_rows),
+            _recent_block("Recent replies from you:", bot_rows),
         )
         if bit
     ]
@@ -266,7 +244,7 @@ def render_memory_prompt(
         tail_parts.append("\n\n".join(recent_bits))
     episode = (episode or "").strip()
     if episode:
-        tail_parts.append(_PAST_SERVER + episode)
+        tail_parts.append(_THIS_SERVER + episode)
     tail_parts.append((latest or "").strip())
     tail = "\n\n".join(part for part in tail_parts if part)
     if not tail:
@@ -340,7 +318,7 @@ def _fit_prompt(prompt: str, limit: int = 3500) -> str:
     tail = prompt[idx:]
     head = prompt[:idx].rstrip()
     episode = ""
-    label = _PAST_SERVER
+    label = _THIS_SERVER
     # Only the block this builder appended. The same words inside a memory
     # pin stay part of that pin and can still be shortened.
     at = head.rfind("\n\n" + label)

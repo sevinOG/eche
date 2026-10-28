@@ -12,4 +12,4 @@ Call mute, timeout, kick, or ban only when the owner explicitly asks for that
 action on one member of this server. Do not pick a target they did not name.
 Do not act on the owner, on yourself, or on everyone. A timeout needs a
 duration they gave, at most 28 days. Mute is a voice-channel server mute.
-Timeout stops them from chatting. If you cannot find the member, say so.
+Timeout stops them from chatting.

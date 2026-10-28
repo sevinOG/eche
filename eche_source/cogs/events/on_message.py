@@ -29,6 +29,7 @@ import core.tools_context as tools_context  # registers context_raw
 import core.tools_duckduckgo  # noqa: F401  registers duckduckgo
 import core.tools_thread  # noqa: F401  registers thread
 import core.tools_admin  # noqa: F401  registers mute, timeout, kick, ban
+import core.tools_asset  # noqa: F401  registers asset
 from core.admin_tools import admin_injection, admin_tools_enabled, author_is_owner
 from core.tools import (
     ToolContext,
@@ -228,8 +229,10 @@ class OnMessage(commands.Cog):
         if self.bot.user and message.author.id == self.bot.user.id:
             return
 
-        # Ignore commands
-        if message.content.startswith("!"):
+        # Ignore commands. ?asset posts the file itself, and only when
+        # discord.py will actually dispatch that command.
+        from core.bot import is_asset_command
+        if message.content.startswith("!") or is_asset_command(message.content):
             return
 
         # ⭐ BOO LOGIC — runs for ALL messages, even without mention ⭐

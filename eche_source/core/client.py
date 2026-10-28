@@ -15,7 +15,7 @@ import aiohttp
 from dotenv import load_dotenv
 
 from core.personality import get_personality_prompt
-from core.memory_file_manager import load_memory_summary
+from core.prompt_text import system_text, tool_catalog
 
 load_dotenv()
 
@@ -204,45 +204,9 @@ def last_sentence(text: str) -> str:
     return (parts[-1] if parts else body).strip()
 
 
-# One line per tool. The schema still carries the name; this is only when to use it.
-_TOOL_LINES = {
-    "duckduckgo": (
-        "duckduckgo: a fact, score, news, date, or definition. query is their question. "
-        "Also when they ask to try a search again or reword it."
-    ),
-    "thread": (
-        "thread: they asked for a thread, or agreed to one you offered. The tool names the thread. "
-        "Trying a search again is not a thread."
-    ),
-    "context_raw": "context_raw: only when they ask to see their own context.",
-    "kick": "kick: only when an owner explicitly asks to kick one member.",
-    "ban": "ban: only when an owner explicitly asks to ban one member.",
-    "timeout": "timeout: only when an owner gives a duration, such as 10m or 1h.",
-    "mute": "mute: only when an owner asks to server-mute someone in voice.",
-}
-
-
 def tool_use_note(tools: list | None = None) -> str:
-    """Short tool list for the one system message. The date is on the user turn."""
-    names: list[str] = []
-    for spec in tools or []:
-        if not isinstance(spec, dict):
-            continue
-        fn = spec.get("function") if isinstance(spec.get("function"), dict) else spec
-        name = str((fn or {}).get("name") or "")
-        if name and name not in names:
-            names.append(name)
-    lines = ["Call one of these when it fits."]
-    for name in names:
-        line = _TOOL_LINES.get(name)
-        if line:
-            lines.append(f"- {line}")
-    lines.append(
-        "Call a tool by itself. Do not write the answer in that same reply. "
-        "If you cannot call a tool the normal way, include "
-        '{"name":"TOOL","arguments":{...}}.'
-    )
-    return "\n".join(lines)
+    """Channel tool slot. The date and the work stay on the user turn."""
+    return tool_catalog(tools)
 
 
 # Posted as the tool result when DuckDuckGo does not return a page. The
@@ -995,17 +959,29 @@ _INSTRUCTION_ECHO = re.compile(
     r"do not describe your steps\b|"
     r"do not name anyone who is not\b|"
     r"assignment to name and plan\b|"
-    r"if you cannot call the tool\b"
+    r"if you cannot call the tool\b|"
+    r"answer the message under most recent message\b|"
+    r"write the next point that is not in already posted\b|"
+    r"do not put done in that post\b|"
+    r"if every planned point is already posted\b|"
+    r"do not add a topic\b|"
+    r"do not invent scores, dates, or news\b|"
+    r"if those results are empty, still write the plan\b|"
+    r"do not post a lookup status\b|"
+    r"when continue after is a sentence\b|"
+    r"when continue after says no finished sentence\b|"
+    r"do not repeat these labels\b"
     r")",
     re.IGNORECASE,
 )
 _FIELD_BULLET = re.compile(
-    r"^(?:subject|plan|already posted|notes|instructions|user input|title)\b",
+    r"^(?:subject|plan|already posted|notes|instructions|user input|title|search results|continue after)\b",
     re.IGNORECASE,
 )
 # Fill-prompt headers on their own line. A phase-1 "Plan:" line does not match.
 _LABEL_ONLY = re.compile(
-    r"^(?:subject|already posted|notes)\s*:\s*$|"
+    r"^(?:subject|already posted|notes|search results|continue after)\s*:\s*"
+    r"(?:|\(none\)|\(nothing yet\)|\(no finished sentence\))\s*$|"
     r"^plan\.\s+stay on it\s*:?\s*$",
     re.IGNORECASE,
 )
@@ -1400,10 +1376,10 @@ def _attach_images(messages: list, images: list) -> list:
 # Format system prompt (plain text — no required thoughts tags)
 # ---------------------------------------------------------------------------
 def _job_name(job: str | None, concise: bool) -> str:
-    """channel, thread, or plain. `concise=False` is the older name for a thread part."""
-    if job:
-        return job
-    return "channel" if concise else "thread"
+    """A missing job is a channel turn. Local chat passes plain itself."""
+    del concise
+    picked = (job or "").strip()
+    return picked or "channel"
 
 
 def _format_system_prompt(
@@ -1413,87 +1389,18 @@ def _format_system_prompt(
     tool_note: str = "",
     extra: str = "",
     voice: str | None = None,
+    tools: list | None = None,
 ) -> str:
-    """One system message. Personality stays the voice block, once."""
-    if job in ("plan", "execute", "search"):
-        lines = []
-    else:
-        lines = [
-            "Send the finished reply, in character. That is the message that gets posted.",
-        ]
-    if job in ("channel", "plain"):
-        lines.append(
-            "Answer the most recent message. "
-            "Past memory is there when that message needs it. "
-            "A question mark or a ping on its own is about what you just said, "
-            "not a recap of memory. "
-            "Say you looked something up only after the lookup tool runs on this turn. "
-            "Asking to try a search again, or to reword it, is duckduckgo, not a thread."
-        )
-    if job == "channel":
-        lines.append(
-            "The channel reply is two or three sentences, one paragraph. "
-            "Stop there. "
-            "When the answer needs more and they did not ask for a thread, ask once to open one. "
-            "When they asked for a thread, or agreed to one you offered, call the thread tool. "
-            "Talking about a thread does not open it. "
-            "A fact, score, news, date, or definition is a duckduckgo call, not a guess. "
-            "Call the tool by itself. Do not also write the answer."
-        )
-    elif job == "plain":
-        lines.append(
-            "The reply is two or three sentences, one paragraph. Stop there."
-        )
-    elif job == "thread":
-        lines.append(
-            "Write this part in complete sentences. "
-            "The thread is already open. The message is the assignment. Write that. "
-            "Do not announce a thread. "
-            "Do not name anyone who is not in the message. "
-            "You can call duckduckgo more than once when a fact is needed. "
-            "A last line that is only DONE ends the tool and is not posted."
-        )
-    elif job == "lookup":
-        lines.append(
-            "The lookup for this turn is already in the message under Lookup notes. "
-            "Answer the most recent message from those notes, in two or three sentences. "
-            "Follow the instruction under the notes. "
-            "Do not call a tool. Do not ask for a thread."
-        )
-    elif job == "plan":
-        lines.append(
-            "Name the thread and write the plan. "
-            "Use Title:, Searches:, and Plan:. Searches may come after Plan. "
-            "The message is the assignment. "
-            "Do not post. Do not call tools. Do not search."
-        )
-    elif job == "search":
-        lines.append(
-            "This round is one duckduckgo call for the query in the message. "
-            "Do not post. Do not write DONE. Do not answer the question yourself."
-        )
-    elif job == "execute":
-        lines.append(
-            "The message is the plan. Follow it. Do not add a topic that is not in it. "
-            "If a planned point is not in Already posted, write that post and nothing else. "
-            "Do not put DONE in that post. "
-            "If every planned point is already posted, reply with only DONE. "
-            "Do not call a tool. Do not search."
-        )
+    """One system message. The user turn is the work, so memory is not repeated here."""
+    del memory_block, tool_note
     spoken = get_personality_prompt() if voice is None else voice
-    spoken = (spoken or "").strip()
-    if spoken:
-        lines.extend(["", "Voice:", spoken])
-    note = (tool_note or "").strip()
-    if note:
-        lines.extend(["", note])
-    admin = (extra or "").strip()
-    if admin:
-        lines.extend(["", admin])
-    memory = (memory_block or "").strip()
-    if memory:
-        lines.extend(["", memory])
-    return "\n".join(lines).strip()
+    return system_text(
+        job=(job or "channel").strip() or "channel",
+        tools=tools,
+        voice=spoken or "",
+        admin=extra or "",
+        room=REPLY_MAX_CHARS,
+    )
 
 
 def chat_messages(
@@ -1510,11 +1417,10 @@ def chat_messages(
 ) -> list:
     """System message first, then the user turn. Pictures stay on the user turn."""
     chosen = _job_name(job, concise)
-    note = tool_use_note(tools) if tools and include_tool_note else ""
     system_prompt = _format_system_prompt(
         memory_block,
         job=chosen,
-        tool_note=note,
+        tools=tools if tools and include_tool_note else None,
         extra=extra_system or "",
         voice=voice,
     )
@@ -1699,25 +1605,10 @@ async def call_groq_turn(
         max_completion_tokens = clamp_completion_tokens(
             max_completion_tokens, CHAT_COMPLETION_TOKENS
         )
-    memory_block = ""
-    if user_id is not None:
-        try:
-            summary = load_memory_summary(user_id)
-            if summary:
-                # Truncate to avoid "prompt too long" on Groq (keep recent/relevant)
-                if len(summary) > 1200:
-                    summary = summary[-1200:]
-                memory_block = (
-                    "Past context about this person. Do not answer it on its own.\n"
-                    f"{summary}"
-                )
-        except Exception:
-            pass
-
-    # One system message: job, voice, tools, then the user turn.
+    # user_id stays so callers do not change. The pins are already on the user turn.
     messages = chat_messages(
         prompt,
-        memory_block=memory_block,
+        memory_block="",
         tools=tools,
         extra_system=extra_system,
         include_tool_note=include_tool_note,

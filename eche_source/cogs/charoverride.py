@@ -5,6 +5,13 @@ import discord
 from discord.ext import commands
 
 
+def override_turn(name: str, text: str) -> str:
+    """The channel job answers the block under MOST RECENT MESSAGE."""
+    speaker = " ".join((name or "").split()) or "user"
+    words = (text or "").strip() or "(no text)"
+    return f"=== MOST RECENT MESSAGE ===\n{speaker}:\n{words}"
+
+
 class CharOverride(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -38,9 +45,11 @@ class CharOverride(commands.Cog):
         user_text = message.content
         from core.client import call_groq_turn, discord_chunks, settle_cut_reply, thread_completion_tokens
 
+        speaker = getattr(message.author, "name", "") or ""
+        prompt = override_turn(speaker, user_text)
         budget = thread_completion_tokens()
         turn = await call_groq_turn(
-            user_text,
+            prompt,
             user_id=message.author.id,
             max_completion_tokens=budget,
             tools=None,
@@ -48,7 +57,7 @@ class CharOverride(commands.Cog):
         if turn.cut:
             turn = await settle_cut_reply(
                 turn,
-                user_text,
+                prompt,
                 message.author.id,
                 max_completion_tokens=budget,
             )
