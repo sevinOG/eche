@@ -19,7 +19,7 @@ class Asset(commands.Cog):
 
     @commands.command(name="asset")
     async def asset(self, ctx, *, prompt: str = ""):
-        """Make a picture or a video. Reply to a file, or `?asset` uses the last image in the channel."""
+        """Make a picture or a video. Reply to a file to change that file."""
         is_owner = False
         try:
             from core.admin_tools import author_is_owner
@@ -30,7 +30,7 @@ class Asset(commands.Cog):
             await ctx.reply(refusal(is_owner), mention_author=False)
             return
         try:
-            source = await source_from_message(ctx.message, recent_image=True)
+            source = await source_from_message(ctx.message)
             plan = plan_asset(prompt, source=source)
         except ImagineError as exc:
             await ctx.reply(exc.text, mention_author=False)

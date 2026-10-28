@@ -1,6 +1,6 @@
 # core/asset_message.py
 # The picture, gif, or video on this message, or on the message it replies to.
-# A bare ?asset can also use the newest image already in the channel.
+# No reply and no file means a new asset. Channel history is not a source.
 # The model does not get to supply a URL. Embed bytes are read only from Discord's CDN.
 
 from __future__ import annotations
@@ -11,9 +11,6 @@ import urllib.parse
 import urllib.request
 
 from core.imagine import MAX_BYTES, ImagineError, SourceMedia, mime_for
-
-# How far ?asset looks when the command does not reply to a file.
-_HISTORY_LIMIT = 50
 
 _DISCORD_HOSTS = {"cdn.discordapp.com", "media.discordapp.net"}
 _IMAGES_EXT = re.compile(r"^images-ext-\d+\.discordapp\.net$")
@@ -145,8 +142,7 @@ async def _usable(attachments, *, images_only: bool = False) -> tuple[SourceMedi
     """The first picture, gif, or video, and whether any file was attached.
 
     A text file or a pdf is skipped. A picture or video that is too big
-    still raises from _read. History search passes images_only so a video
-    is left for a later picture on that same message.
+    still raises from _read.
     """
     saw = False
     for attachment in attachments or []:
@@ -212,35 +208,12 @@ async def _resolve_reply(message, ref):
     return replied
 
 
-async def _recent_image(message) -> SourceMedia | None:
-    """Newest picture or gif in this channel, before the command."""
-    channel = getattr(message, "channel", None)
-    history = getattr(channel, "history", None)
-    if history is None:
-        return None
-    try:
-        older = history(limit=_HISTORY_LIMIT, before=message)
-    except Exception:
-        return None
-    try:
-        async for item in older:
-            try:
-                found, _saw = await _from_message(item, images_only=True)
-            except ImagineError:
-                continue
-            if found is not None:
-                return found
-    except Exception:
-        return None
-    return None
-
-
-async def source_from_message(message, *, recent_image: bool = False) -> SourceMedia | None:
+async def source_from_message(message) -> SourceMedia | None:
     """Picture, gif, or video for Imagine.
 
     The command's own file wins, then the message it replies to. A file
-    Discord hosted on an embed counts, including a gif. recent_image is
-    ?asset only: with no reply, use the newest image already in the channel.
+    Discord hosted on an embed counts, including a gif. No reply and no
+    file means generate a new asset.
     """
     own, own_files = await _from_message(message)
     if own is not None:
@@ -257,6 +230,4 @@ async def source_from_message(message, *, recent_image: bool = False) -> SourceM
         return None
     if own_files:
         raise ImagineError("Attach a picture or a video, or describe what to make.")
-    if recent_image:
-        return await _recent_image(message)
     return None
