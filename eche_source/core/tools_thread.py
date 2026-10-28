@@ -42,7 +42,8 @@ _ARCHIVE_MINUTES = (10080, 4320, 1440, 60)
 # Used only to skip a thread request when a vague title is filled from
 # recent chat. It does not open a thread. The model has to call the tool.
 _THREAD_ASK = re.compile(
-    r"\b(?:make|open|start|create|need|want)\b(?:\s+\w+){0,6}\s+thread\b",
+    r"\b(?:make|open|start|create|need|want|generate|draw|animate|film|render)\b"
+    r"(?:\s+\w+){0,6}\s+thread\b",
     re.IGNORECASE,
 )
 _THREAD_REFUSAL = re.compile(
@@ -133,7 +134,7 @@ def title_is_unusable(title: str) -> bool:
 
 _THREAD_LEAD = re.compile(
     r"^(?:(?:yeah|yes|yep|yah|ok|okay|sure|please|alright|and)\b[\s,]*)?"
-    r"(?:make|open|start|create|need|want)\b"
+    r"(?:make|open|start|create|need|want|generate|draw|animate|film|render)\b"
     r"(?:\s+\w+){0,6}\s+thread\b"
     r"(?:\s+(?:about|on|for|and)\b)?",
     re.IGNORECASE,
@@ -930,6 +931,96 @@ async def _execute(
     return "\n\n".join(posted)
 
 
+async def _send_asset(channel, result, caption: str) -> None:
+    """One file in the thread. The channel message is not the target."""
+    import io
+
+    from core.tools_asset import asset_text
+
+    if isinstance(result, str):
+        await channel.send(
+            asset_text(
+                f"{caption}\nThe file is too big to attach. It is here for a short time:\n{result}"
+            )
+        )
+        return
+    file = discord.File(io.BytesIO(result.data), filename=result.filename)
+    await channel.send(content=asset_text(caption), file=file)
+
+
+async def _render_assets(ctx: ToolContext, thread, plan: str, source: str, kind: str) -> str:
+    """Post one generated file per shot. No written story, and no channel reply."""
+    from core.asset_message import source_from_message
+    from core.imagine import ImagineError, api_key, asset_shot_lines, plan_asset, run_asset
+    from core.tools_asset import _allowed, asset_text
+
+    ok, why = await _allowed(ctx)
+    if not ok:
+        try:
+            await thread.send(why)
+        except Exception as exc:
+            dprint(f"[tools] thread asset refusal failed: {type(exc).__name__}")
+        return why
+    if not api_key():
+        note = "Add a Grok API key in Media settings."
+        try:
+            await thread.send(note)
+        except Exception as exc:
+            dprint(f"[tools] thread asset key note failed: {type(exc).__name__}")
+        return note
+    shots = asset_shot_lines(plan, source, THREAD_STEPS)
+    if not shots:
+        note = "Say what to make."
+        try:
+            await thread.send(note)
+        except Exception as exc:
+            dprint(f"[tools] thread asset prompt note failed: {type(exc).__name__}")
+        return note
+    attached = None
+    if len(shots) == 1:
+        try:
+            attached = await source_from_message(ctx.message)
+        except ImagineError as exc:
+            try:
+                await thread.send(asset_text(exc.text))
+            except Exception as send_exc:
+                dprint(f"[tools] thread asset source failed: {type(send_exc).__name__}")
+            return exc.text
+    posted: list[str] = []
+    for shot in shots:
+        try:
+            made = plan_asset(shot, kind=kind, source=attached)
+            result = await run_asset(made, api_key())
+        except ImagineError as exc:
+            try:
+                await thread.send(asset_text(exc.text))
+            except Exception as send_exc:
+                dprint(f"[tools] thread asset error failed: {type(send_exc).__name__}")
+            posted.append(exc.text)
+            break
+        except Exception as exc:
+            dprint(f"[tools] thread asset failed: {type(exc).__name__}")
+            note = "I couldn't make that."
+            try:
+                await thread.send(asset_text(note))
+            except Exception as send_exc:
+                dprint(f"[tools] thread asset error failed: {type(send_exc).__name__}")
+            posted.append(note)
+            break
+        caption = made.prompt
+        if len(caption) > 120:
+            caption = caption[:119].rstrip() + "…"
+        try:
+            await _send_asset(thread, result, caption)
+        except Exception as exc:
+            dprint(f"[tools] thread asset send failed: {type(exc).__name__}")
+            posted.append("I made it, but Discord would not take the file.")
+            break
+        posted.append(caption)
+        del result
+    return "\n".join(posted)
+
+
 async def open_thread(ctx: ToolContext, arguments: dict) -> ToolResult:
     message = ctx.message
     channel = getattr(message, "channel", None)
@@ -944,11 +1035,20 @@ async def open_thread(ctx: ToolContext, arguments: dict) -> ToolResult:
         source = named
     else:
         source = await previous_topic(message) or asking
+    from core.imagine import asset_thread_kind, asset_thread_request
+
+    rendering = asset_thread_request(asking) or asset_thread_request(source)
+    kind = asset_thread_kind(asking) or asset_thread_kind(source)
     brief = (
         f"Today: {today_stamp()}\n"
         "Assignment to name and plan. Use only this.\n"
         f"{source}"
     )
+    if rendering:
+        brief += (
+            "\nEach Plan line is the prompt for one picture or video, in order. "
+            "Not a paragraph."
+        )
     title, plan, searches = await _name_and_plan(brief, source)
     arguments["title"] = title
 
@@ -973,7 +1073,10 @@ async def open_thread(ctx: ToolContext, arguments: dict) -> ToolResult:
             fence=False,
         )
 
-    body = await _execute(ctx, thread, plan, searches, source)
+    if rendering:
+        body = await _render_assets(ctx, thread, plan, source, kind)
+    else:
+        body = await _execute(ctx, thread, plan, searches, source)
     detail = thread_log_detail(title, plan, body)
     if not body:
         note = "I opened the thread, but I had nothing more to add." if opened else "I had nothing more to add."
@@ -991,7 +1094,8 @@ def register_thread_tool() -> None:
             name="thread",
             description=(
                 "Open a thread when they ask for one, or agree to one you offered. "
-                "The tool names the thread from the assignment and writes it."
+                "The tool names the thread from the assignment and writes it. "
+                "When they ask for pictures or videos there, it posts those files."
             ),
             handler=open_thread,
             parameters={

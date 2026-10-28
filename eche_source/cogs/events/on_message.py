@@ -151,11 +151,31 @@ class OnMessage(commands.Cog):
         said: list[str] = []
         seen: set[str] = set()
         lookup_quota = False
+        # A thread of pictures or videos posts the files there. The same
+        # turn's asset call would also reply on the channel message.
+        render_in_thread = False
+        try:
+            from core.imagine import asset_thread_request
+
+            asked = {
+                str(call.get("name") or "").casefold()
+                for call in calls[:3]
+                if isinstance(call, dict)
+            }
+            render_in_thread = (
+                "thread" in asked
+                and "asset" in asked
+                and asset_thread_request(getattr(message, "content", "") or "")
+            )
+        except Exception as exc:
+            dprint(f"[on_message] asset thread check failed: {type(exc).__name__}")
         for call in calls[:3]:
             if not isinstance(call, dict):
                 continue
             name = str(call.get("name") or "")
             if not name or name.casefold() in seen:
+                continue
+            if render_in_thread and name.casefold() == "asset":
                 continue
             seen.add(name.casefold())
             result = await execute(name, (call or {}).get("arguments") or {}, ctx)

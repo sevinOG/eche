@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import io
+import re
 
 import discord
 
@@ -25,7 +26,8 @@ from core.tools import ACCESS_ANYONE, Tool, ToolResult, announcement, register
 _DESCRIPTION = (
     "Make a picture or a video with Grok Imagine when they ask for one. "
     "prompt is what to make or how to change an attached picture or video. "
-    "kind is image or video when they named one. Leave kind empty to decide from the prompt."
+    "kind is image or video when they named one. Leave kind empty to decide from the prompt. "
+    "A thread of those files is the thread tool."
 )
 
 
@@ -40,6 +42,16 @@ async def _allowed(ctx) -> tuple[bool, str]:
     if speaker_allowed(is_owner):
         return True, ""
     return False, refusal(is_owner)
+
+
+def asset_prompt(arguments: dict | None, message_text: str) -> str:
+    """What to make or change. The user's words fill in when the call left them out."""
+    args = arguments if isinstance(arguments, dict) else {}
+    prompt = " ".join(str(args.get("prompt") or "").split())
+    if prompt:
+        return prompt
+    text = re.sub(r"<@!?\d+>", " ", message_text or "")
+    return " ".join(text.split())
 
 
 def asset_text(message: str) -> str:
@@ -68,7 +80,8 @@ async def make_asset(ctx, arguments: dict) -> ToolResult:
     ok, why = await _allowed(ctx)
     if not ok:
         return ToolResult(text=why, fence=False)
-    prompt = " ".join(str((arguments or {}).get("prompt") or "").split())
+    message = getattr(ctx, "message", None)
+    prompt = asset_prompt(arguments, getattr(message, "content", "") or "")
     kind = str((arguments or {}).get("kind") or "").strip().lower()
     if kind not in ("image", "video"):
         kind = ""

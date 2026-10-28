@@ -225,6 +225,113 @@ def _seconds(text: str) -> int:
     return value
 
 
+_ASSET_MAKE = re.compile(
+    r"\b(?:make|generate|create|draw|animate|film|render)\b"
+    r"(?:\s+(?!threads?\b)\w+){0,10}\s+"
+    r"(?:\d+\s*-?\s*)?(?:part\s+)?"
+    r"(?:videos?|animations?|gifs?|images?|pictures?|photos?|drawings?)\b",
+    re.IGNORECASE,
+)
+_ASSET_NEAR_THREAD = re.compile(
+    r"\b(?:videos?|animations?|gifs?|images?|pictures?|photos?|drawings?)\b"
+    r"(?:\s+\w+){0,6}\s+(?:in\s+(?:a\s+)?)?threads?\b"
+    r"|"
+    r"\bthreads?\b\s+(?:of|for|with)\s+"
+    r"(?:\d+\s*-?\s*)?(?:part\s+)?"
+    r"(?:videos?|animations?|gifs?|images?|pictures?|photos?|drawings?)\b",
+    re.IGNORECASE,
+)
+_ASSET_PARTS = re.compile(
+    r"\b(?:multi-?part|\d+\s*-?\s*parts?)\b(?:\s+\w+){0,6}\s+"
+    r"(?:videos?|animations?|gifs?|images?|pictures?|photos?|drawings?)\b"
+    r"|"
+    r"\b(?:videos?|animations?|gifs?|images?|pictures?|photos?|drawings?)\b"
+    r"(?:\s+\w+){0,4}\s+(?:multi-?part|\d+\s*-?\s*parts?)\b",
+    re.IGNORECASE,
+)
+_MEDIA_VIDEO = ("video", "videos", "animation", "animations", "animate", "gif", "gifs")
+_MEDIA_IMAGE = (
+    "image", "images", "picture", "pictures", "photo", "photos", "drawing", "drawings",
+)
+_PART_MARK = re.compile(r"(?i)\bpart\s+\d+\b\s*[:.)-]?\s*")
+_PLAN_NOISE = re.compile(
+    r"(?i)^(?:explain this in depth|stay on that explanation|do not add a different topic)\b"
+)
+_SHOT_BULLET = re.compile(r"^(?:[-*•]\s+|\d+[.)]\s+)")
+
+
+def asset_thread_request(text: str) -> bool:
+    """True when a thread should post generated pictures or videos."""
+    raw = " ".join((text or "").split())
+    if not raw:
+        return False
+    return bool(
+        _ASSET_MAKE.search(raw)
+        or _ASSET_NEAR_THREAD.search(raw)
+        or _ASSET_PARTS.search(raw)
+    )
+
+
+def asset_thread_kind(text: str) -> str:
+    """video or image for that thread. Empty when it is not an asset thread."""
+    if not asset_thread_request(text):
+        return ""
+    folded = f" {(text or '').casefold()} "
+    if any(f" {word} " in folded for word in _MEDIA_VIDEO):
+        return "video"
+    if any(f" {word} " in folded for word in _MEDIA_IMAGE):
+        return "image"
+    return ""
+
+
+def _shot_line(line: str) -> str:
+    bare = _SHOT_BULLET.sub("", " ".join((line or "").split())).strip(" .,;:-")
+    if not bare or _PLAN_NOISE.match(bare) or len(bare) < 8:
+        return ""
+    return bare
+
+
+def _part_shots(text: str) -> list[str]:
+    raw = text or ""
+    if not _PART_MARK.search(raw):
+        return []
+    shots = [shot for shot in (_shot_line(bit) for bit in _PART_MARK.split(raw)) if shot]
+    if len(shots) >= 2 and asset_thread_request(shots[0]):
+        rest = _ASSET_MAKE.sub(" ", shots[0])
+        rest = re.sub(r"(?i)\b(?:in\s+(?:a\s+)?)?threads?\b", " ", rest)
+        rest = re.sub(
+            r"(?i)\b(?:multi-?part|\d+\s*-?\s*parts?|videos?|pictures?|images?|of|a|the|in)\b",
+            " ",
+            rest,
+        )
+        if len([word for word in rest.split() if len(word) > 2]) < 3:
+            shots = shots[1:]
+    return shots
+
+
+def asset_shot_lines(plan: str, source: str, limit: int = 8) -> list[str]:
+    """One prompt per file. A story plan is not a prompt."""
+    cap = max(1, int(limit))
+    parts = _part_shots(source) or _part_shots(plan)
+    if len(parts) >= 2:
+        return parts[:cap]
+    lines: list[str] = []
+    seen: set[str] = set()
+    for line in (plan or "").splitlines():
+        shot = _shot_line(line)
+        if not shot:
+            continue
+        key = shot.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        lines.append(shot)
+    if len(lines) >= 2:
+        return lines[:cap]
+    one = _shot_line(source) or (lines[0] if lines else "")
+    return [one] if one else []
+
+
 def plan_asset(text: str, *, kind: str = "", source: SourceMedia | None = None) -> AssetPlan:
     """Decide image, video, edit, or image-to-video. Raises ImagineError when the ask is not one of those."""
     raw = _words(text)

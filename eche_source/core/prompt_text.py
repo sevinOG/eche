@@ -15,12 +15,14 @@ TOOL_LINES = {
     ),
     "thread": (
         "thread: they asked for a thread, or agreed to one you offered. The tool names the thread. "
+        "Pictures or videos they asked to put in that thread are posted there. "
         "Trying a search again is not a thread."
     ),
     "context_raw": "context_raw: only when they ask to see their own context.",
     "asset": (
         "asset: they asked for a picture, a video, or a change to one they attached. "
-        "prompt is what to make. kind is image or video when they named one."
+        "prompt is what to make. kind is image or video when they named one. "
+        "A thread of those files is the thread tool."
     ),
     "kick": "kick: only when an owner explicitly asks to kick one member.",
     "ban": "ban: only when an owner explicitly asks to ban one member.",
