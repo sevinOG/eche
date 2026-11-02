@@ -951,6 +951,16 @@ def _ollama_think_value(url: str, payload: dict):
     return ollama_thinking.think_field(_reasoning_for(payload), caps)
 
 
+def _thinking_sampling(payload: dict) -> dict:
+    """Sampling for a thinking turn. Qwen-family defaults, then saved overrides."""
+    temperature = payload.get("temperature", 0.7)
+    try:
+        from core.ollama_thinking import thinking_sampling
+        return thinking_sampling(str(payload.get("model") or ""), temperature)
+    except Exception:
+        return {"temperature": temperature}
+
+
 def _ollama_native_gone(status: int, body: str) -> bool:
     """True when /api/chat itself is missing (a proxy), not the model."""
     if status not in (404, 405):
@@ -1002,6 +1012,10 @@ def _ollama_request(url: str, payload: dict) -> tuple[str, dict]:
             body["reasoning_effort"] = "none"
         else:
             body.pop("reasoning_effort", None)
+            opts = _thinking_sampling(payload)
+            body["temperature"] = opts.get("temperature", body.get("temperature"))
+            if "top_p" in opts:
+                body["top_p"] = opts["top_p"]
         return _ollama_v1_url(url), body
     body: dict = {
         "model": payload.get("model") or "",
@@ -1027,6 +1041,7 @@ def _ollama_request(url: str, payload: dict) -> tuple[str, dict]:
         body["think"] = think
         if think is not False:
             body["options"]["num_predict"] += _think_room()
+            body["options"].update(_thinking_sampling(payload))
     return native_url, body
 
 

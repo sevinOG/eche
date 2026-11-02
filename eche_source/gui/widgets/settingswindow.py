@@ -398,6 +398,21 @@ class SettingsWindow(QWidget):
         )
         self.reasoning_box.toggled.connect(self._on_reasoning_toggled)
         body.addWidget(self.reasoning_box)
+        samp_row = QHBoxLayout()
+        samp_row.setSpacing(8)
+        for label, key, hint in (
+            ("Temperature", "reasoning_temperature", "Blank: 0.6 for Qwen"),
+            ("Top P", "reasoning_top_p", "Blank: 0.95 for Qwen"),
+            ("Top K", "reasoning_top_k", "Blank: 20 for Qwen"),
+        ):
+            samp_row.addLayout(self._field_block(
+                f"Thinking {label}", hint, secret=False, key=key,
+                help_key="reasoning_sampling",
+            ))
+        samp_wrap = QWidget()
+        samp_wrap.setLayout(samp_row)
+        self._ollama_only.append(samp_wrap)
+        body.addWidget(samp_wrap)
         reason_row = QHBoxLayout()
         reason_row.setSpacing(6)
         self.reasoning_btn = QPushButton("Reasoning output")

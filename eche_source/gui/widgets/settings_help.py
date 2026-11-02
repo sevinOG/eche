@@ -237,6 +237,18 @@ FIELD_HELP: dict[str, tuple[str, str]] = {
         "once more with thinking off, which is slower. Raise the budget if that "
         "happens often. 0 adds nothing.",
     ),
+    "reasoning_sampling": (
+        "Thinking sampling (Ollama)",
+        "### What is this?\n"
+        "Sampling used only when a local model is thinking. Qwen-family models "
+        "(Qwen, QwQ, and abliterated builds) default to temperature 0.6, top P "
+        "0.95, top K 20, which is what Qwen recommends for thinking mode. Other "
+        "models keep Eche's usual temperature.\n\n"
+        "### Overrides\n"
+        "A value here replaces that default for every thinking model. Leave a "
+        "field blank to keep the default. Background calls (summaries, heckles) "
+        "never think and are not affected.",
+    ),
     "ollama_num_ctx": (
         "Context window (Ollama)",
         "### What is this?\n"

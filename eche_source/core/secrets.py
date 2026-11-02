@@ -53,6 +53,9 @@ PUBLIC_KEYS = (
     "reasoning_ollama",           # "1" lets Ollama think. Blank stays off.
     "reasoning_budget",           # extra output tokens for a thinking trace; blank uses 1024
     "ollama_num_ctx",             # Ollama context window; blank uses 8192
+    "reasoning_temperature",      # thinking turns; blank uses 0.6 for Qwen, else the caller's
+    "reasoning_top_p",            # thinking turns; blank uses 0.95 for Qwen
+    "reasoning_top_k",            # thinking turns; blank uses 20 for Qwen
 )
 
 # Map settings key -> environment variable used by the bot

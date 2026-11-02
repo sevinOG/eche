@@ -166,3 +166,52 @@ def think_budget() -> int:
         _saved("reasoning_budget", "ECHE_REASONING_BUDGET"),
         DEFAULT_THINK_BUDGET, THINK_BUDGET_MIN, THINK_BUDGET_MAX,
     )
+
+
+# ---------------------------------------------------------------------------
+# Sampling for thinking turns
+# ---------------------------------------------------------------------------
+# Qwen's published settings for thinking mode. Greedy or hot sampling makes
+# Qwen3-family models loop inside the trace.
+QWEN_THINKING_SAMPLING = {"temperature": 0.6, "top_p": 0.95, "top_k": 20}
+_QWEN_MARKERS = ("qwen", "qwq")
+_SAMPLING_KEYS = (
+    # settings key, env, option name, parse, low, high
+    ("reasoning_temperature", "ECHE_REASONING_TEMPERATURE", "temperature", float, 0.0, 2.0),
+    ("reasoning_top_p", "ECHE_REASONING_TOP_P", "top_p", float, 0.0, 1.0),
+    ("reasoning_top_k", "ECHE_REASONING_TOP_K", "top_k", int, 0, 1000),
+)
+
+
+def is_qwen_family(model: str) -> bool:
+    """Qwen, QwQ, and their fine-tunes (abliterated builds keep the name)."""
+    low = (model or "").strip().lower()
+    return any(marker in low for marker in _QWEN_MARKERS)
+
+
+def sampling_overrides() -> dict:
+    """Saved thinking-sampling values. A blank or junk field is not an override."""
+    out: dict = {}
+    for key, env_name, option, parse, low, high in _SAMPLING_KEYS:
+        raw = _saved(key, env_name)
+        if not raw:
+            continue
+        try:
+            value = parse(float(raw)) if parse is int else parse(raw)
+        except (TypeError, ValueError):
+            continue
+        out[option] = max(low, min(high, value))
+    return out
+
+
+def thinking_sampling(model: str, temperature) -> dict:
+    """Sampling options for a request that has thinking on.
+
+    Qwen-family models get 0.6 / 0.95 / 20. Other models keep the caller's
+    temperature. Saved overrides win over both.
+    """
+    opts: dict = {"temperature": temperature}
+    if is_qwen_family(model):
+        opts.update(QWEN_THINKING_SAMPLING)
+    opts.update(sampling_overrides())
+    return opts
