@@ -839,6 +839,11 @@ def _after_http_error(payload: dict, visible: int, stage: int, error: str) -> in
         and _ollama_think_rejected(error)
     ):
         payload["_ollama_think"] = "omit"
+        try:
+            from core import ollama_thinking
+            ollama_thinking.forget_thinking(_api_url(), str(payload.get("model") or ""))
+        except Exception:
+            pass
         return 1
     if payload.get("_reasoning") == "off" or not reasoning_enabled():
         if stage > 0:
@@ -867,15 +872,19 @@ def _after_http_ok(payload: dict, visible: int, stage: int, data: dict) -> int |
     """Retry once when the visible reply was lost to a thinking trace."""
     if stage != 0 or not _swallowed_answer(data):
         return None
+    if _provider_backend() == "ollama":
+        # Only a request that sent think can be asked again with it off.
+        # A model that thinks inline without the field cannot be turned off.
+        if not payload.get("_ollama_sent_think"):
+            return None
+        # The trace is already in the window. One more call writes the reply.
+        # Think stays off so this pass cannot spend the cap on another trace.
+        payload["_reasoning"] = "off"
+        return 1
     if payload.get("_reasoning") == "off" or not reasoning_enabled():
         if _provider_backend() != "openrouter":
             return None
         _quiet_reasoning(payload)
-        return 1
-    if _provider_backend() == "ollama":
-        # The trace is already in the window. One more call writes the reply.
-        # Think stays off so this pass cannot spend the cap on another trace.
-        payload["_reasoning"] = "off"
         return 1
     if _provider_backend() == "openrouter":
         _relax_reasoning(payload, visible)
@@ -887,12 +896,49 @@ def _request_body(payload: dict) -> dict:
     return {key: value for key, value in payload.items() if not str(key).startswith("_")}
 
 
-def _ollama_native_url(url: str) -> str:
-    text = (url or "").rstrip("/")
+def _ollama_native_url(url: str) -> str | None:
+    """Native /api/chat for an Ollama URL. None when the URL is some other
+    OpenAI-style endpoint (a proxy), which keeps the /v1 request shape."""
+    text = (url or "").strip().rstrip("/")
     suffix = "/v1/chat/completions"
     if text.endswith(suffix):
         return text[: -len(suffix)] + "/api/chat"
+    if text.endswith("/api/chat"):
+        return text
+    return None
+
+
+def _ollama_v1_url(url: str) -> str:
+    text = (url or "").strip().rstrip("/")
+    if text.endswith("/api/chat"):
+        return text[: -len("/api/chat")] + "/v1/chat/completions"
     return url
+
+
+def _ollama_capabilities(url: str, model: str):
+    """Cached /api/show capabilities. None when unknown."""
+    try:
+        from core import ollama_thinking
+        return ollama_thinking.capabilities(url, model)
+    except Exception:
+        return None
+
+
+def _ollama_think_value(url: str, payload: dict):
+    """think for this request: True, False, or None to leave it out."""
+    if payload.get("_ollama_think") == "omit":
+        return None
+    from core import ollama_thinking
+    caps = _ollama_capabilities(url, str(payload.get("model") or ""))
+    return ollama_thinking.think_field(_reasoning_for(payload), caps)
+
+
+def _ollama_native_gone(status: int, body: str) -> bool:
+    """True when /api/chat itself is missing (a proxy), not the model."""
+    if status not in (404, 405):
+        return False
+    low = (body or "").lower()
+    return "model" not in low
 
 
 def _native_message(msg: dict) -> dict:
@@ -925,6 +971,20 @@ def _ollama_request(url: str, payload: dict) -> tuple[str, dict]:
     """Request body for this provider. Ollama gets a small context window."""
     if _provider_backend() != "ollama":
         return url, _request_body(payload)
+    think = _ollama_think_value(url, payload)
+    payload["_ollama_sent_think"] = think
+    native_url = None if payload.get("_ollama_api") == "v1" else _ollama_native_url(url)
+    if native_url is None:
+        # OpenAI-style fallback. No num_ctx here; think is reasoning_effort.
+        body = _request_body(payload)
+        body.pop("reasoning", None)
+        if think is None:
+            body.pop("reasoning_effort", None)
+        elif think is False:
+            body["reasoning_effort"] = "none"
+        else:
+            body.pop("reasoning_effort", None)
+        return _ollama_v1_url(url), body
     body: dict = {
         "model": payload.get("model") or "",
         "messages": [
@@ -943,15 +1003,13 @@ def _ollama_request(url: str, payload: dict) -> tuple[str, dict]:
         body["tools"] = payload["tools"]
     # Off asks for the reply in content. On separates the trace. Thinking and
     # the reply share num_predict, so a trace that uses the whole cap is
-    # followed by one reply-only call.
-    if payload.get("_ollama_think") == "omit":
-        pass
-    elif _reasoning_for(payload):
-        body["think"] = True
-        body["options"]["num_predict"] += _THINK_ROOM
-    else:
-        body["think"] = False
-    return _ollama_native_url(url), body
+    # followed by one reply-only call. A model whose /api/show does not list
+    # thinking never gets the field.
+    if think is not None:
+        body["think"] = think
+        if think is not False:
+            body["options"]["num_predict"] += _THINK_ROOM
+    return native_url, body
 
 
 def _openai_from_native(data: dict) -> dict:
@@ -1007,6 +1065,14 @@ def _sync_post(url: str, payload: dict, headers: dict, timeout: int = 45) -> dic
             return {"error": _format_transport_error(e, send_url)}
 
         if response.status_code != 200:
+            if (
+                _provider_backend() == "ollama"
+                and payload.get("_ollama_api") != "v1"
+                and _ollama_native_url(url) is not None
+                and _ollama_native_gone(response.status_code, response.text)
+            ):
+                payload["_ollama_api"] = "v1"
+                continue
             err = _format_http_error(
                 response.status_code,
                 response.text,
@@ -1042,6 +1108,13 @@ def _sync_post(url: str, payload: dict, headers: dict, timeout: int = 45) -> dic
 async def _async_post(url: str, payload: dict, headers: dict, timeout: int = 45) -> dict:
     visible = int(payload.get("max_tokens") or 256)
     stage = 0
+    if _provider_backend() == "ollama":
+        # /api/show is a blocking lookup. Run it off the event loop once;
+        # the request below reads the cached answer.
+        model = str(payload.get("model") or "")
+        await asyncio.get_running_loop().run_in_executor(
+            None, _ollama_capabilities, url, model
+        )
     for _ in range(3):
         send_url = url
         try:
@@ -1053,6 +1126,14 @@ async def _async_post(url: str, payload: dict, headers: dict, timeout: int = 45)
                 ) as resp:
                     text = await resp.text()
                     if resp.status != 200:
+                        if (
+                            _provider_backend() == "ollama"
+                            and payload.get("_ollama_api") != "v1"
+                            and _ollama_native_url(url) is not None
+                            and _ollama_native_gone(resp.status, text)
+                        ):
+                            payload["_ollama_api"] = "v1"
+                            continue
                         err = _format_http_error(
                             resp.status,
                             text,
