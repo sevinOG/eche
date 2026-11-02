@@ -211,6 +211,21 @@ FIELD_HELP: dict[str, tuple[str, str]] = {
         "### After Save\n"
         "Stop → Run so the new code loads.",
     ),
+    "reasoning": (
+        "Reasoning",
+        "### What is this?\n"
+        "Some models write a thinking trace before the reply. Off, Eche asks for "
+        "the reply only. On, that provider may think. The trace opens in "
+        "**Reasoning output** and is left out of chat.\n\n"
+        "### Which provider\n"
+        "One switch. The Provider backend dropdown chooses who it applies to. "
+        "Groq, OpenRouter, and Ollama each remember their own value, and "
+        "changing the dropdown shows that value. A blank value stays off. "
+        "Save applies on the next message. No restart is required for the switch itself.\n\n"
+        "### What still reaches chat\n"
+        "A sentence the model writes as the reply is still posted. The window "
+        "shows the trace. It is not a second copy of the chat.",
+    ),
     "unifier": (
         "Unifier (how the prompt is assembled)",
         "### What is this?\n"

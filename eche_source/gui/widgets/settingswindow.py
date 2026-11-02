@@ -48,6 +48,11 @@ OPENROUTER_MODELS_URL = "https://openrouter.ai/models"
 _CLOUD_DEFAULT = "qwen/qwen3.8-27b"
 _OLLAMA_DEFAULT = "llama3"
 _OPENROUTER_DEFAULT = "openrouter/free"
+_REASONING_KEYS = {
+    "cloud": "reasoning_cloud",
+    "openrouter": "reasoning_openrouter",
+    "ollama": "reasoning_ollama",
+}
 _OLLAMA_PLACEHOLDER_PREFIXES = ("Fetching", "Ollama not", "No local")
 
 try:
@@ -128,6 +133,7 @@ class SettingsWindow(QWidget):
         self._openrouter_only: list = []
         self._pending_ollama_model = _OLLAMA_DEFAULT
         self._ollama_process: QProcess | None = None
+        self._reasoning_flags = {name: False for name in _REASONING_KEYS}
 
         self.data = load_settings()
         self._secret_edits: dict[str, QLineEdit] = {}
@@ -378,6 +384,30 @@ class SettingsWindow(QWidget):
         prov_row.addWidget(self.prov_btn, stretch=1)
         prov_row.addWidget(self._info_button("provider"))
         body.addLayout(prov_row)
+
+        reason_hint = QLabel(
+            "Follows the provider selected above. Off asks for the reply only. "
+            "On lets that provider think. The trace stays out of chat."
+        )
+        reason_hint.setObjectName("FieldHint")
+        reason_hint.setWordWrap(True)
+        body.addWidget(reason_hint)
+        self.reasoning_box = QCheckBox("Reasoning")
+        self.reasoning_box.setToolTip(
+            "On, the selected provider may think. The trace opens in Reasoning output."
+        )
+        self.reasoning_box.toggled.connect(self._on_reasoning_toggled)
+        body.addWidget(self.reasoning_box)
+        reason_row = QHBoxLayout()
+        reason_row.setSpacing(6)
+        self.reasoning_btn = QPushButton("Reasoning output")
+        self.reasoning_btn.setObjectName("ghost")
+        self.reasoning_btn.setMinimumHeight(40)
+        self.reasoning_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.reasoning_btn.clicked.connect(self.open_reasoning_window)
+        reason_row.addWidget(self.reasoning_btn, stretch=1)
+        reason_row.addWidget(self._info_button("reasoning"))
+        body.addLayout(reason_row)
 
         layout.addWidget(self._card(
             "Provider & model",
@@ -944,6 +974,26 @@ class SettingsWindow(QWidget):
             w.setVisible(backend == "openrouter")
         if backend == "ollama":
             self._refresh_ollama_models()
+        self._sync_reasoning_box()
+
+    def _selected_backend(self) -> str:
+        backend = "cloud"
+        if hasattr(self, "provider_combo"):
+            backend = self.provider_combo.currentData() or "cloud"
+        if backend not in _REASONING_KEYS:
+            return "cloud"
+        return backend
+
+    def _sync_reasoning_box(self) -> None:
+        """Show the switch for the provider selected in the dropdown."""
+        if not hasattr(self, "reasoning_box"):
+            return
+        self.reasoning_box.blockSignals(True)
+        self.reasoning_box.setChecked(bool(self._reasoning_flags.get(self._selected_backend())))
+        self.reasoning_box.blockSignals(False)
+
+    def _on_reasoning_toggled(self, checked: bool) -> None:
+        self._reasoning_flags[self._selected_backend()] = bool(checked)
 
     def _on_provider_backend_changed(self, _index: int = 0):
         self._apply_provider_ui()
@@ -985,6 +1035,12 @@ class SettingsWindow(QWidget):
             self.provider_combo.setCurrentIndex(idx if idx >= 0 else 0)
             self.provider_combo.blockSignals(False)
 
+        if hasattr(self, "reasoning_box"):
+            from core.admin_tools import flag_on
+            self._reasoning_flags = {
+                name: flag_on(self.data.get(key), "")
+                for name, key in _REASONING_KEYS.items()
+            }
         self._apply_provider_ui()
         if hasattr(self, "security_admin_box"):
             from core.admin_tools import flag_on
@@ -1085,6 +1141,18 @@ class SettingsWindow(QWidget):
         self.provider_window.show()
         self.provider_window.raise_()
         self.provider_window.activateWindow()
+
+    def open_reasoning_window(self):
+        main = self.main_window
+        if main is not None and hasattr(main, "open_reasoning_window"):
+            main.open_reasoning_window()
+            return
+        from gui.widgets.reasoningwindow import ReasoningWindow
+        if not getattr(self, "reasoning_window", None):
+            self.reasoning_window = ReasoningWindow()
+        self.reasoning_window.show()
+        self.reasoning_window.raise_()
+        self.reasoning_window.activateWindow()
 
     def open_summarizer_window(self):
         from gui.widgets.summarizerwindow import SummarizerWindow
@@ -1223,6 +1291,13 @@ class SettingsWindow(QWidget):
                 "tool_asset",
                 "prompt_episodic",
             ):
+                payload[key] = str(self.data.get(key) or "").strip()
+        if hasattr(self, "reasoning_box"):
+            self._reasoning_flags[self._selected_backend()] = self.reasoning_box.isChecked()
+            for name, key in _REASONING_KEYS.items():
+                payload[key] = "1" if self._reasoning_flags.get(name) else "0"
+        else:
+            for key in _REASONING_KEYS.values():
                 payload[key] = str(self.data.get(key) or "").strip()
         # The main-window Default tools switch is not on this form.
         # Keep whatever it last saved so a settings save does not turn it back on.

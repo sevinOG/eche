@@ -48,6 +48,9 @@ PUBLIC_KEYS = (
     "tool_context_raw",           # "0" leaves context out of the prompt. Blank stays on.
     "tool_asset",                 # "0" leaves the asset tool out of the prompt. Blank stays on.
     "prompt_episodic",            # "0" leaves the server episode out of the prompt. Blank stays on.
+    "reasoning_cloud",            # "1" lets Groq think. Blank stays off.
+    "reasoning_openrouter",       # "1" lets OpenRouter think. Blank stays off.
+    "reasoning_ollama",           # "1" lets Ollama think. Blank stays off.
 )
 
 # Map settings key -> environment variable used by the bot
