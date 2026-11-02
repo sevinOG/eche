@@ -51,6 +51,8 @@ PUBLIC_KEYS = (
     "reasoning_cloud",            # "1" lets Groq think. Blank stays off.
     "reasoning_openrouter",       # "1" lets OpenRouter think. Blank stays off.
     "reasoning_ollama",           # "1" lets Ollama think. Blank stays off.
+    "reasoning_budget",           # extra output tokens for a thinking trace; blank uses 1024
+    "ollama_num_ctx",             # Ollama context window; blank uses 8192
 )
 
 # Map settings key -> environment variable used by the bot

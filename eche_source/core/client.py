@@ -32,9 +32,27 @@ DEFAULT_OLLAMA_MODEL = "llama3"
 # Free router. A paid model id from openrouter.ai/models can replace it.
 DEFAULT_OPENROUTER_MODEL = "openrouter/free"
 # A Discord turn fits here. The Modelfile window is much larger and slow to load.
+# Settings → Provider & Model can move it (ollama_num_ctx).
 _OLLAMA_NUM_CTX = 8192
 # Thinking tokens share the reply cap. Leave the answer room beside them.
+# Settings → Provider & Model can move it (reasoning_budget).
 _THINK_ROOM = 1024
+
+
+def _ollama_num_ctx() -> int:
+    try:
+        from core.ollama_thinking import num_ctx
+        return num_ctx()
+    except Exception:
+        return _OLLAMA_NUM_CTX
+
+
+def _think_room() -> int:
+    try:
+        from core.ollama_thinking import think_budget
+        return think_budget()
+    except Exception:
+        return _THINK_ROOM
 
 # Legacy alias
 API_URL = GROQ_API_URL
@@ -994,7 +1012,7 @@ def _ollama_request(url: str, payload: dict) -> tuple[str, dict]:
         ],
         "stream": False,
         "options": {
-            "num_ctx": _OLLAMA_NUM_CTX,
+            "num_ctx": _ollama_num_ctx(),
             "temperature": payload.get("temperature", 0.7),
             "num_predict": int(payload.get("max_tokens") or 64),
         },
@@ -1008,7 +1026,7 @@ def _ollama_request(url: str, payload: dict) -> tuple[str, dict]:
     if think is not None:
         body["think"] = think
         if think is not False:
-            body["options"]["num_predict"] += _THINK_ROOM
+            body["options"]["num_predict"] += _think_room()
     return native_url, body
 
 
@@ -1988,7 +2006,7 @@ async def call_groq_turn(
             # is for that trace, so the short reply can still finish.
             effort = None
             parsed = "parsed"
-            budget = max_completion_tokens + _THINK_ROOM
+            budget = max_completion_tokens + _think_room()
         result = await _groq_sdk_call(
             messages,
             model=model,

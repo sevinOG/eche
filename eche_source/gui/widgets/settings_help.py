@@ -226,6 +226,26 @@ FIELD_HELP: dict[str, tuple[str, str]] = {
         "A sentence the model writes as the reply is still posted. The window "
         "shows the trace. It is not a second copy of the chat.",
     ),
+    "reasoning_budget": (
+        "Thinking budget",
+        "### What is this?\n"
+        "A thinking model writes its trace out of the same output tokens as the "
+        "reply. When thinking is on, Eche adds this many tokens to the reply cap "
+        "so a short channel reply still has room after the trace. Default 1024.\n\n"
+        "### Too small\n"
+        "The trace uses everything and the reply comes back empty. Eche then asks "
+        "once more with thinking off, which is slower. Raise the budget if that "
+        "happens often. 0 adds nothing.",
+    ),
+    "ollama_num_ctx": (
+        "Context window (Ollama)",
+        "### What is this?\n"
+        "How many tokens of prompt plus reply the local model holds at once "
+        "(Ollama `num_ctx`). Default 8192, which fits a Discord turn.\n\n"
+        "### Trade-off\n"
+        "Bigger uses more VRAM and loads slower. Changing it makes Ollama reload "
+        "the model on the next message.",
+    ),
     "unifier": (
         "Unifier (how the prompt is assembled)",
         "### What is this?\n"

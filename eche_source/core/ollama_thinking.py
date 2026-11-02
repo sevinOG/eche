@@ -115,3 +115,54 @@ def think_field(want: bool, caps: frozenset | None):
     if able is None:
         return True if want else None
     return bool(want)
+
+
+# ---------------------------------------------------------------------------
+# Settings: context window and thinking budget
+# ---------------------------------------------------------------------------
+DEFAULT_NUM_CTX = 8192
+NUM_CTX_MIN = 512
+NUM_CTX_MAX = 262144
+# Thinking shares num_predict with the reply. This much is added for the trace.
+DEFAULT_THINK_BUDGET = 1024
+THINK_BUDGET_MIN = 0
+THINK_BUDGET_MAX = 8192
+
+
+def _saved(key: str, env_name: str) -> str:
+    """Settings value, else the env copy. Blank when neither is set."""
+    raw = ""
+    try:
+        from core.secrets import public_value
+        raw = public_value(key)
+    except Exception:
+        raw = ""
+    if not raw:
+        import os
+        raw = (os.environ.get(env_name) or "").strip()
+    return raw
+
+
+def clamp_int(raw, default: int, low: int, high: int) -> int:
+    """A whole number inside low..high. Blank or junk stays at default."""
+    try:
+        value = int(float(str(raw).strip()))
+    except (TypeError, ValueError):
+        return int(default)
+    return max(low, min(high, value))
+
+
+def num_ctx() -> int:
+    """Ollama context window. Settings → Provider & Model, else 8192."""
+    return clamp_int(
+        _saved("ollama_num_ctx", "OLLAMA_NUM_CTX"),
+        DEFAULT_NUM_CTX, NUM_CTX_MIN, NUM_CTX_MAX,
+    )
+
+
+def think_budget() -> int:
+    """Extra output tokens for a thinking trace. Settings, else 1024."""
+    return clamp_int(
+        _saved("reasoning_budget", "ECHE_REASONING_BUDGET"),
+        DEFAULT_THINK_BUDGET, THINK_BUDGET_MIN, THINK_BUDGET_MAX,
+    )

@@ -428,6 +428,22 @@ class SettingsWindow(QWidget):
             "thread_completion_tokens",
             "thread_completion_tokens",
         ))
+        from core.ollama_thinking import (
+            DEFAULT_NUM_CTX, NUM_CTX_MAX, NUM_CTX_MIN,
+            DEFAULT_THINK_BUDGET, THINK_BUDGET_MAX, THINK_BUDGET_MIN,
+        )
+        token_body.addLayout(self._int_setting_block(
+            "Thinking budget",
+            "Extra tokens for a thinking trace when reasoning is on. Default 1024.",
+            "reasoning_budget",
+            THINK_BUDGET_MIN, THINK_BUDGET_MAX, DEFAULT_THINK_BUDGET, 128,
+        ))
+        token_body.addLayout(self._int_setting_block(
+            "Context window (Ollama)",
+            "num_ctx for local models. Default 8192. Bigger uses more VRAM.",
+            "ollama_num_ctx",
+            NUM_CTX_MIN, NUM_CTX_MAX, DEFAULT_NUM_CTX, 1024,
+        ))
         layout.addWidget(self._card(
             "Output tokens",
             "How long a reply can run. Save applies on the next message.",
@@ -955,6 +971,45 @@ class SettingsWindow(QWidget):
         block.addWidget(spin)
         return block
 
+    def _int_setting_block(
+        self, label: str, hint: str, key: str,
+        low: int, high: int, default: int, step: int,
+    ) -> QVBoxLayout:
+        """One whole-number setting. Saved as text; blank reads as default."""
+        block = QVBoxLayout()
+        block.setSpacing(4)
+        top = QHBoxLayout()
+        top.setSpacing(8)
+        lab = QLabel(label)
+        lab.setObjectName("FieldLabel")
+        top.addWidget(lab)
+        top.addStretch()
+        if key in FIELD_HELP:
+            top.addWidget(self._info_button(key), alignment=Qt.AlignmentFlag.AlignTop)
+        block.addLayout(top)
+        hint_label = QLabel(hint)
+        hint_label.setObjectName("FieldHint")
+        hint_label.setWordWrap(True)
+        block.addWidget(hint_label)
+        spin = QSpinBox()
+        spin.setRange(low, high)
+        spin.setSingleStep(step)
+        spin.setMinimumHeight(34)
+        if not hasattr(self, "_int_spins"):
+            self._int_spins = {}
+        self._int_spins[key] = (spin, low, high, default)
+        spin.setValue(self._saved_int(key))
+        block.addWidget(spin)
+        return block
+
+    def _saved_int(self, key: str) -> int:
+        from core.ollama_thinking import clamp_int
+        _spin, low, high, default = self._int_spins[key]
+        raw = (self.data.get(key) or "").strip()
+        if not raw:
+            return default
+        return clamp_int(raw, default, low, high)
+
     def _saved_token(self, key: str, default: int) -> int:
         from core.client import clamp_completion_tokens
         raw = (self.data.get(key) or "").strip()
@@ -1056,6 +1111,8 @@ class SettingsWindow(QWidget):
             self.prompt_episodic_box.setChecked(
                 prompt_choice(self.data.get("prompt_episodic"), default=True)
             )
+        for key, (spin, *_rest) in getattr(self, "_int_spins", {}).items():
+            spin.setValue(self._saved_int(key))
         if hasattr(self, "channel_token_spin"):
             low, high, channel_default, thread_default = self._token_limits()
             del low, high
@@ -1266,6 +1323,12 @@ class SettingsWindow(QWidget):
         if hasattr(self, "channel_token_spin"):
             payload["channel_completion_tokens"] = str(self.channel_token_spin.value())
             payload["thread_completion_tokens"] = str(self.thread_token_spin.value())
+        for key in ("reasoning_budget", "ollama_num_ctx"):
+            spins = getattr(self, "_int_spins", {})
+            if key in spins:
+                payload[key] = str(spins[key][0].value())
+            else:
+                payload[key] = str(self.data.get(key) or "").strip()
         if hasattr(self, "project_path_edit"):
             payload["project_path"] = self.project_path_edit.text().strip()
         if hasattr(self, "security_admin_box"):
