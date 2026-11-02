@@ -20,6 +20,7 @@ from typing import Any, Optional
 _bot = None
 _loop: Optional[asyncio.AbstractEventLoop] = None
 _enabled = False
+_reasoning_handler = None
 
 
 def is_enabled() -> bool:
@@ -33,6 +34,12 @@ def is_enabled() -> bool:
 def enable() -> None:
     global _enabled
     _enabled = True
+
+
+def set_reasoning_handler(handler) -> None:
+    """Desktop chat runs in the GUI process, so a trace cannot ride stdout."""
+    global _reasoning_handler
+    _reasoning_handler = handler
 
 
 def emit(event: str, data: Optional[dict[str, Any]] = None) -> None:
@@ -64,6 +71,21 @@ def tool_log(name: str, user: str, detail: str) -> None:
 
 def chat(text: str) -> None:
     emit("chat", {"text": str(text)})
+
+
+def reasoning(provider: str, model: str, text: str) -> None:
+    """One reasoning trace for the Provider settings window. Not a chat line."""
+    provider = str(provider or "")
+    model = str(model or "")
+    text = str(text or "")
+    emit("reasoning", {"provider": provider, "model": model, "text": text})
+    handler = _reasoning_handler
+    if handler is None:
+        return
+    try:
+        handler(provider, model, text)
+    except Exception:
+        pass
 
 
 def subconscious(text: str) -> None:

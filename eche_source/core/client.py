@@ -1,6 +1,7 @@
 # client.py
 # Groq path uses the official `groq` SDK (AsyncGroq).
-# Ollama and OpenRouter use the OpenAI-compatible REST path (aiohttp/requests).
+# OpenRouter uses the OpenAI-compatible REST path. Ollama uses its native
+# /api/chat so the request can set a small context window.
 # Reads provider settings at call time from env (ECHE_PROVIDER, GROQ_*, OLLAMA_*, OPENROUTER_*).
 
 from __future__ import annotations
@@ -30,6 +31,28 @@ DEFAULT_MODEL = "qwen/qwen3.8-27b"
 DEFAULT_OLLAMA_MODEL = "llama3"
 # Free router. A paid model id from openrouter.ai/models can replace it.
 DEFAULT_OPENROUTER_MODEL = "openrouter/free"
+# A Discord turn fits here. The Modelfile window is much larger and slow to load.
+# Settings → Provider & Model can move it (ollama_num_ctx).
+_OLLAMA_NUM_CTX = 8192
+# Thinking tokens share the reply cap. Leave the answer room beside them.
+# Settings → Provider & Model can move it (reasoning_budget).
+_THINK_ROOM = 1024
+
+
+def _ollama_num_ctx() -> int:
+    try:
+        from core.ollama_thinking import num_ctx
+        return num_ctx()
+    except Exception:
+        return _OLLAMA_NUM_CTX
+
+
+def _think_room() -> int:
+    try:
+        from core.ollama_thinking import think_budget
+        return think_budget()
+    except Exception:
+        return _THINK_ROOM
 
 # Legacy alias
 API_URL = GROQ_API_URL
@@ -677,23 +700,56 @@ def _finalize_sections(raw: str) -> tuple[str, str]:
 # ---------------------------------------------------------------------------
 # Shared REST helpers (Ollama)
 # ---------------------------------------------------------------------------
-def _build_payload(messages: list, model: str, max_tokens: int, temperature: float) -> dict:
+def _reasoning_for(payload: dict | None) -> bool:
+    """Chat uses the settings switch. A forced call does not."""
+    forced = (payload or {}).get("_reasoning")
+    if forced == "off":
+        return False
+    if forced == "on":
+        return True
+    return reasoning_enabled()
+
+
+def _build_payload(
+    messages: list,
+    model: str,
+    max_tokens: int,
+    temperature: float,
+    *,
+    reasoning: bool | None = None,
+) -> dict:
     payload = {
         "model": model,
         "messages": messages,
         "max_tokens": max_tokens,
         "temperature": temperature,
     }
-    # qwen3.5 and granite 4.2 think by default. The trace spends max_tokens
-    # and the visible content comes back empty, so chat and memory summaries
-    # fail. "none" asks for the answer only. Granite 4.1 ignores it.
-    # OpenRouter uses the model from Settings, including routers such as
-    # openrouter/free. Those routes reject effort "none" when the chosen
-    # model requires reasoning, so the field is left off and the model default
-    # stands. A rejection retries with reasoning enabled.
-    if _provider_backend() == "ollama":
+    if reasoning is not None:
+        payload["_reasoning"] = "on" if reasoning else "off"
+    # Off is the settings default. "none" asks for the answer only so a trace
+    # does not spend the reply budget or land in chat. On leaves the provider's
+    # own thinking in place, and the trace is still kept out of the reply.
+    if not _reasoning_for(payload):
         payload["reasoning_effort"] = "none"
+        if _provider_backend() == "openrouter":
+            payload["reasoning"] = {"effort": "none", "exclude": True}
     return payload
+
+
+def reasoning_enabled() -> bool:
+    """Live settings read. Blank stays off for the provider that is running."""
+    key = {
+        "openrouter": "reasoning_openrouter",
+        "ollama": "reasoning_ollama",
+    }.get(_provider_backend(), "reasoning_cloud")
+    stored = ""
+    try:
+        from core.secrets import public_value
+        stored = public_value(key)
+    except Exception:
+        stored = ""
+    from core.admin_tools import flag_on
+    return flag_on(stored, "")
 
 
 def _reasoning_request_rejected(payload: dict, error: str) -> bool:
@@ -775,8 +831,45 @@ def _swallowed_answer(data: dict) -> bool:
     return _choice_finish_reason(data).strip().lower() in {"length", "max_tokens"}
 
 
+def _quiet_reasoning(payload: dict) -> None:
+    """Ask again for the reply only. Do not turn a long trace on."""
+    payload["reasoning_effort"] = "none"
+    if _provider_backend() == "openrouter":
+        payload["reasoning"] = {"effort": "none", "exclude": True}
+        return
+    payload.pop("reasoning", None)
+
+
+def _ollama_think_rejected(error: str) -> bool:
+    """True when this model or server refuses the think field."""
+    low = (error or "").lower()
+    if "think" not in low:
+        return False
+    return any(bit in low for bit in ("not support", "unsupported", "unknown", "invalid", "does not"))
+
+
 def _after_http_error(payload: dict, visible: int, stage: int, error: str) -> int | None:
     """Next attempt stage, or None when this error should be returned."""
+    if (
+        _provider_backend() == "ollama"
+        and stage == 0
+        and payload.get("_ollama_think") != "omit"
+        and _ollama_think_rejected(error)
+    ):
+        payload["_ollama_think"] = "omit"
+        try:
+            from core import ollama_thinking
+            ollama_thinking.forget_thinking(_api_url(), str(payload.get("model") or ""))
+        except Exception:
+            pass
+        return 1
+    if payload.get("_reasoning") == "off" or not reasoning_enabled():
+        if stage > 0:
+            return None
+        if _reasoning_must_stay_on(error) or _reasoning_request_rejected(payload, error):
+            _quiet_reasoning(payload)
+            return 1
+        return None
     if _provider_backend() == "openrouter" and _reasoning_must_stay_on(error):
         reasoning = payload.get("reasoning")
         if isinstance(reasoning, dict) and reasoning.get("enabled") is True:
@@ -795,7 +888,23 @@ def _after_http_error(payload: dict, visible: int, stage: int, error: str) -> in
 
 def _after_http_ok(payload: dict, visible: int, stage: int, data: dict) -> int | None:
     """Retry once when the visible reply was lost to a thinking trace."""
-    if stage == 0 and _provider_backend() == "openrouter" and _swallowed_answer(data):
+    if stage != 0 or not _swallowed_answer(data):
+        return None
+    if _provider_backend() == "ollama":
+        # Only a request that sent think can be asked again with it off.
+        # A model that thinks inline without the field cannot be turned off.
+        if not payload.get("_ollama_sent_think"):
+            return None
+        # The trace is already in the window. One more call writes the reply.
+        # Think stays off so this pass cannot spend the cap on another trace.
+        payload["_reasoning"] = "off"
+        return 1
+    if payload.get("_reasoning") == "off" or not reasoning_enabled():
+        if _provider_backend() != "openrouter":
+            return None
+        _quiet_reasoning(payload)
+        return 1
+    if _provider_backend() == "openrouter":
         _relax_reasoning(payload, visible)
         return 1
     return None
@@ -805,23 +914,220 @@ def _request_body(payload: dict) -> dict:
     return {key: value for key, value in payload.items() if not str(key).startswith("_")}
 
 
+def _ollama_native_url(url: str) -> str | None:
+    """Native /api/chat for an Ollama URL. None when the URL is some other
+    OpenAI-style endpoint (a proxy), which keeps the /v1 request shape."""
+    text = (url or "").strip().rstrip("/")
+    suffix = "/v1/chat/completions"
+    if text.endswith(suffix):
+        return text[: -len(suffix)] + "/api/chat"
+    if text.endswith("/api/chat"):
+        return text
+    return None
+
+
+def _ollama_v1_url(url: str) -> str:
+    text = (url or "").strip().rstrip("/")
+    if text.endswith("/api/chat"):
+        return text[: -len("/api/chat")] + "/v1/chat/completions"
+    return url
+
+
+def _ollama_capabilities(url: str, model: str):
+    """Cached /api/show capabilities. None when unknown."""
+    try:
+        from core import ollama_thinking
+        return ollama_thinking.capabilities(url, model)
+    except Exception:
+        return None
+
+
+def _ollama_reasoning_mode(payload: dict) -> str:
+    """auto / on / off / level for this request.
+
+    A forced call (background jobs, the reply-only retry) wins. Otherwise
+    the model's saved mode, else the Reasoning switch (on = auto).
+    """
+    forced = (payload or {}).get("_reasoning")
+    if forced == "off":
+        return "off"
+    if forced == "on":
+        return "on"
+    from core import ollama_thinking
+    return ollama_thinking.model_mode(str(payload.get("model") or ""), reasoning_enabled())
+
+
+def _ollama_think_value(url: str, payload: dict):
+    """think for this request: True, False, a level, or None to leave it out."""
+    if payload.get("_ollama_think") == "omit":
+        return None
+    from core import ollama_thinking
+    caps = _ollama_capabilities(url, str(payload.get("model") or ""))
+    return ollama_thinking.resolve_think(_ollama_reasoning_mode(payload), caps)
+
+
+def _thinking_sampling(payload: dict) -> dict:
+    """Sampling for a thinking turn. Qwen-family defaults, then saved overrides."""
+    temperature = payload.get("temperature", 0.7)
+    try:
+        from core.ollama_thinking import thinking_sampling
+        return thinking_sampling(str(payload.get("model") or ""), temperature)
+    except Exception:
+        return {"temperature": temperature}
+
+
+def _ollama_native_gone(status: int, body: str) -> bool:
+    """True when /api/chat itself is missing (a proxy), not the model."""
+    if status not in (404, 405):
+        return False
+    low = (body or "").lower()
+    return "model" not in low
+
+
+def _native_message(msg: dict) -> dict:
+    """One OpenAI message as an Ollama /api/chat message."""
+    role = str(msg.get("role") or "user")
+    content = msg.get("content")
+    if isinstance(content, list):
+        texts: list[str] = []
+        images: list[str] = []
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            if part.get("type") == "text":
+                texts.append(str(part.get("text") or ""))
+                continue
+            if part.get("type") != "image_url":
+                continue
+            image = part.get("image_url")
+            raw = str(image.get("url") or "") if isinstance(image, dict) else ""
+            if raw.lower().startswith("data:") and "," in raw:
+                images.append(raw.split(",", 1)[1])
+        out = {"role": role, "content": "\n".join(texts).strip()}
+        if images:
+            out["images"] = images
+        return out
+    return {"role": role, "content": "" if content is None else str(content)}
+
+
+def _ollama_request(url: str, payload: dict) -> tuple[str, dict]:
+    """Request body for this provider. Ollama gets a small context window."""
+    if _provider_backend() != "ollama":
+        return url, _request_body(payload)
+    think = _ollama_think_value(url, payload)
+    payload["_ollama_sent_think"] = think
+    native_url = None if payload.get("_ollama_api") == "v1" else _ollama_native_url(url)
+    if native_url is None:
+        # OpenAI-style fallback. No num_ctx here; think is reasoning_effort.
+        body = _request_body(payload)
+        body.pop("reasoning", None)
+        if think is None:
+            body.pop("reasoning_effort", None)
+        elif think is False:
+            body["reasoning_effort"] = "none"
+        else:
+            body.pop("reasoning_effort", None)
+            if isinstance(think, str):
+                body["reasoning_effort"] = think
+            opts = _thinking_sampling(payload)
+            body["temperature"] = opts.get("temperature", body.get("temperature"))
+            if "top_p" in opts:
+                body["top_p"] = opts["top_p"]
+        return _ollama_v1_url(url), body
+    body: dict = {
+        "model": payload.get("model") or "",
+        "messages": [
+            _native_message(msg)
+            for msg in (payload.get("messages") or [])
+            if isinstance(msg, dict)
+        ],
+        "stream": False,
+        "options": {
+            "num_ctx": _ollama_num_ctx(),
+            "temperature": payload.get("temperature", 0.7),
+            "num_predict": int(payload.get("max_tokens") or 64),
+        },
+    }
+    if payload.get("tools"):
+        body["tools"] = payload["tools"]
+    # Off asks for the reply in content. On separates the trace. Thinking and
+    # the reply share num_predict, so a trace that uses the whole cap is
+    # followed by one reply-only call. A model whose /api/show does not list
+    # thinking never gets the field.
+    if think is not None:
+        body["think"] = think
+        if think is not False:
+            body["options"]["num_predict"] += _think_room()
+            body["options"].update(_thinking_sampling(payload))
+    return native_url, body
+
+
+def _openai_from_native(data: dict) -> dict:
+    """Ollama /api/chat JSON as the choices shape the rest of the client reads."""
+    if not isinstance(data, dict) or "choices" in data:
+        return data
+    if data.get("error") and not isinstance(data.get("message"), dict):
+        return data
+    msg = data.get("message") if isinstance(data.get("message"), dict) else {}
+    message: dict = {
+        "role": msg.get("role") or "assistant",
+        "content": msg.get("content") or "",
+    }
+    thinking = str(msg.get("thinking") or "").strip()
+    if thinking:
+        message["reasoning"] = thinking
+    calls = []
+    for tc in msg.get("tool_calls") or []:
+        if not isinstance(tc, dict):
+            continue
+        fn = tc.get("function") if isinstance(tc.get("function"), dict) else {}
+        args = fn.get("arguments")
+        if not isinstance(args, str):
+            try:
+                args = json.dumps(args or {})
+            except TypeError:
+                args = "{}"
+        calls.append({
+            "id": str(tc.get("id") or ""),
+            "type": "function",
+            "function": {"name": str(fn.get("name") or ""), "arguments": args},
+        })
+    if calls:
+        message["tool_calls"] = calls
+    return {
+        "choices": [{
+            "message": message,
+            "finish_reason": str(data.get("done_reason") or ""),
+        }]
+    }
+
+
 def _sync_post(url: str, payload: dict, headers: dict, timeout: int = 45) -> dict:
     visible = int(payload.get("max_tokens") or 256)
     stage = 0
     for _ in range(3):
+        send_url, body = _ollama_request(url, payload)
         try:
             response = requests.post(
-                url, json=_request_body(payload), headers=headers, timeout=timeout
+                send_url, json=body, headers=headers, timeout=timeout
             )
         except Exception as e:
-            return {"error": _format_transport_error(e, url)}
+            return {"error": _format_transport_error(e, send_url)}
 
         if response.status_code != 200:
+            if (
+                _provider_backend() == "ollama"
+                and payload.get("_ollama_api") != "v1"
+                and _ollama_native_url(url) is not None
+                and _ollama_native_gone(response.status_code, response.text)
+            ):
+                payload["_ollama_api"] = "v1"
+                continue
             err = _format_http_error(
                 response.status_code,
                 response.text,
                 payload.get("model", "?"),
-                url,
+                send_url,
             )
             nxt = _after_http_error(payload, visible, stage, err)
             if nxt is None:
@@ -830,7 +1136,7 @@ def _sync_post(url: str, payload: dict, headers: dict, timeout: int = 45) -> dic
             continue
 
         try:
-            data = response.json()
+            data = _openai_from_native(response.json())
         except Exception as e:
             return {
                 "error": (
@@ -838,6 +1144,8 @@ def _sync_post(url: str, payload: dict, headers: dict, timeout: int = 45) -> dic
                     f"{e}. Body[:300]={response.text[:300]!r}"
                 )
             }
+        if payload.get("_reasoning") != "off":
+            _keep_reasoning(data, payload.get("model", ""))
         nxt = _after_http_ok(payload, visible, stage, data)
         if nxt is None:
             if isinstance(data, dict) and data.get("error") and not data.get("choices"):
@@ -850,20 +1158,37 @@ def _sync_post(url: str, payload: dict, headers: dict, timeout: int = 45) -> dic
 async def _async_post(url: str, payload: dict, headers: dict, timeout: int = 45) -> dict:
     visible = int(payload.get("max_tokens") or 256)
     stage = 0
+    if _provider_backend() == "ollama":
+        # /api/show is a blocking lookup. Run it off the event loop once;
+        # the request below reads the cached answer.
+        model = str(payload.get("model") or "")
+        await asyncio.get_running_loop().run_in_executor(
+            None, _ollama_capabilities, url, model
+        )
     for _ in range(3):
+        send_url = url
         try:
             timeout_cfg = aiohttp.ClientTimeout(total=timeout)
+            send_url, body = _ollama_request(url, payload)
             async with aiohttp.ClientSession(timeout=timeout_cfg) as session:
                 async with session.post(
-                    url, json=_request_body(payload), headers=headers
+                    send_url, json=body, headers=headers
                 ) as resp:
                     text = await resp.text()
                     if resp.status != 200:
+                        if (
+                            _provider_backend() == "ollama"
+                            and payload.get("_ollama_api") != "v1"
+                            and _ollama_native_url(url) is not None
+                            and _ollama_native_gone(resp.status, text)
+                        ):
+                            payload["_ollama_api"] = "v1"
+                            continue
                         err = _format_http_error(
                             resp.status,
                             text,
                             payload.get("model", "?"),
-                            url,
+                            send_url,
                         )
                         nxt = _after_http_error(payload, visible, stage, err)
                         if nxt is None:
@@ -880,7 +1205,10 @@ async def _async_post(url: str, payload: dict, headers: dict, timeout: int = 45)
                             )
                         }
         except Exception as e:
-            return {"error": _format_transport_error(e, url)}
+            return {"error": _format_transport_error(e, send_url)}
+        data = _openai_from_native(data)
+        if payload.get("_reasoning") != "off":
+            _keep_reasoning(data, payload.get("model", ""))
         nxt = _after_http_ok(payload, visible, stage, data)
         if nxt is None:
             if isinstance(data, dict) and data.get("error") and not data.get("choices"):
@@ -1063,25 +1391,107 @@ def _raw_content_text(content) -> str:
     return _parts_text(content, keep_reasoning=True).strip()
 
 
+def _content_reasoning(content) -> str:
+    """Reasoning parts OpenRouter puts beside the reply text."""
+    if not isinstance(content, list):
+        return ""
+    bits: list[str] = []
+    for item in content:
+        if not isinstance(item, dict):
+            continue
+        kind = str(item.get("type") or "").strip().lower()
+        if kind not in _REASONING_PARTS:
+            continue
+        text = _strip_think(
+            _parts_text(item.get("text") or item.get("content"), keep_reasoning=True)
+        ).strip()
+        if text and text not in bits:
+            bits.append(text)
+    return "\n".join(bits).strip()
+
+
 def _reasoning_text(msg: dict | None) -> str:
     if not isinstance(msg, dict):
         return ""
     chunks: list[str] = []
     for key in ("reasoning", "reasoning_content"):
         text = _strip_think(_parts_text(msg.get(key), keep_reasoning=True)).strip()
-        if text:
+        if text and text not in chunks:
             chunks.append(text)
+    extra = _content_reasoning(msg.get("content"))
+    if extra and extra not in chunks:
+        chunks.append(extra)
     details = msg.get("reasoning_details")
     if isinstance(details, list):
         for item in details:
-            if isinstance(item, str) and item.strip():
+            if isinstance(item, str) and item.strip() and item.strip() not in chunks:
                 chunks.append(item.strip())
             elif isinstance(item, dict):
                 bit = item.get("text") or item.get("summary") or item.get("content")
                 text = _strip_think(_parts_text(bit, keep_reasoning=True)).strip()
-                if text:
+                if text and text not in chunks:
                     chunks.append(text)
     return "\n".join(chunks).strip()
+
+
+_THINK_BODY = re.compile(
+    r"<(?:think|thinking|thought|thoughts|reasoning|analysis)\b[^>]*>"
+    r"([\s\S]*?)"
+    r"</(?:think|thinking|thought|thoughts|reasoning|analysis)>",
+    re.IGNORECASE,
+)
+
+
+def _trace_text(msg: dict | None) -> str:
+    """Reasoning fields plus any think block written into the reply."""
+    chunks: list[str] = []
+    reasoned = _reasoning_text(msg)
+    if reasoned:
+        chunks.append(reasoned)
+    raw_bits: list[str] = []
+    if isinstance(msg, dict):
+        raw_bits.append(_raw_content_text(msg.get("content")))
+        for key in ("reasoning", "reasoning_content"):
+            raw_bits.append(_parts_text(msg.get(key), keep_reasoning=True))
+    for raw in raw_bits:
+        closed = False
+        for inner in _THINK_BODY.findall(raw or ""):
+            bit = inner.strip()
+            if bit and bit not in chunks:
+                chunks.append(bit)
+                closed = True
+        if closed:
+            continue
+        match = _THINK_UNCLOSED.search(raw or "")
+        if not match:
+            continue
+        bit = match.group(1).strip()
+        if bit and bit not in chunks:
+            chunks.append(bit)
+    return "\n\n".join(chunks).strip()
+
+
+_THINK_UNCLOSED = re.compile(
+    r"<(?:think|thinking|thought|thoughts|reasoning|analysis)\b[^>]*>([\s\S]*)$",
+    re.IGNORECASE,
+)
+
+
+def _keep_reasoning(data: dict, model: str) -> None:
+    """Hand a separate trace to the reasoning window. The reply stays in chat."""
+    if not isinstance(data, dict) or data.get("error"):
+        return
+    msg = _extract_message(data)
+    text = _trace_text(msg)
+    if not text:
+        return
+    if len(text) > 8000:
+        text = text[:7999].rstrip() + "…"
+    try:
+        from core.gui_bridge import reasoning
+        reasoning(_provider_label(), str(model or ""), text)
+    except Exception:
+        pass
 
 
 def _without_scratchpad(text: str) -> str:
@@ -1273,6 +1683,9 @@ def _relax_request(kwargs: dict, err: str) -> bool:
     ):
         kwargs.pop("reasoning_effort", None)
         changed = True
+    if "reasoning_format" in kwargs and "reasoning_format" in low:
+        kwargs.pop("reasoning_format", None)
+        changed = True
     # A rejection of this flag is not a rejection of tools themselves.
     if "parallel_tool_calls" in kwargs and "parallel_tool_calls" in low:
         kwargs.pop("parallel_tool_calls", None)
@@ -1442,6 +1855,7 @@ async def _groq_sdk_call(
     temperature: float = 0.6,
     top_p: float = 0.95,
     reasoning_effort: str | None = "none",
+    reasoning_format: str | None = None,
     stream: bool = False,
     tools: list | None = None,
 ) -> str | dict:
@@ -1478,6 +1892,8 @@ async def _groq_sdk_call(
     }
     if reasoning_effort is not None:
         kwargs["reasoning_effort"] = reasoning_effort
+    if reasoning_format:
+        kwargs["reasoning_format"] = reasoning_format
     if tools:
         kwargs["tools"] = tools
         kwargs["tool_choice"] = "auto"
@@ -1497,8 +1913,12 @@ async def _groq_sdk_call(
         content = getattr(msg, "content", None) or ""
         if not isinstance(content, str):
             content = str(content or "")
+        reasoned = getattr(msg, "reasoning", None) or ""
+        if not isinstance(reasoned, str):
+            reasoned = str(reasoned or "")
         out = {
             "content": content,
+            "reasoning": reasoned.strip(),
             "finish_reason": getattr(choice, "finish_reason", None) or "",
         }
         if kw.get("tools"):
@@ -1554,22 +1974,6 @@ class ModelTurn:
     cut: bool = False
 
 
-def _split_completion(result) -> tuple[str, list, str]:
-    """Content, tool calls, and finish_reason. Error dicts are handled by the caller."""
-    if isinstance(result, dict) and "error" not in result and "content" in result:
-        content = result.get("content") or ""
-        if not isinstance(content, str):
-            content = str(content or "")
-        return (
-            content,
-            list(result.get("tool_calls") or []),
-            str(result.get("finish_reason") or ""),
-        )
-    if isinstance(result, str):
-        return result, [], ""
-    return "", [], ""
-
-
 def _quota_turn() -> ModelTurn:
     return ModelTurn("sorry, i'm being rate limited, check back later", "", [], True)
 
@@ -1623,15 +2027,26 @@ async def call_groq_turn(
     original = ""
     calls: list = []
     reason = ""
+    msg = None
 
     if backend == "cloud":
+        effort = "none"
+        parsed = None
+        budget = max_completion_tokens
+        if reasoning_enabled():
+            # Parsed keeps the trace out of the reply text. The extra room
+            # is for that trace, so the short reply can still finish.
+            effort = None
+            parsed = "parsed"
+            budget = max_completion_tokens + _think_room()
         result = await _groq_sdk_call(
             messages,
             model=model,
-            max_completion_tokens=max_completion_tokens,
+            max_completion_tokens=budget,
             temperature=0.6,
             top_p=0.95,
-            reasoning_effort="none",
+            reasoning_effort=effort,
+            reasoning_format=parsed,
             stream=False,
             tools=tools or None,
         )
@@ -1642,8 +2057,23 @@ async def call_groq_turn(
                 return _quota_turn()
             return _error_turn(error_msg)
 
-        raw, calls, reason = _split_completion(result)
-        original = raw
+        if isinstance(result, str):
+            msg = {"role": "assistant", "content": result}
+            calls = []
+            reason = ""
+        else:
+            msg = {
+                "role": "assistant",
+                "content": result.get("content") or "",
+                "reasoning": result.get("reasoning") or "",
+            }
+            calls = list(result.get("tool_calls") or [])
+            reason = str(result.get("finish_reason") or "")
+        _keep_reasoning({"choices": [{"message": msg}]}, model)
+        original = _raw_content_text(msg.get("content"))
+        raw = _message_text(msg)
+        if not original.strip():
+            original = raw
     else:
         if not _api_key() and backend != "ollama":
             err = _missing_key_error()
@@ -1700,6 +2130,8 @@ async def call_groq_turn(
             return _error_turn(error_msg)
         original = _raw_content_text(msg.get("content")) if msg else ""
         raw = _message_text(msg) if msg else ""
+        if msg and not original.strip():
+            original = raw
 
     if not calls and (original or "").strip():
         # Model typed the call instead of using the tool API. Read it from
@@ -1710,7 +2142,13 @@ async def call_groq_turn(
         except Exception:
             calls = []
 
-    reply, thoughts = _finalize_sections(raw)
+    if not (raw or "").strip() and _trace_text(msg):
+        # The trace belongs in the reasoning window. A dot is not the reply,
+        # and a second generation would only think again.
+        reply, thoughts = "", ""
+        reason = ""
+    else:
+        reply, thoughts = _finalize_sections(raw)
     quota = reply.strip().lower().startswith("sorry, i'm being rate limited")
     if quota:
         calls = []
@@ -1808,7 +2246,7 @@ async def call_groq_simple(prompt: str, max_chars: int = 2000):
             max_completion_tokens=max_tokens,
             temperature=0.9,
             top_p=0.95,
-            reasoning_effort=None,
+            reasoning_effort="none",
             stream=False,
         )
         if isinstance(result, dict) and "error" in result:
@@ -1824,7 +2262,9 @@ async def call_groq_simple(prompt: str, max_chars: int = 2000):
         return ("error", _missing_key_error())
 
     url = _api_url()
-    payload = _build_payload(messages, model, max_tokens=max_tokens, temperature=0.9)
+    payload = _build_payload(
+        messages, model, max_tokens=max_tokens, temperature=0.9, reasoning=False
+    )
     data = await _async_post(url, payload, _headers(), timeout=90)
 
     if "error" in data:
@@ -1879,7 +2319,11 @@ async def call_groq_raw(
 
     url = _api_url()
     payload = _build_payload(
-        messages, use_model, max_tokens=max_completion_tokens, temperature=0.4
+        messages,
+        use_model,
+        max_tokens=max_completion_tokens,
+        temperature=0.4,
+        reasoning=False,
     )
     data = await _async_post(url, payload, _headers(), timeout=90)
 

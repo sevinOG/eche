@@ -48,6 +48,11 @@ OPENROUTER_MODELS_URL = "https://openrouter.ai/models"
 _CLOUD_DEFAULT = "qwen/qwen3.8-27b"
 _OLLAMA_DEFAULT = "llama3"
 _OPENROUTER_DEFAULT = "openrouter/free"
+_REASONING_KEYS = {
+    "cloud": "reasoning_cloud",
+    "openrouter": "reasoning_openrouter",
+    "ollama": "reasoning_ollama",
+}
 _OLLAMA_PLACEHOLDER_PREFIXES = ("Fetching", "Ollama not", "No local")
 
 try:
@@ -128,6 +133,8 @@ class SettingsWindow(QWidget):
         self._openrouter_only: list = []
         self._pending_ollama_model = _OLLAMA_DEFAULT
         self._ollama_process: QProcess | None = None
+        self._reasoning_flags = {name: False for name in _REASONING_KEYS}
+        self._reasoning_models: dict[str, str] = {}
 
         self.data = load_settings()
         self._secret_edits: dict[str, QLineEdit] = {}
@@ -379,6 +386,81 @@ class SettingsWindow(QWidget):
         prov_row.addWidget(self._info_button("provider"))
         body.addLayout(prov_row)
 
+        reason_hint = QLabel(
+            "Follows the provider selected above. Off asks for the reply only. "
+            "On lets that provider think. The trace stays out of chat."
+        )
+        reason_hint.setObjectName("FieldHint")
+        reason_hint.setWordWrap(True)
+        body.addWidget(reason_hint)
+        self.reasoning_box = QCheckBox("Reasoning")
+        self.reasoning_box.setToolTip(
+            "On, the selected provider may think. The trace opens in Reasoning output."
+        )
+        self.reasoning_box.toggled.connect(self._on_reasoning_toggled)
+        body.addWidget(self.reasoning_box)
+        samp_row = QHBoxLayout()
+        samp_row.setSpacing(8)
+        for label, key, hint in (
+            ("Temperature", "reasoning_temperature", "Blank: 0.6 for Qwen"),
+            ("Top P", "reasoning_top_p", "Blank: 0.95 for Qwen"),
+            ("Top K", "reasoning_top_k", "Blank: 20 for Qwen"),
+        ):
+            samp_row.addLayout(self._field_block(
+                f"Thinking {label}", hint, secret=False, key=key,
+                help_key="reasoning_sampling",
+            ))
+        samp_wrap = QWidget()
+        samp_wrap.setLayout(samp_row)
+        self._ollama_only.append(samp_wrap)
+        body.addWidget(samp_wrap)
+        mode_wrap = QWidget()
+        mode_l = QVBoxLayout(mode_wrap)
+        mode_l.setContentsMargins(0, 0, 0, 0)
+        mode_l.setSpacing(4)
+        mode_top = QHBoxLayout()
+        mode_lab = QLabel("Reasoning for this model")
+        mode_lab.setObjectName("FieldLabel")
+        mode_top.addWidget(mode_lab)
+        mode_top.addStretch()
+        mode_top.addWidget(self._info_button("reasoning_models"))
+        mode_l.addLayout(mode_top)
+        mode_hint = QLabel(
+            "Saved per Ollama tag. Auto thinks only when the model supports it."
+        )
+        mode_hint.setObjectName("FieldHint")
+        mode_hint.setWordWrap(True)
+        mode_l.addWidget(mode_hint)
+        self.reasoning_mode_combo = QComboBox()
+        self.reasoning_mode_combo.setMinimumHeight(34)
+        for label, value in (
+            ("Follow the Reasoning switch", ""),
+            ("Auto (if the model can think)", "auto"),
+            ("On", "on"),
+            ("Off", "off"),
+            ("On — low effort", "low"),
+            ("On — medium effort", "medium"),
+            ("On — high effort", "high"),
+        ):
+            self.reasoning_mode_combo.addItem(label, value)
+        self.reasoning_mode_combo.activated.connect(self._on_reasoning_mode_picked)
+        mode_l.addWidget(self.reasoning_mode_combo)
+        self._ollama_only.append(mode_wrap)
+        body.addWidget(mode_wrap)
+        self.ollama_model_combo.currentTextChanged.connect(
+            lambda _text: self._sync_reasoning_mode()
+        )
+        reason_row = QHBoxLayout()
+        reason_row.setSpacing(6)
+        self.reasoning_btn = QPushButton("Reasoning output")
+        self.reasoning_btn.setObjectName("ghost")
+        self.reasoning_btn.setMinimumHeight(40)
+        self.reasoning_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.reasoning_btn.clicked.connect(self.open_reasoning_window)
+        reason_row.addWidget(self.reasoning_btn, stretch=1)
+        reason_row.addWidget(self._info_button("reasoning"))
+        body.addLayout(reason_row)
+
         layout.addWidget(self._card(
             "Provider & model",
             "Provider = who runs the SI. Groq, OpenRouter, and Ollama each keep their own fields.",
@@ -397,6 +479,22 @@ class SettingsWindow(QWidget):
             "One post inside a thread. Default 316.",
             "thread_completion_tokens",
             "thread_completion_tokens",
+        ))
+        from core.ollama_thinking import (
+            DEFAULT_NUM_CTX, NUM_CTX_MAX, NUM_CTX_MIN,
+            DEFAULT_THINK_BUDGET, THINK_BUDGET_MAX, THINK_BUDGET_MIN,
+        )
+        token_body.addLayout(self._int_setting_block(
+            "Thinking budget",
+            "Extra tokens for a thinking trace when reasoning is on. Default 1024.",
+            "reasoning_budget",
+            THINK_BUDGET_MIN, THINK_BUDGET_MAX, DEFAULT_THINK_BUDGET, 128,
+        ))
+        token_body.addLayout(self._int_setting_block(
+            "Context window (Ollama)",
+            "num_ctx for local models. Default 8192. Bigger uses more VRAM.",
+            "ollama_num_ctx",
+            NUM_CTX_MIN, NUM_CTX_MAX, DEFAULT_NUM_CTX, 1024,
         ))
         layout.addWidget(self._card(
             "Output tokens",
@@ -925,6 +1023,45 @@ class SettingsWindow(QWidget):
         block.addWidget(spin)
         return block
 
+    def _int_setting_block(
+        self, label: str, hint: str, key: str,
+        low: int, high: int, default: int, step: int,
+    ) -> QVBoxLayout:
+        """One whole-number setting. Saved as text; blank reads as default."""
+        block = QVBoxLayout()
+        block.setSpacing(4)
+        top = QHBoxLayout()
+        top.setSpacing(8)
+        lab = QLabel(label)
+        lab.setObjectName("FieldLabel")
+        top.addWidget(lab)
+        top.addStretch()
+        if key in FIELD_HELP:
+            top.addWidget(self._info_button(key), alignment=Qt.AlignmentFlag.AlignTop)
+        block.addLayout(top)
+        hint_label = QLabel(hint)
+        hint_label.setObjectName("FieldHint")
+        hint_label.setWordWrap(True)
+        block.addWidget(hint_label)
+        spin = QSpinBox()
+        spin.setRange(low, high)
+        spin.setSingleStep(step)
+        spin.setMinimumHeight(34)
+        if not hasattr(self, "_int_spins"):
+            self._int_spins = {}
+        self._int_spins[key] = (spin, low, high, default)
+        spin.setValue(self._saved_int(key))
+        block.addWidget(spin)
+        return block
+
+    def _saved_int(self, key: str) -> int:
+        from core.ollama_thinking import clamp_int
+        _spin, low, high, default = self._int_spins[key]
+        raw = (self.data.get(key) or "").strip()
+        if not raw:
+            return default
+        return clamp_int(raw, default, low, high)
+
     def _saved_token(self, key: str, default: int) -> int:
         from core.client import clamp_completion_tokens
         raw = (self.data.get(key) or "").strip()
@@ -944,6 +1081,56 @@ class SettingsWindow(QWidget):
             w.setVisible(backend == "openrouter")
         if backend == "ollama":
             self._refresh_ollama_models()
+        self._sync_reasoning_box()
+
+    def _selected_backend(self) -> str:
+        backend = "cloud"
+        if hasattr(self, "provider_combo"):
+            backend = self.provider_combo.currentData() or "cloud"
+        if backend not in _REASONING_KEYS:
+            return "cloud"
+        return backend
+
+    def _sync_reasoning_box(self) -> None:
+        """Show the switch for the provider selected in the dropdown."""
+        if not hasattr(self, "reasoning_box"):
+            return
+        self.reasoning_box.blockSignals(True)
+        self.reasoning_box.setChecked(bool(self._reasoning_flags.get(self._selected_backend())))
+        self.reasoning_box.blockSignals(False)
+
+    def _current_ollama_tag(self) -> str:
+        if hasattr(self, "ollama_model_combo"):
+            text = self.ollama_model_combo.currentText().strip()
+            if _valid_ollama_selection(text):
+                return text
+        return (self._pending_ollama_model or "").strip()
+
+    def _sync_reasoning_mode(self) -> None:
+        """Show the saved mode for the Ollama model selected now."""
+        if not hasattr(self, "reasoning_mode_combo"):
+            return
+        from core.ollama_thinking import _tag_key
+        tag = _tag_key(self._current_ollama_tag())
+        mode = self._reasoning_models.get(tag, "") if tag else ""
+        idx = self.reasoning_mode_combo.findData(mode)
+        self.reasoning_mode_combo.blockSignals(True)
+        self.reasoning_mode_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self.reasoning_mode_combo.blockSignals(False)
+
+    def _on_reasoning_mode_picked(self, _index: int = 0) -> None:
+        from core.ollama_thinking import _tag_key
+        tag = _tag_key(self._current_ollama_tag())
+        if not tag:
+            return
+        mode = self.reasoning_mode_combo.currentData() or ""
+        if mode:
+            self._reasoning_models[tag] = mode
+        else:
+            self._reasoning_models.pop(tag, None)
+
+    def _on_reasoning_toggled(self, checked: bool) -> None:
+        self._reasoning_flags[self._selected_backend()] = bool(checked)
 
     def _on_provider_backend_changed(self, _index: int = 0):
         self._apply_provider_ui()
@@ -985,6 +1172,14 @@ class SettingsWindow(QWidget):
             self.provider_combo.setCurrentIndex(idx if idx >= 0 else 0)
             self.provider_combo.blockSignals(False)
 
+        from core.ollama_thinking import parse_model_modes
+        self._reasoning_models = parse_model_modes(self.data.get("reasoning_models"))
+        if hasattr(self, "reasoning_box"):
+            from core.admin_tools import flag_on
+            self._reasoning_flags = {
+                name: flag_on(self.data.get(key), "")
+                for name, key in _REASONING_KEYS.items()
+            }
         self._apply_provider_ui()
         if hasattr(self, "security_admin_box"):
             from core.admin_tools import flag_on
@@ -1000,6 +1195,8 @@ class SettingsWindow(QWidget):
             self.prompt_episodic_box.setChecked(
                 prompt_choice(self.data.get("prompt_episodic"), default=True)
             )
+        for key, (spin, *_rest) in getattr(self, "_int_spins", {}).items():
+            spin.setValue(self._saved_int(key))
         if hasattr(self, "channel_token_spin"):
             low, high, channel_default, thread_default = self._token_limits()
             del low, high
@@ -1045,6 +1242,7 @@ class SettingsWindow(QWidget):
             if i >= 0:
                 self.ollama_model_combo.setCurrentIndex(i)
         self.ollama_model_combo.blockSignals(False)
+        self._sync_reasoning_mode()
 
     def begin_save_spinner(self, message: str = "Saving…"):
         """Show the header spinner and keep it spinning until end_save_spinner."""
@@ -1085,6 +1283,18 @@ class SettingsWindow(QWidget):
         self.provider_window.show()
         self.provider_window.raise_()
         self.provider_window.activateWindow()
+
+    def open_reasoning_window(self):
+        main = self.main_window
+        if main is not None and hasattr(main, "open_reasoning_window"):
+            main.open_reasoning_window()
+            return
+        from gui.widgets.reasoningwindow import ReasoningWindow
+        if not getattr(self, "reasoning_window", None):
+            self.reasoning_window = ReasoningWindow()
+        self.reasoning_window.show()
+        self.reasoning_window.raise_()
+        self.reasoning_window.activateWindow()
 
     def open_summarizer_window(self):
         from gui.widgets.summarizerwindow import SummarizerWindow
@@ -1198,6 +1408,12 @@ class SettingsWindow(QWidget):
         if hasattr(self, "channel_token_spin"):
             payload["channel_completion_tokens"] = str(self.channel_token_spin.value())
             payload["thread_completion_tokens"] = str(self.thread_token_spin.value())
+        for key in ("reasoning_budget", "ollama_num_ctx"):
+            spins = getattr(self, "_int_spins", {})
+            if key in spins:
+                payload[key] = str(spins[key][0].value())
+            else:
+                payload[key] = str(self.data.get(key) or "").strip()
         if hasattr(self, "project_path_edit"):
             payload["project_path"] = self.project_path_edit.text().strip()
         if hasattr(self, "security_admin_box"):
@@ -1224,6 +1440,15 @@ class SettingsWindow(QWidget):
                 "prompt_episodic",
             ):
                 payload[key] = str(self.data.get(key) or "").strip()
+        if hasattr(self, "reasoning_box"):
+            self._reasoning_flags[self._selected_backend()] = self.reasoning_box.isChecked()
+            for name, key in _REASONING_KEYS.items():
+                payload[key] = "1" if self._reasoning_flags.get(name) else "0"
+        else:
+            for key in _REASONING_KEYS.values():
+                payload[key] = str(self.data.get(key) or "").strip()
+        from core.ollama_thinking import format_model_modes
+        payload["reasoning_models"] = format_model_modes(self._reasoning_models)
         # The main-window Default tools switch is not on this form.
         # Keep whatever it last saved so a settings save does not turn it back on.
         try:

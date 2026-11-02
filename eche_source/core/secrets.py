@@ -48,6 +48,15 @@ PUBLIC_KEYS = (
     "tool_context_raw",           # "0" leaves context out of the prompt. Blank stays on.
     "tool_asset",                 # "0" leaves the asset tool out of the prompt. Blank stays on.
     "prompt_episodic",            # "0" leaves the server episode out of the prompt. Blank stays on.
+    "reasoning_cloud",            # "1" lets Groq think. Blank stays off.
+    "reasoning_openrouter",       # "1" lets OpenRouter think. Blank stays off.
+    "reasoning_ollama",           # "1" lets Ollama think. Blank stays off.
+    "reasoning_budget",           # extra output tokens for a thinking trace; blank uses 1024
+    "ollama_num_ctx",             # Ollama context window; blank uses 8192
+    "reasoning_temperature",      # thinking turns; blank uses 0.6 for Qwen, else the caller's
+    "reasoning_top_p",            # thinking turns; blank uses 0.95 for Qwen
+    "reasoning_top_k",            # thinking turns; blank uses 20 for Qwen
+    "reasoning_models",           # per Ollama tag: "tag=auto|on|off|low|medium|high; ..."
 )
 
 # Map settings key -> environment variable used by the bot

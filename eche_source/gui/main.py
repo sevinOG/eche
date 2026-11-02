@@ -159,6 +159,8 @@ class LocalChatInput(QPlainTextEdit):
 
 
 class MainWindow(QMainWindow):
+    reasoning_ready = pyqtSignal(str, str, str)
+
     def __init__(self):
         super().__init__()
 
@@ -187,6 +189,11 @@ class MainWindow(QMainWindow):
         self.cog_manager_window = None
         self.settings_window = None
         self.context_window = None
+        self.reasoning_window = None
+        self._reasoning_lines: list[str] = []
+        self.reasoning_ready.connect(self.note_reasoning)
+        from core.gui_bridge import set_reasoning_handler
+        set_reasoning_handler(self.reasoning_ready.emit)
         self._tb_buffer: list[str] = []
         self._tb_active = False
         self._local_worker = None
@@ -1061,6 +1068,13 @@ class MainWindow(QMainWindow):
             pass
 
         try:
+            if self.reasoning_window:
+                self.reasoning_window.close()
+                self.reasoning_window = None
+        except Exception:
+            pass
+
+        try:
             self.hide()
         except Exception:
             pass
@@ -1127,6 +1141,12 @@ class MainWindow(QMainWindow):
                 )
             elif event == "chat":
                 self._append_panel(self.chat_output, data.get("text", ""))
+            elif event == "reasoning":
+                self.note_reasoning(
+                    str(data.get("provider") or ""),
+                    str(data.get("model") or ""),
+                    str(data.get("text") or ""),
+                )
             elif event in ("cog_list", "status"):
                 loaded = data.get("loaded")
                 if (
@@ -1282,6 +1302,40 @@ class MainWindow(QMainWindow):
         self.context_window.show()
         self.context_window.raise_()
         self.context_window.activateWindow()
+
+    def note_reasoning(self, provider: str, model: str, text: str) -> None:
+        body = str(text or "").strip()
+        if not body:
+            return
+        from datetime import datetime
+        stamp = datetime.now().strftime("%H:%M:%S")
+        who = " · ".join(
+            part for part in (str(provider or "").strip(), str(model or "").strip()) if part
+        )
+        head = f"{stamp}  {who}".rstrip()
+        self._reasoning_lines.append(f"{head}\n{body}")
+        self._reasoning_lines = self._reasoning_lines[-40:]
+        window = self.reasoning_window
+        if window is not None:
+            try:
+                window.set_entries(self._reasoning_lines)
+            except Exception:
+                self.reasoning_window = None
+
+    def clear_reasoning(self) -> None:
+        self._reasoning_lines = []
+        window = self.reasoning_window
+        if window is not None:
+            window.set_entries([])
+
+    def open_reasoning_window(self):
+        if not self.reasoning_window:
+            from gui.widgets.reasoningwindow import ReasoningWindow
+            self.reasoning_window = ReasoningWindow(on_clear=self.clear_reasoning)
+        self.reasoning_window.set_entries(self._reasoning_lines)
+        self.reasoning_window.show()
+        self.reasoning_window.raise_()
+        self.reasoning_window.activateWindow()
 
     def on_unifier_content_saved(self, path: str, content: str):
         self.append_log(f"[INFO] Content saved to: {path}")

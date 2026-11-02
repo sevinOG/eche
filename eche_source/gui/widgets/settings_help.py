@@ -211,6 +211,67 @@ FIELD_HELP: dict[str, tuple[str, str]] = {
         "### After Save\n"
         "Stop → Run so the new code loads.",
     ),
+    "reasoning": (
+        "Reasoning",
+        "### What is this?\n"
+        "Some models write a thinking trace before the reply. Off, Eche asks for "
+        "the reply only. On, that provider may think. The trace opens in "
+        "**Reasoning output** and is left out of chat.\n\n"
+        "### Which provider\n"
+        "One switch. The Provider backend dropdown chooses who it applies to. "
+        "Groq, OpenRouter, and Ollama each remember their own value, and "
+        "changing the dropdown shows that value. A blank value stays off. "
+        "Save applies on the next message. No restart is required for the switch itself.\n\n"
+        "### What still reaches chat\n"
+        "A sentence the model writes as the reply is still posted. The window "
+        "shows the trace. It is not a second copy of the chat.",
+    ),
+    "reasoning_budget": (
+        "Thinking budget",
+        "### What is this?\n"
+        "A thinking model writes its trace out of the same output tokens as the "
+        "reply. When thinking is on, Eche adds this many tokens to the reply cap "
+        "so a short channel reply still has room after the trace. Default 1024.\n\n"
+        "### Too small\n"
+        "The trace uses everything and the reply comes back empty. Eche then asks "
+        "once more with thinking off, which is slower. Raise the budget if that "
+        "happens often. 0 adds nothing.",
+    ),
+    "reasoning_models": (
+        "Reasoning for this model (Ollama)",
+        "### What is this?\n"
+        "A choice saved for the Ollama model selected above, so a thinking model "
+        "and a plain model can sit side by side.\n\n"
+        "- **Follow the Reasoning switch**: switch on means Auto, off means Off.\n"
+        "- **Auto**: think only when Ollama says the model can (`ollama show` lists "
+        "*thinking*). Other models get a normal request.\n"
+        "- **On**: always ask the model to think.\n"
+        "- **Off**: ask for the reply only.\n"
+        "- **Low / Medium / High**: on, with that effort, for models that take a "
+        "level (gpt-oss).\n\n"
+        "Background jobs (summaries, heckles) never think.",
+    ),
+    "reasoning_sampling": (
+        "Thinking sampling (Ollama)",
+        "### What is this?\n"
+        "Sampling used only when a local model is thinking. Qwen-family models "
+        "(Qwen, QwQ, and abliterated builds) default to temperature 0.6, top P "
+        "0.95, top K 20, which is what Qwen recommends for thinking mode. Other "
+        "models keep Eche's usual temperature.\n\n"
+        "### Overrides\n"
+        "A value here replaces that default for every thinking model. Leave a "
+        "field blank to keep the default. Background calls (summaries, heckles) "
+        "never think and are not affected.",
+    ),
+    "ollama_num_ctx": (
+        "Context window (Ollama)",
+        "### What is this?\n"
+        "How many tokens of prompt plus reply the local model holds at once "
+        "(Ollama `num_ctx`). Default 8192, which fits a Discord turn.\n\n"
+        "### Trade-off\n"
+        "Bigger uses more VRAM and loads slower. Changing it makes Ollama reload "
+        "the model on the next message.",
+    ),
     "unifier": (
         "Unifier (how the prompt is assembled)",
         "### What is this?\n"
