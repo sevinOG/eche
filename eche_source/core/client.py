@@ -942,13 +942,28 @@ def _ollama_capabilities(url: str, model: str):
         return None
 
 
+def _ollama_reasoning_mode(payload: dict) -> str:
+    """auto / on / off / level for this request.
+
+    A forced call (background jobs, the reply-only retry) wins. Otherwise
+    the model's saved mode, else the Reasoning switch (on = auto).
+    """
+    forced = (payload or {}).get("_reasoning")
+    if forced == "off":
+        return "off"
+    if forced == "on":
+        return "on"
+    from core import ollama_thinking
+    return ollama_thinking.model_mode(str(payload.get("model") or ""), reasoning_enabled())
+
+
 def _ollama_think_value(url: str, payload: dict):
-    """think for this request: True, False, or None to leave it out."""
+    """think for this request: True, False, a level, or None to leave it out."""
     if payload.get("_ollama_think") == "omit":
         return None
     from core import ollama_thinking
     caps = _ollama_capabilities(url, str(payload.get("model") or ""))
-    return ollama_thinking.think_field(_reasoning_for(payload), caps)
+    return ollama_thinking.resolve_think(_ollama_reasoning_mode(payload), caps)
 
 
 def _thinking_sampling(payload: dict) -> dict:
@@ -1012,6 +1027,8 @@ def _ollama_request(url: str, payload: dict) -> tuple[str, dict]:
             body["reasoning_effort"] = "none"
         else:
             body.pop("reasoning_effort", None)
+            if isinstance(think, str):
+                body["reasoning_effort"] = think
             opts = _thinking_sampling(payload)
             body["temperature"] = opts.get("temperature", body.get("temperature"))
             if "top_p" in opts:

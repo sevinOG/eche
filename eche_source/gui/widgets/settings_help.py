@@ -237,6 +237,20 @@ FIELD_HELP: dict[str, tuple[str, str]] = {
         "once more with thinking off, which is slower. Raise the budget if that "
         "happens often. 0 adds nothing.",
     ),
+    "reasoning_models": (
+        "Reasoning for this model (Ollama)",
+        "### What is this?\n"
+        "A choice saved for the Ollama model selected above, so a thinking model "
+        "and a plain model can sit side by side.\n\n"
+        "- **Follow the Reasoning switch**: switch on means Auto, off means Off.\n"
+        "- **Auto**: think only when Ollama says the model can (`ollama show` lists "
+        "*thinking*). Other models get a normal request.\n"
+        "- **On**: always ask the model to think.\n"
+        "- **Off**: ask for the reply only.\n"
+        "- **Low / Medium / High**: on, with that effort, for models that take a "
+        "level (gpt-oss).\n\n"
+        "Background jobs (summaries, heckles) never think.",
+    ),
     "reasoning_sampling": (
         "Thinking sampling (Ollama)",
         "### What is this?\n"

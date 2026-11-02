@@ -56,6 +56,7 @@ PUBLIC_KEYS = (
     "reasoning_temperature",      # thinking turns; blank uses 0.6 for Qwen, else the caller's
     "reasoning_top_p",            # thinking turns; blank uses 0.95 for Qwen
     "reasoning_top_k",            # thinking turns; blank uses 20 for Qwen
+    "reasoning_models",           # per Ollama tag: "tag=auto|on|off|low|medium|high; ..."
 )
 
 # Map settings key -> environment variable used by the bot

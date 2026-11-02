@@ -102,19 +102,107 @@ def can_think(caps: frozenset | None) -> bool | None:
     return "thinking" in caps
 
 
-def think_field(want: bool, caps: frozenset | None):
+# ---------------------------------------------------------------------------
+# Per-model reasoning mode
+# ---------------------------------------------------------------------------
+# auto: think when /api/show lists thinking. on: always ask (an unknown model
+# is asked too, and a refusal is retried without the field). off: never.
+# low / medium / high: on, with that level (gpt-oss style models).
+MODES = ("auto", "on", "off", "low", "medium", "high")
+THINK_LEVELS = ("low", "medium", "high")
+_MODE_ALIASES = {
+    "1": "on", "true": "on", "yes": "on",
+    "0": "off", "false": "off", "no": "off", "none": "off",
+    "": "auto", "default": "auto",
+}
+
+
+def normalize_mode(raw) -> str | None:
+    low = str(raw if raw is not None else "").strip().lower()
+    low = _MODE_ALIASES.get(low, low)
+    return low if low in MODES else None
+
+
+def _tag_key(model: str) -> str:
+    """Tags compare without case and without a trailing :latest."""
+    low = (model or "").strip().lower()
+    return low[: -len(":latest")] if low.endswith(":latest") else low
+
+
+def parse_model_modes(raw) -> dict[str, str]:
+    """reasoning_models setting: "tag=mode; tag2=mode" or a JSON object."""
+    out: dict[str, str] = {}
+    if isinstance(raw, dict):
+        items = list(raw.items())
+    else:
+        text = str(raw or "").strip()
+        items = []
+        if text.startswith("{"):
+            try:
+                import json
+                loaded = json.loads(text)
+                if isinstance(loaded, dict):
+                    items = list(loaded.items())
+            except ValueError:
+                items = []
+        else:
+            import re
+            for chunk in re.split(r"[;\n]+", text):
+                if "=" not in chunk:
+                    continue
+                tag, _, mode = chunk.rpartition("=")
+                items.append((tag, mode))
+    for tag, mode in items:
+        name = _tag_key(str(tag))
+        value = normalize_mode(mode)
+        if name and value:
+            out[name] = value
+    return out
+
+
+def format_model_modes(modes: dict[str, str]) -> str:
+    """Settings text for a mode map. Blank when nothing is set."""
+    clean = parse_model_modes(modes)
+    return "; ".join(f"{tag}={clean[tag]}" for tag in sorted(clean))
+
+
+def saved_model_modes() -> dict[str, str]:
+    return parse_model_modes(_saved("reasoning_models", "ECHE_REASONING_MODELS"))
+
+
+def model_mode(model: str, provider_on: bool, modes: dict[str, str] | None = None) -> str:
+    """Mode for one tag. A saved per-model value wins over the Reasoning switch.
+
+    With no per-model value, the switch on means auto and off means off.
+    """
+    table = saved_model_modes() if modes is None else parse_model_modes(modes)
+    picked = table.get(_tag_key(model))
+    if picked:
+        return picked
+    return "auto" if provider_on else "off"
+
+
+def resolve_think(mode: str, caps: frozenset | None):
     """Value for the think field. None leaves the field out of the request.
 
-    A model that lists thinking gets true or false. A model without it never
-    gets the field. Unknown capabilities send true only when thinking was
-    asked for; a refusal is retried without the field.
+    A model that lists thinking gets true, false, or a level. A model
+    without it never gets the field. Unknown capabilities send the field
+    only for an explicit on or level.
     """
+    mode = normalize_mode(mode) or "auto"
     able = can_think(caps)
+    if mode == "off":
+        return False if able else None
+    if mode == "auto":
+        return True if able else None
     if able is False:
         return None
-    if able is None:
-        return True if want else None
-    return bool(want)
+    return mode if mode in THINK_LEVELS else True
+
+
+def think_field(want: bool, caps: frozenset | None):
+    """Bool form of resolve_think: want=True is "on", False is "off"."""
+    return resolve_think("on" if want else "off", caps)
 
 
 # ---------------------------------------------------------------------------
