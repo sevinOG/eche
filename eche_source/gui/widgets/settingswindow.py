@@ -30,6 +30,7 @@ from PyQt6.QtWidgets import (
     QRadioButton,
     QButtonGroup,
     QSpinBox,
+    QSlider,
 )
 
 from gui.theme import APP_NAME, APP_VERSION
@@ -623,6 +624,7 @@ class SettingsWindow(QWidget):
             "Episodic memory is separate. Admin tools stay on the Security page.",
             prompt_body,
         ))
+        layout.addWidget(self._context_caps_card())
         body = QVBoxLayout()
         body.setSpacing(10)
         hint = QLabel(
@@ -657,6 +659,124 @@ class SettingsWindow(QWidget):
         layout.addWidget(self._card("Personality & context editors", None, body))
         layout.addStretch(1)
         return page
+
+    # ------------------------------------------------------------------
+    # Context & Memory sliders (core/context_caps.py)
+    # ------------------------------------------------------------------
+    _CAP_GROUPS = (
+        ("What a reply sees", (
+            "memory_prompt_chars",
+            "memory_summary_prompt_chars",
+            "episode_prompt_chars",
+            "memory_recent_messages",
+            "memory_message_chars",
+            "media_prompt_chars",
+            "attachment_text_chars",
+            "media_memory_chars",
+        )),
+        ("What the summarizer keeps", (
+            "memory_fold_every",
+            "memory_summary_chars",
+            "episode_fold_after",
+            "episode_summary_chars",
+        )),
+        ("Threads & desktop chat", (
+            "thread_notes_chars",
+            "thread_posted_chars",
+            "thread_topic_scan",
+            "local_history_turns",
+        )),
+    )
+
+    def _context_caps_card(self) -> QFrame:
+        from core.context_caps import BY_KEY, CAPS
+
+        self._cap_controls: dict[str, tuple[QSlider, QSpinBox]] = {}
+        body = QVBoxLayout()
+        body.setSpacing(10)
+        grouped = [key for _title, keys in self._CAP_GROUPS for key in keys]
+        groups = list(self._CAP_GROUPS)
+        # A cap added to the table but not to a group still gets a slider.
+        extra = tuple(cap.key for cap in CAPS if cap.key not in grouped)
+        if extra:
+            groups.append(("Other", extra))
+        for title, keys in groups:
+            head = QLabel(title)
+            head.setObjectName("FieldLabel")
+            body.addWidget(head)
+            for key in keys:
+                body.addLayout(self._cap_slider_block(BY_KEY[key]))
+        row = QHBoxLayout()
+        reset = QPushButton("Reset to defaults")
+        reset.setObjectName("ghost")
+        reset.clicked.connect(self._reset_context_caps)
+        row.addWidget(reset)
+        row.addStretch()
+        row.addWidget(self._info_button("context_memory"))
+        body.addLayout(row)
+        return self._card(
+            "Context & Memory",
+            "How much history and memory goes into each prompt, and how long the "
+            "stored summaries are. Defaults match how Eche worked before. "
+            "Smaller is faster on local models.",
+            body,
+        )
+
+    def _cap_slider_block(self, cap) -> QVBoxLayout:
+        block = QVBoxLayout()
+        block.setSpacing(2)
+        top = QHBoxLayout()
+        top.setSpacing(8)
+        lab = QLabel(cap.label)
+        top.addWidget(lab)
+        top.addStretch()
+        if cap.key in FIELD_HELP:
+            top.addWidget(self._info_button(cap.key), alignment=Qt.AlignmentFlag.AlignTop)
+        block.addLayout(top)
+        hint = QLabel(f"{cap.hint} Default {cap.default}.")
+        hint.setObjectName("FieldHint")
+        hint.setWordWrap(True)
+        block.addWidget(hint)
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        slider = QSlider(Qt.Orientation.Horizontal)
+        slider.setObjectName(f"cap_{cap.key}")
+        slider.setRange(cap.low, cap.high)
+        slider.setSingleStep(cap.step)
+        slider.setPageStep(cap.step * 4)
+        span = cap.high - cap.low
+        slider.setTickInterval(max(cap.step, span // 10))
+        slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        spin = QSpinBox()
+        spin.setObjectName(f"cap_{cap.key}_value")
+        spin.setRange(cap.low, cap.high)
+        spin.setSingleStep(cap.step)
+        spin.setSuffix(f" {cap.unit}")
+        if cap.zero_label:
+            spin.setSpecialValueText(cap.zero_label)
+        spin.setMinimumWidth(130)
+        spin.setMinimumHeight(30)
+        slider.valueChanged.connect(spin.setValue)
+        spin.valueChanged.connect(slider.setValue)
+        value = self._saved_cap(cap.key)
+        slider.setValue(value)
+        spin.setValue(value)
+        row.addWidget(slider, stretch=1)
+        row.addWidget(spin)
+        block.addLayout(row)
+        self._cap_controls[cap.key] = (slider, spin)
+        return block
+
+    def _saved_cap(self, key: str) -> int:
+        from core.context_caps import clamp
+
+        return clamp(key, self.data.get(key))
+
+    def _reset_context_caps(self) -> None:
+        from core.context_caps import BY_KEY
+
+        for key, (_slider, spin) in getattr(self, "_cap_controls", {}).items():
+            spin.setValue(BY_KEY[key].default)
 
     def _page_economy(self) -> QWidget:
         page = QWidget()
@@ -1197,6 +1317,8 @@ class SettingsWindow(QWidget):
             )
         for key, (spin, *_rest) in getattr(self, "_int_spins", {}).items():
             spin.setValue(self._saved_int(key))
+        for key, (_slider, spin) in getattr(self, "_cap_controls", {}).items():
+            spin.setValue(self._saved_cap(key))
         if hasattr(self, "channel_token_spin"):
             low, high, channel_default, thread_default = self._token_limits()
             del low, high
@@ -1412,6 +1534,14 @@ class SettingsWindow(QWidget):
             spins = getattr(self, "_int_spins", {})
             if key in spins:
                 payload[key] = str(spins[key][0].value())
+            else:
+                payload[key] = str(self.data.get(key) or "").strip()
+        from core.context_caps import KEYS as CAP_KEYS
+
+        controls = getattr(self, "_cap_controls", {})
+        for key in CAP_KEYS:
+            if key in controls:
+                payload[key] = str(controls[key][1].value())
             else:
                 payload[key] = str(self.data.get(key) or "").strip()
         if hasattr(self, "project_path_edit"):
