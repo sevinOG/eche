@@ -64,3 +64,17 @@ class UpdatePrepareWorker(QThread):
             except Exception:
                 pass
             self.finished_ok.emit(False, str(exc) or type(exc).__name__)
+
+class MemoryWipeWorker(QThread):
+    """Reset every memory pin on its own Discord connection, off the GUI thread."""
+
+    finished_ok = pyqtSignal(bool, str)
+
+    def run(self):
+        try:
+            from core.memory_wipe import run_wipe
+
+            report = run_wipe()
+            self.finished_ok.emit(report.ok, report.summary())
+        except Exception as exc:
+            self.finished_ok.emit(False, str(exc) or type(exc).__name__)

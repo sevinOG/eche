@@ -523,6 +523,23 @@ def _cap_help() -> dict[str, tuple[str, str]]:
         "**Reset to defaults** puts every slider back to the value Eche used "
         "before these were settings.",
     )
+    out["reset_memory"] = (
+        "Reset all memory",
+        "### What it does\n"
+        "Empties every memory pin Eche keeps on the home server: each person's "
+        "**Context for** pin and **Eche with** pin, and every server's "
+        "**Episodic** pin. The local rolling buffers (memories/user-*/ and each "
+        "server's recent.txt) are cleared too.\n\n"
+        "### What it does not do\n"
+        "Channels and threads stay. Pins are edited, not deleted. Bank, items, "
+        "workers, music, and reminders are not touched. Nobody is pinged.\n\n"
+        "### When the bot is running\n"
+        "The reset runs inside the bot on its own connection, and the counts show "
+        "in the log. When it is stopped, the reset connects on its own.\n\n"
+        "### Command line\n"
+        "`python -m core.memory_wipe --yes` from eche_source, or "
+        "`Eche.exe --reset-memory --yes`. Running it twice is safe.",
+    )
     return out
 
 

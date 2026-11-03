@@ -39,7 +39,7 @@ from gui.widgets.personalitywindow import PersonalityWindow
 from gui.widgets.loading import LoadingIndicator
 from gui.widgets.dialogs import show_error, show_info, present_failure
 from gui.widgets.settings_help import FIELD_HELP
-from gui.widgets.settings_workers import SettingsSaveWorker, UpdatePrepareWorker
+from gui.widgets.settings_workers import MemoryWipeWorker, SettingsSaveWorker, UpdatePrepareWorker
 
 UNSPLASH_DEV_URL = "https://unsplash.com/developers"
 UNSPLASH_APPS_URL = "https://unsplash.com/oauth/applications"
@@ -625,6 +625,7 @@ class SettingsWindow(QWidget):
             prompt_body,
         ))
         layout.addWidget(self._context_caps_card())
+        layout.addWidget(self._reset_memory_card())
         body = QVBoxLayout()
         body.setSpacing(10)
         hint = QLabel(
@@ -721,6 +722,68 @@ class SettingsWindow(QWidget):
             "Smaller is faster on local models.",
             body,
         )
+
+    def _reset_memory_card(self) -> QFrame:
+        body = QVBoxLayout()
+        row = QHBoxLayout()
+        self.reset_memory_btn = QPushButton("Reset all memory")
+        self.reset_memory_btn.setObjectName("danger")
+        self.reset_memory_btn.setMinimumHeight(36)
+        self.reset_memory_btn.clicked.connect(self._confirm_reset_memory)
+        row.addWidget(self.reset_memory_btn)
+        row.addStretch()
+        row.addWidget(self._info_button("reset_memory"))
+        body.addLayout(row)
+        return self._card(
+            "Reset all memory",
+            "Empties every person's memory pins and every server episode on the home "
+            "server, and clears the local buffers. Pins are edited, not deleted. "
+            "This cannot be undone.",
+            body,
+        )
+
+    def _confirm_reset_memory(self) -> None:
+        answer = QMessageBox.question(
+            self,
+            "Reset all memory?",
+            "This empties every Context for, Eche with, and Episodic pin on the home "
+            "server and clears the local memory buffers.\n\n"
+            "Eche starts fresh with everyone. This cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        main = self.main_window
+        running = bool(main and hasattr(main, "_bot_is_running") and main._bot_is_running())
+        if running:
+            # The bot does it on its own connection and drops its caches.
+            try:
+                main.bot_process.stdin.write("RESET_MEMORY\n")
+                main.bot_process.stdin.flush()
+            except Exception as exc:
+                show_error(self, "Reset all memory", f"Could not reach the bot: {exc}")
+                return
+            if hasattr(main, "append_log"):
+                main.append_log("[memory] Reset all memory sent to the bot. Counts follow in the log.")
+            show_info(self, "Reset all memory", "The bot is resetting memory now. The counts show in the log.")
+            return
+        self.reset_memory_btn.setEnabled(False)
+        self.reset_memory_btn.setText("Resetting…")
+        self._memory_wipe_worker = MemoryWipeWorker()
+        self._memory_wipe_worker.finished_ok.connect(self._on_reset_memory_done)
+        self._memory_wipe_worker.start()
+
+    def _on_reset_memory_done(self, ok: bool, message: str) -> None:
+        self.reset_memory_btn.setEnabled(True)
+        self.reset_memory_btn.setText("Reset all memory")
+        main = self.main_window
+        if main and hasattr(main, "append_log"):
+            main.append_log(f"[memory] {message}")
+        if ok:
+            show_info(self, "Reset all memory", message)
+        else:
+            show_error(self, "Reset all memory", message)
 
     def _cap_slider_block(self, cap) -> QVBoxLayout:
         block = QVBoxLayout()

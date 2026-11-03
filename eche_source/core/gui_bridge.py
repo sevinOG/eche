@@ -214,6 +214,20 @@ async def _announce(bot, text: str) -> None:
         log(f"ANNOUNCE failed: {e}", channel="bridge")
 
 
+async def _reset_memory(bot) -> None:
+    try:
+        from core.context_manager import get_home_guild
+        from core.memory_wipe import wipe_memory
+
+        report = await wipe_memory(
+            get_home_guild(bot),
+            log=lambda text: log(text, channel="memory"),
+        )
+        emit("memory_reset", {"ok": report.ok, "summary": report.summary()})
+    except Exception as e:
+        log(f"Memory reset failed: {e}", channel="memory")
+
+
 async def _handle_line(bot, line: str) -> None:
     line = line.strip()
     if not line:
@@ -231,6 +245,11 @@ async def _handle_line(bot, line: str) -> None:
 
     if upper == "STATUS":
         emit("status", _bot_busy(bot))
+        return
+
+    if upper == "RESET_MEMORY":
+        # Only the desktop app writes this pipe. There is no Discord command.
+        await _reset_memory(bot)
         return
 
     if upper.startswith("ANNOUNCE "):
