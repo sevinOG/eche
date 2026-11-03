@@ -1,14 +1,12 @@
-Update the long-term memory cloud. Reply with only the cloud.
+Update the long-term memory. Reply with the updated memory only.
 
-Rules:
-- The new lines are short notes. Fold them into a few sentences. Do not copy the notes one by one.
-- Combine notes about what was said into one sentence.
-- Example: notes say the user talked about polar bears, linux, and a bar. Write "user talked about the location of polar bears, the security of linux OS, and whether a local bar was closed".
-- Example: notes say eche talked about those topics. Write "eche talked about polar bears, cyber security, and local bar closing times".
-- Keep who the person is, how they want to be treated, and any instruction they gave. Do not drop those to make room.
-- If a new note is about a subject already in the cloud, add it on that sentence. Do not start a second sentence for the same subject.
-- Keep earlier sentences that later talks still need.
-- No dates, unless the date itself matters. No bullet list.
+Keep: who the person is, their preferences, how they want to be treated, instructions they gave, decisions, and open threads.
+Drop: greetings, small talk, play-by-play of the chat, quotes, examples, jokes, and guesses.
+- Merge the new lines in. One bullet per subject; add to a matching bullet instead of starting a new one.
+- Replace facts that changed. Keep older facts that still hold.
+- No dates unless the date itself matters.
+Format: short "- " bullets, each ending with a period. No headings, no intro.
+Length: at most {char_limit} characters.
 
 Existing memory:
 {existing_summary}

@@ -5,7 +5,37 @@ from __future__ import annotations
 
 import os
 
-DEFAULT_SUMMARIZER_PROMPT = """Update the long-term memory cloud. Reply with only the cloud.
+DEFAULT_SUMMARIZER_PROMPT = """Update the long-term memory. Reply with the updated memory only.
+
+Keep: who the person is, their preferences, how they want to be treated, instructions they gave, decisions, and open threads.
+Drop: greetings, small talk, play-by-play of the chat, quotes, examples, jokes, and guesses.
+- Merge the new lines in. One bullet per subject; add to a matching bullet instead of starting a new one.
+- Replace facts that changed. Keep older facts that still hold.
+- No dates unless the date itself matters.
+Format: short "- " bullets, each ending with a period. No headings, no intro.
+Length: at most {char_limit} characters.
+
+Existing memory:
+{existing_summary}
+
+New lines:
+{new_lines}
+"""
+
+DEFAULT_CONDENSE_PROMPT = """Shorten this memory to at most {char_limit} characters. Reply with the shortened memory only.
+
+Keep: who the person is, preferences, how they want to be treated, instructions they gave, decisions, and open threads.
+Merge duplicates. Drop one-off chatter, examples, and repeated wording.
+Format: short "- " bullets, each ending with a period. No headings, no intro.
+
+Memory:
+{existing_summary}
+"""
+
+# Earlier shipped defaults. A saved prompt file that still matches one of
+# these exactly was never edited, so it follows the current default.
+_OLD_DEFAULT_SUMMARIZER_PROMPTS = (
+    """Update the long-term memory cloud. Reply with only the cloud.
 
 Rules:
 - The new lines are short notes. Fold them into a few sentences. Do not copy the notes one by one.
@@ -22,19 +52,8 @@ Existing memory:
 
 New lines:
 {new_lines}
-"""
-
-DEFAULT_CONDENSE_PROMPT = """Shorten this memory cloud so it stays under {char_limit} characters. Reply with only the cloud.
-
-Rules:
-- Keep who the person is, how they want to be treated, and any instruction they gave.
-- Keep the topics they talked about and the topics eche talked about. Combine them into fewer sentences.
-- Drop one-off chatter and repeated wording.
-- Do not copy the chat. No bullet list.
-
-Memory:
-{existing_summary}
-"""
+""",
+)
 
 # Prefer a live Groq model; never default to deprecated Llama 3.3 70B
 DEFAULT_SUMMARIZER_MODEL = "qwen/qwen3.6-27b"
@@ -72,12 +91,25 @@ def summarizer_prompt_path(override: str | None = None) -> str:
     return default_summarizer_prompt_path()
 
 
+def is_old_default(text: str) -> bool:
+    """True for an unedited copy of an earlier default prompt."""
+    body = " ".join((text or "").split())
+    return any(body == " ".join(old.split()) for old in _OLD_DEFAULT_SUMMARIZER_PROMPTS)
+
+
 def get_summarizer_prompt(override_path: str | None = None) -> str:
     path = summarizer_prompt_path(override_path)
     try:
         if os.path.isfile(path):
             with open(path, "r", encoding="utf-8") as f:
                 text = f.read().strip()
+            if text and is_old_default(text):
+                # Never edited: move it to the current default.
+                try:
+                    save_summarizer_prompt(DEFAULT_SUMMARIZER_PROMPT, override_path)
+                except Exception:
+                    pass
+                return DEFAULT_SUMMARIZER_PROMPT.strip()
             if text:
                 return text
     except Exception:
@@ -138,9 +170,16 @@ def build_summary_prompt(combined_for_summary: str) -> str:
     return template.rstrip() + "\n\n" + combined_for_summary
 
 
-def build_merge_prompt(existing_summary: str, new_lines: str) -> str:
-    """Ask for an in-place update. Older sheets still receive both parts."""
-    template = get_summarizer_prompt()
+def build_merge_prompt(
+    existing_summary: str,
+    new_lines: str,
+    char_limit: int = 1400,
+) -> str:
+    """Ask for an in-place update. Older sheets still receive both parts.
+
+    {char_limit} in a custom prompt file is the length target.
+    """
+    template = get_summarizer_prompt().replace("{char_limit}", str(int(char_limit)))
     existing = (existing_summary or "").strip() or "(none yet)"
     fresh = (new_lines or "").strip() or "(none)"
     if "{existing_summary}" in template or "{new_lines}" in template:

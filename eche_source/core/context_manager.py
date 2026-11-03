@@ -369,6 +369,13 @@ async def archive_user_recents_if_due(bot, guild, user_id, username=None):
 PIN_CAP = 1900
 
 
+def pin_cap() -> int:
+    """Settings → Context & Memory → Long-term summary length. At most PIN_CAP."""
+    from core.context_caps import get
+
+    return min(PIN_CAP, get("memory_summary_chars"))
+
+
 def title_from_label(label: str) -> str:
     """The pin title. `label` from parse_pin_sections includes ``Summary:\\n``."""
     suffix = "Summary:\n"
@@ -383,12 +390,16 @@ def summary_only(title: str, summary: str) -> str:
     head = title or ""
     if not head.endswith("\n"):
         head += "\n"
-    prose = " ".join((summary or "").split()) or "(none yet)"
+    from core.episodic import tidy_summary
+
+    prose = tidy_summary(summary) or "(none yet)"
     return f"{head}Summary:\n{prose}\n"
 
 
-def summary_room(title: str, limit: int = PIN_CAP) -> int:
+def summary_room(title: str, limit: int | None = None) -> int:
     """Characters of prose that still fit in the long-term pin."""
+    if limit is None:
+        limit = pin_cap()
     head = title or ""
     if not head.endswith("\n"):
         head += "\n"
@@ -396,7 +407,9 @@ def summary_room(title: str, limit: int = PIN_CAP) -> int:
     return max(1, limit - overhead)
 
 
-def summary_fits(title: str, summary: str, limit: int = PIN_CAP) -> bool:
+def summary_fits(title: str, summary: str, limit: int | None = None) -> bool:
+    if limit is None:
+        limit = pin_cap()
     return len(summary_only(title, summary)) <= limit
 
 
@@ -448,8 +461,8 @@ async def remember_side(bot, guild, user_id, username, text: str, *, side: str) 
     message tries again, and the prompt still has the messages.
     """
     from core.personal_recent import (
-        FOLD_EVERY,
         clear_folded,
+        fold_every,
         has_stash,
         notes_for_fold,
         push,
@@ -478,7 +491,7 @@ async def remember_side(bot, guild, user_id, username, text: str, *, side: str) 
     # New: leaves the pin on this turn. Those lines are in the file, and the
     # prompt reads them, until a fold lands.
     await _stash_pin_lines(pinned, uid, side, fallback)
-    if pending < FOLD_EVERY and not has_stash(uid, side):
+    if pending < fold_every() and not has_stash(uid, side):
         return
 
     from core.context_summarizer import fold_long_memory

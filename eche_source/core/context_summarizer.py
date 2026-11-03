@@ -29,6 +29,22 @@ _PIN_SOFT = 1700
 _CLOUD_TARGET = 900
 _NEXT_LINES_RESERVE = 320
 
+
+def cloud_target() -> int:
+    """Compact target for the older Summary/New pin. Never above half the
+    long-term summary slider, so a smaller slider means a smaller cloud."""
+    from core.context_manager import pin_cap
+
+    return max(200, min(_CLOUD_TARGET, pin_cap() // 2))
+
+
+def merge_target(label: str) -> int:
+    """Length target for an in-place merge on the older Summary/New pin."""
+    from core.context_manager import pin_cap
+
+    room = min(pin_cap(), _PIN_SOFT) - _NEXT_LINES_RESERVE - len(label or "")
+    return max(200, room)
+
 # Reject API failures and instruction-echo so they never become "memory"
 _BAD_SUMMARY_MARKERS = (
     "rate limit",
@@ -52,6 +68,13 @@ _BAD_SUMMARY_MARKERS = (
     "do not retell",
     "one short line per subject",
     "do not drop a subject",
+    "reply with the updated memory only",
+    "reply with the shortened memory only",
+    "reply with the updated summary only",
+    "reply with the shortened summary only",
+    "shorter is better",
+    "drop: greetings",
+    "no headings, no intro",
 )
 
 
@@ -113,7 +136,9 @@ _FOLD_PLACEHOLDERS = {
 
 def _usable_fold(text: str) -> str:
     """A placeholder is not a summary. The pin and the buffer stay as they were."""
-    body = " ".join((text or "").split())
+    from core.episodic import tidy_summary
+
+    body = tidy_summary(text)
     if not body or body.lower() in _FOLD_PLACEHOLDERS or _is_bad_llm_output(body):
         return ""
     return body
@@ -143,7 +168,13 @@ def _clean_summary_text(text: str) -> str:
     return t.strip()
 
 
-async def _llm_summary(prompt: str, model: str, *, retries: int = 3) -> str | None:
+async def _llm_summary(
+    prompt: str,
+    model: str,
+    *,
+    retries: int = 3,
+    char_target: int = 1900,
+) -> str | None:
     """
     Call the model. A quota error is not retried here; the Groq client already
     waited once. Returns clean summary text or None (caller keeps prior summary).
@@ -151,7 +182,13 @@ async def _llm_summary(prompt: str, model: str, *, retries: int = 3) -> str | No
     last = ""
     for attempt in range(retries):
         try:
-            raw = await call_groq_raw(prompt, model=model, max_completion_tokens=512)
+            from core.context_caps import summary_tokens
+
+            raw = await call_groq_raw(
+                prompt,
+                model=model,
+                max_completion_tokens=summary_tokens(char_target),
+            )
         except Exception as e:
             print(f"[context_summarizer] LLM exception (try {attempt + 1}): {e}")
             last = str(e)
@@ -182,9 +219,11 @@ async def compact_cloud(summary: str) -> str:
     text = (summary or "").strip()
     if not text or text in ("(none yet)", "(summary unavailable)"):
         return text or "(none yet)"
+    target = cloud_target()
     condensed = await _llm_summary(
-        build_condense_prompt(text, _CLOUD_TARGET),
+        build_condense_prompt(text, target),
         get_summarizer_model(),
+        char_target=target,
     )
     if (
         condensed
@@ -307,9 +346,11 @@ async def summarize_context(
     print(f"[context_summarizer] Using model={sum_model}")
 
     # Merge first. Do not shorten the old cloud before the new facts land.
+    target = merge_target(label)
     summary_text = await _llm_summary(
-        build_merge_prompt(existing_summary, history_text),
+        build_merge_prompt(existing_summary, history_text, target),
         sum_model,
+        char_target=target,
     )
     if not summary_text or summary_drops_existing(existing_summary, summary_text):
         summary_text, recent_lines = _keep_prior(
@@ -323,7 +364,7 @@ async def summarize_context(
     if pin_would_crowd(label, summary_text):
         print(
             f"[context_summarizer] Cloud is {len(summary_text)} chars, "
-            f"near the pin limit. Compacting toward {_CLOUD_TARGET}."
+            f"near the pin limit. Compacting toward {cloud_target()}."
         )
         summary_text = await compact_cloud(summary_text)
 
@@ -334,61 +375,75 @@ def _memory_rows(notes: list[str]) -> str:
     return "\n".join(str(line).strip() for line in notes if str(line).strip()) or "(none)"
 
 
+# Shared by every memory prompt. Durable facts only, short bullets, a hard
+# length target. The summarizer's output-token cap matches that target.
+_MEMORY_DROP = (
+    "Drop: greetings, small talk, play-by-play of the chat, quotes, jokes, "
+    "one-off reactions, examples, and guesses."
+)
+_MEMORY_FORMAT = (
+    'Format: short "- " bullets, one fact each, each ending with a period. '
+    "No headings, no intro."
+)
+
+
+def _length_line(room: int) -> str:
+    return f"Length: at most {room} characters. Shorter is better."
+
+
 def fold_memory_prompt(side: str, existing: str, notes: list[str], limit: int) -> str:
     """Local buffer plus the long-term block. User and bot each keep their own job."""
-    prose = " ".join((existing or "").split()) or "(none yet)"
+    from core.episodic import tidy_summary
+
+    prose = tidy_summary(existing) or "(none yet)"
     rows = _memory_rows(notes)
     room = max(1, int(limit))
     if side == "bot":
         intro = (
             "Update your long-term memory of talking with this person. "
-            "Reply with the summary only.\n"
-            "Finished prose about what you said and did, not notes to yourself.\n"
-            "Update the summary with the recent replies. Keep earlier topics that still matter.\n"
-            "Keep what you told them and any tool you used.\n"
+            "Reply with the updated memory only.\n"
+            "Keep: what you promised or agreed to, answers they may come back to, "
+            "tools you used for them, and open threads.\n"
         )
+        recent_label = "Recent replies"
     else:
         intro = (
-            "Update the long-term memory of this person. Reply with the summary only.\n"
-            "Finished prose about the person, not notes to yourself.\n"
-            "Update the summary with the recent messages. "
-            "Keep who they are and how they want to be treated.\n"
-            "Keep what they said and any instruction they gave.\n"
+            "Update the long-term memory of this person. "
+            "Reply with the updated memory only.\n"
+            "Keep: who they are, their preferences, how they want to be treated, "
+            "instructions they gave, decisions, and open threads.\n"
         )
+        recent_label = "Recent messages"
     return (
         f"{intro}"
-        "Drop greetings, agreements, and one-off reactions.\n"
-        "Plain prose. No bullet list. "
-        f"Stay under {room} characters.\n\n"
+        f"{_MEMORY_DROP}\n"
+        "Merge new facts in. Replace facts that changed. Keep older facts that still hold.\n"
+        f"{_MEMORY_FORMAT}\n"
+        f"{_length_line(room)}\n\n"
         f"Summary:\n{prose}\n\n"
-        f"Recent:\n{rows}"
+        f"{recent_label}:\n{rows}"
     )
 
 
 def condense_memory_prompt(side: str, existing: str, fresh: str, limit: int) -> str:
     """Second pass. The stored block plus the summary that did not fit."""
-    prose = " ".join((existing or "").split()) or "(none yet)"
-    segment = " ".join((fresh or "").split()) or "(none)"
+    from core.episodic import tidy_summary
+
+    prose = tidy_summary(existing) or "(none yet)"
+    segment = tidy_summary(fresh) or "(none)"
     room = max(1, int(limit))
     if side == "bot":
-        intro = (
-            "Condense your long-term memory of this person into one summary. "
-            "Reply with the summary only.\n"
-            "Use the existing summary and the new summary. "
-            "Keep what you told them and any tool you used.\n"
-        )
+        keep = "what you promised, answers they may come back to, tools you used, and open threads"
+        intro = "Shorten your long-term memory of this person. Reply with the shortened memory only.\n"
     else:
-        intro = (
-            "Condense this person's long-term memory into one summary. "
-            "Reply with the summary only.\n"
-            "Use the existing summary and the new summary. "
-            "Keep who they are, how they want to be treated, and what they said.\n"
-        )
+        keep = "who they are, preferences, instructions, decisions, and open threads"
+        intro = "Shorten this person's long-term memory. Reply with the shortened memory only.\n"
     return (
         f"{intro}"
-        "Drop greetings, agreements, and one-off reactions.\n"
-        "Plain prose. No bullet list. "
-        f"Stay under {room} characters.\n\n"
+        f"Combine the existing summary and the new summary. Keep {keep}. "
+        "Merge duplicates. Drop anything trivial or one-off.\n"
+        f"{_MEMORY_FORMAT}\n"
+        f"{_length_line(room)}\n\n"
         f"Existing summary:\n{prose}\n\n"
         f"New summary:\n{segment}"
     )
@@ -411,13 +466,14 @@ def choose_memory(title: str, fresh: str, condensed: str) -> str:
 
 
 async def _memory_completion(prompt: str, limit: int) -> str:
-    from core.client import call_groq_raw, tokens_for
+    from core.client import call_groq_raw
+    from core.context_caps import summary_tokens
     from core.episodic import episode_summary_text
 
     raw = await call_groq_raw(
         prompt,
         model=get_summarizer_model(),
-        max_completion_tokens=tokens_for(limit),
+        max_completion_tokens=summary_tokens(limit),
     )
     return episode_summary_text(raw)
 
