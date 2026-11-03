@@ -9,6 +9,7 @@ DEFAULT_SUMMARIZER_PROMPT = """Update the long-term memory. Reply with the updat
 
 Keep: who the person is, their preferences, how they want to be treated, instructions they gave, decisions, and open threads.
 Drop: greetings, small talk, play-by-play of the chat, quotes, examples, jokes, and guesses.
+No slurs, ids, or @mentions. Skip anything made up, wrong, or refused, and requests that were answered or are stale.
 - Merge the new lines in. One bullet per subject; add to a matching bullet instead of starting a new one.
 - Replace facts that changed. Keep older facts that still hold.
 - No dates unless the date itself matters.
@@ -26,6 +27,7 @@ DEFAULT_CONDENSE_PROMPT = """Shorten this memory to at most {char_limit} charact
 
 Keep: who the person is, preferences, how they want to be treated, instructions they gave, decisions, and open threads.
 Merge duplicates. Drop one-off chatter, examples, and repeated wording.
+No slurs, no Discord ids or long id numbers, and no @mentions. Drop refusals, made-up facts, and requests that were answered, refused, or are stale.
 Format: short "- " bullets, each ending with a period. No headings, no intro.
 
 Memory:
@@ -35,6 +37,22 @@ Memory:
 # Earlier shipped defaults. A saved prompt file that still matches one of
 # these exactly was never edited, so it follows the current default.
 _OLD_DEFAULT_SUMMARIZER_PROMPTS = (
+    """Update the long-term memory. Reply with the updated memory only.
+
+Keep: who the person is, their preferences, how they want to be treated, instructions they gave, decisions, and open threads.
+Drop: greetings, small talk, play-by-play of the chat, quotes, examples, jokes, and guesses.
+- Merge the new lines in. One bullet per subject; add to a matching bullet instead of starting a new one.
+- Replace facts that changed. Keep older facts that still hold.
+- No dates unless the date itself matters.
+Format: short "- " bullets, each ending with a period. No headings, no intro.
+Length: at most {char_limit} characters.
+
+Existing memory:
+{existing_summary}
+
+New lines:
+{new_lines}
+""",
     """Update the long-term memory cloud. Reply with only the cloud.
 
 Rules:
@@ -180,8 +198,10 @@ def build_merge_prompt(
     {char_limit} in a custom prompt file is the length target.
     """
     template = get_summarizer_prompt().replace("{char_limit}", str(int(char_limit)))
-    existing = (existing_summary or "").strip() or "(none yet)"
-    fresh = (new_lines or "").strip() or "(none)"
+    from core.content_filter import clean_memory_text
+
+    existing = clean_memory_text((existing_summary or "").strip()) or "(none yet)"
+    fresh = clean_memory_text((new_lines or "").strip()) or "(none)"
     if "{existing_summary}" in template or "{new_lines}" in template:
         return (
             template.replace("{existing_summary}", existing).replace("{new_lines}", fresh)
@@ -192,5 +212,9 @@ def build_merge_prompt(
 
 def build_condense_prompt(existing_summary: str, char_limit: int = 1400) -> str:
     template = DEFAULT_CONDENSE_PROMPT.strip()
-    text = template.replace("{existing_summary}", (existing_summary or "").strip())
+    from core.content_filter import clean_memory_text
+
+    text = template.replace(
+        "{existing_summary}", clean_memory_text((existing_summary or "").strip())
+    )
     return text.replace("{char_limit}", str(int(char_limit)))

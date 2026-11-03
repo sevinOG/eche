@@ -269,8 +269,11 @@ class ConcisePrompts(unittest.TestCase):
         self.assertIn("{char_limit}", sp.DEFAULT_CONDENSE_PROMPT)
 
     def test_prompts_shorter_than_before(self):
-        for old in sp._OLD_DEFAULT_SUMMARIZER_PROMPTS:
-            self.assertLess(len(sp.DEFAULT_SUMMARIZER_PROMPT), len(old) + 1)
+        # Shorter than the long pre-caps default. The one before this adds only
+        # the no-slurs/no-ids rule line on top of it.
+        concise, verbose = sp._OLD_DEFAULT_SUMMARIZER_PROMPTS[0], sp._OLD_DEFAULT_SUMMARIZER_PROMPTS[-1]
+        self.assertLess(len(sp.DEFAULT_SUMMARIZER_PROMPT), len(verbose))
+        self.assertLess(len(sp.DEFAULT_SUMMARIZER_PROMPT) - len(concise), 140)
 
     def test_prompt_echo_is_rejected(self):
         echo = "Reply with the updated memory only.\n- Likes tea."

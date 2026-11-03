@@ -390,9 +390,10 @@ def summary_only(title: str, summary: str) -> str:
     head = title or ""
     if not head.endswith("\n"):
         head += "\n"
+    from core.content_filter import clean_memory_text
     from core.episodic import tidy_summary
 
-    prose = tidy_summary(summary) or "(none yet)"
+    prose = clean_memory_text(tidy_summary(summary)) or "(none yet)"
     return f"{head}Summary:\n{prose}\n"
 
 

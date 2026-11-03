@@ -153,7 +153,9 @@ def render_summary(heading: str, summary: str) -> str:
     This does not chop the prose. The caller condenses a summary that will
     not fit instead of ending it mid-sentence.
     """
-    prose = tidy_summary(summary)
+    from core.content_filter import clean_memory_text
+
+    prose = clean_memory_text(tidy_summary(summary))
     return "\n".join([heading.rstrip(), "Summary:", prose]).rstrip() + "\n"
 
 
@@ -289,9 +291,11 @@ def write_recent(guild_id: int, lines: list[str]) -> None:
 
 def push_recent(guild_id: int, new_lines: list[str]) -> list[str]:
     """Add lines. Returns what the file now holds, including a turn that crosses five."""
+    from core.content_filter import clean_memory_text
+
     rows = read_recent(guild_id)
     for line in new_lines:
-        text = " ".join(str(line or "").split())
+        text = " ".join(clean_memory_text(str(line or "")).split())
         if text:
             rows.append(text)
     rows = rows[-recent_cap():]
@@ -330,7 +334,10 @@ _EPISODE_KEEP = (
 )
 _EPISODE_DROP = (
     "Drop: who said what, greetings, small talk, play-by-play, quotes, numbers, "
-    "links, and guesses."
+    "links, and guesses. "
+    "No slurs, no Discord ids or long id numbers, and no @mentions. "
+    "Do not record anything that was made up, wrong, or a refusal. "
+    "Drop requests that were answered, refused, or are stale."
 )
 _EPISODE_FORMAT = (
     'Format: short "- " bullets, one subject each, each ending with a period. '
@@ -340,8 +347,10 @@ _EPISODE_FORMAT = (
 
 def fold_prompt(summary: str, recent: list[str], limit: int) -> str:
     """Previous summary plus the local file. Not the chat prompt."""
-    prose = tidy_summary(summary) or "(none yet)"
-    rows = "\n".join(line for line in recent if str(line).strip()) or "(none)"
+    from core.content_filter import clean_lines, clean_memory_text
+
+    prose = clean_memory_text(tidy_summary(summary)) or "(none yet)"
+    rows = "\n".join(clean_lines(recent)) or "(none)"
     room = max(1, int(limit))
     return (
         "Update this server's episode summary. Reply with the updated summary only.\n"
@@ -357,13 +366,16 @@ def fold_prompt(summary: str, recent: list[str], limit: int) -> str:
 
 def condense_prompt(existing: str, fresh: str, limit: int) -> str:
     """Second pass. The existing episode plus the summary that did not fit."""
-    prose = tidy_summary(existing) or "(none yet)"
-    segment = tidy_summary(fresh) or "(none)"
+    from core.content_filter import clean_memory_text
+
+    prose = clean_memory_text(tidy_summary(existing)) or "(none yet)"
+    segment = clean_memory_text(tidy_summary(fresh)) or "(none)"
     room = max(1, int(limit))
     return (
         "Shorten this server's episode summary. Reply with the shortened summary only.\n"
         "Combine the existing summary and the new summary. "
         f"{_EPISODE_KEEP} Merge duplicates. Drop anything trivial or finished.\n"
+        f"{_EPISODE_DROP}\n"
         f"{_EPISODE_FORMAT}\n"
         f"Length: at most {room} characters.\n\n"
         f"Existing summary:\n{prose}\n\n"
@@ -450,8 +462,11 @@ def prompt_episode(body: str) -> str:
     """The summary prose only. Raw lines stay in the local file."""
     from core.client import drop_safety_preamble
 
+    from core.content_filter import clean_memory_text
+
     summary, _log = split_episode(body)
-    text = tidy_summary(drop_safety_preamble(summary))
+    # No guild ids, mentions, or slurs in the server block of the prompt.
+    text = clean_memory_text(tidy_summary(drop_safety_preamble(summary)))
     if not text:
         return ""
     return _clip_prose(text, prompt_chars())

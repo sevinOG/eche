@@ -115,7 +115,9 @@ def messages(user_id: int, side: str) -> list[str]:
 
 def push(user_id: int, side: str, text: str) -> tuple[list[str], int]:
     """Append one full message. Returns the buffer and how many are waiting on a fold."""
-    body = clip_message(text)
+    from core.content_filter import clean_memory_text
+
+    body = clip_message(clean_memory_text(str(text or "")))
     if not body:
         state = _load(int(user_id), side)
         return list(state["messages"]), int(state["pending"])
@@ -137,7 +139,9 @@ def push(user_id: int, side: str, text: str) -> tuple[list[str], int]:
 
 def add_stash(user_id: int, side: str, lines: list[str]) -> None:
     """Keep pin lines that are leaving the Discord message, until a fold takes them."""
-    incoming = [str(line).strip() for line in lines if str(line).strip()]
+    from core.content_filter import clean_lines
+
+    incoming = clean_lines(lines)
     if not incoming:
         return
     state = _load(int(user_id), side)

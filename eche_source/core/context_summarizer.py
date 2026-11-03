@@ -379,7 +379,10 @@ def _memory_rows(notes: list[str]) -> str:
 # length target. The summarizer's output-token cap matches that target.
 _MEMORY_DROP = (
     "Drop: greetings, small talk, play-by-play of the chat, quotes, jokes, "
-    "one-off reactions, examples, and guesses."
+    "one-off reactions, examples, and guesses. "
+    "No slurs, no Discord ids or long id numbers, and no @mentions. "
+    "Do not record anything that was made up, wrong, or a refusal. "
+    "Drop requests that were answered, refused, or are stale."
 )
 _MEMORY_FORMAT = (
     'Format: short "- " bullets, one fact each, each ending with a period. '
@@ -393,10 +396,11 @@ def _length_line(room: int) -> str:
 
 def fold_memory_prompt(side: str, existing: str, notes: list[str], limit: int) -> str:
     """Local buffer plus the long-term block. User and bot each keep their own job."""
+    from core.content_filter import clean_lines, clean_memory_text
     from core.episodic import tidy_summary
 
-    prose = tidy_summary(existing) or "(none yet)"
-    rows = _memory_rows(notes)
+    prose = clean_memory_text(tidy_summary(existing)) or "(none yet)"
+    rows = _memory_rows(clean_lines(notes))
     room = max(1, int(limit))
     if side == "bot":
         intro = (
@@ -427,10 +431,11 @@ def fold_memory_prompt(side: str, existing: str, notes: list[str], limit: int) -
 
 def condense_memory_prompt(side: str, existing: str, fresh: str, limit: int) -> str:
     """Second pass. The stored block plus the summary that did not fit."""
+    from core.content_filter import clean_memory_text
     from core.episodic import tidy_summary
 
-    prose = tidy_summary(existing) or "(none yet)"
-    segment = tidy_summary(fresh) or "(none)"
+    prose = clean_memory_text(tidy_summary(existing)) or "(none yet)"
+    segment = clean_memory_text(tidy_summary(fresh)) or "(none)"
     room = max(1, int(limit))
     if side == "bot":
         keep = "what you promised, answers they may come back to, tools you used, and open threads"
@@ -442,6 +447,7 @@ def condense_memory_prompt(side: str, existing: str, fresh: str, limit: int) -> 
         f"{intro}"
         f"Combine the existing summary and the new summary. Keep {keep}. "
         "Merge duplicates. Drop anything trivial or one-off.\n"
+        f"{_MEMORY_DROP}\n"
         f"{_MEMORY_FORMAT}\n"
         f"{_length_line(room)}\n\n"
         f"Existing summary:\n{prose}\n\n"

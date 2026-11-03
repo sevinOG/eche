@@ -237,7 +237,18 @@ def render_memory_prompt(
     episode: str,
     latest: str,
 ) -> str:
-    """Summaries first. The rolling messages sit with the turn being answered."""
+    """Summaries first. The rolling messages sit with the turn being answered.
+
+    Memory text is filtered here: no mentions, ids, or slurs. The latest
+    message is the person's own words and is left as written.
+    """
+    from core.content_filter import clean_lines, clean_memory_text
+
+    user_summary = clean_memory_text(user_summary or "") or "none"
+    bot_summary = clean_memory_text(bot_summary or "") or "none"
+    user_rows = clean_lines(user_rows)
+    bot_rows = clean_lines(bot_rows)
+    episode = clean_memory_text(episode or "")
     head = "\n\n".join(
         [
             f"Today: {today}",
