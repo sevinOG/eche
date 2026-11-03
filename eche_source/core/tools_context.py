@@ -1,61 +1,51 @@
 # core/tools_context.py
-# First chat tool: read the speaker's own pinned context.
-# Same lookup as the owner ?context_raw command. It does not invoke that
-# command, and it will not read a different member even if the model asks.
+# Chat tool: show the speaker what Eche remembers about them.
+#
+# Anyone can use it, in any wording. The model decides when someone is asking
+# about their own memory or context; there is no phrase trigger. It only ever
+# reads the speaker's own pin. Model arguments are ignored, so it cannot be
+# pointed at another member. The text is filtered (no mentions, ids, or slurs)
+# before it is posted.
 
 from __future__ import annotations
 
-import re
-
-from core.context_manager import read_raw_context
+from core.context_manager import parse_pin_sections, read_raw_context
 from core.tools import ACCESS_ANYONE, Tool, ToolContext, ToolResult, register
 
-# Narrow backup for the phrasings people actually use. The model is still
-# the one that chooses the tool for anything this does not match.
-_OWN_CONTEXT_ASK = re.compile(
-    r"(?:please[, ]+|hey[, ]+|eche[, ]+|can you |could you |will you |just )*"
-    r"(?:"
-    r"(?:show(?: me)?|see|view|display|read|pull|dump|gimme|give me|let me see)"
-    r"(?:\s+\w+){0,6}\s+my context"
-    r"|"
-    r"(?:what(?:'s|s| is| does)|how(?:'s| is| does))"
-    r"(?:\s+\w+){0,6}\s+my context"
-    r"|"
-    r"(?:my|raw) context"
-    r")"
-    r"(?:\s+look(?:s|ing)?(?:\s+like)?)?"
-    r"(?:\s+please|\s+thanks)?"
-    r"\s*\??\s*$",
-    re.IGNORECASE,
-)
-_NOT_OWN_CONTEXT = re.compile(
-    r"\b(?:clear|delete|forget|wipe|overwrite|erase|reset|his|her|their)\b",
-    re.IGNORECASE,
+TOOL_NAME = "context_raw"
+
+_DESCRIPTION = (
+    "Show the speaker what you remember about them: their own stored memory. "
+    "Use it whenever they ask, in any wording, what you know or remember about them, "
+    "or to see their memory, context, notes, or profile. "
+    "It only reads the speaker's own memory, never anyone else's. "
+    "Do not use it for other questions."
 )
 
-
-def asks_for_own_context(text: str) -> bool:
-    """True when this message is the speaker asking to see their own context."""
-    cleaned = " ".join((text or "").replace("\u2019", "'").split())
-    if not cleaned or len(cleaned) > 160:
-        return False
-    if _NOT_OWN_CONTEXT.search(cleaned):
-        return False
-    return _OWN_CONTEXT_ASK.fullmatch(cleaned) is not None
-
-_CONTEXT_RAW = (
-    "Read this speaker's own pinned context, and only when they ask to see it."
-)
+NOTHING_STORED = "I don't have anything stored about you yet."
+UNREADABLE = "I couldn't read your memory right now."
+_INTRO = "What I remember about you:"
 
 
-def _show_as_text(content: str) -> str:
-    """The pin, with mentions broken so it can be posted outside a code fence."""
-    text = content.replace("```", "'''")
-    text = text.replace("<@", "<@\u200b")
-    text = text.replace("<#", "<#\u200b")
-    text = text.replace("@everyone", "@\u200beveryone")
-    text = text.replace("@here", "@\u200bhere")
+def _break_pings(text: str) -> str:
+    """Belt and braces after the filter: nothing in the reply can ping."""
+    text = (text or "").replace("```", "'''")
+    text = text.replace("<@", "<@\u200b").replace("<#", "<#\u200b")
+    text = text.replace("@everyone", "@\u200beveryone").replace("@here", "@\u200bhere")
     return text
+
+
+def own_memory_text(content: str | None) -> str:
+    """The reply for one pin. Summary only, filtered. None means unreadable."""
+    if content is None:
+        return UNREADABLE
+    from core.content_filter import clean_memory_text
+
+    _label, summary, _recent = parse_pin_sections(content or "", "")
+    prose = clean_memory_text((summary or "").strip())
+    if not prose or prose in ("(none yet)", "(summary unavailable)"):
+        return NOTHING_STORED
+    return f"{_INTRO}\n{_break_pings(prose)}"
 
 
 async def show_own_context(ctx: ToolContext, arguments: dict) -> ToolResult:
@@ -67,20 +57,14 @@ async def show_own_context(ctx: ToolContext, arguments: dict) -> ToolResult:
         author.id,
         getattr(author, "name", None),
     )
-    if content is None:
-        return ToolResult(text="I couldn't read your context.")
-    if not content.strip():
-        return ToolResult(text="(no context stored yet)")
-    # A code fence was what Discord cut off. Plain text still splits only
-    # when one message would pass the Discord limit.
-    return ToolResult(text=_show_as_text(content), fence=False)
+    return ToolResult(text=own_memory_text(content), fence=False)
 
 
 def register_builtin_tools() -> None:
     register(
         Tool(
-            name="context_raw",
-            description=_CONTEXT_RAW,
+            name=TOOL_NAME,
+            description=_DESCRIPTION,
             handler=show_own_context,
             parameters={"type": "object", "properties": {}},
             access=ACCESS_ANYONE,

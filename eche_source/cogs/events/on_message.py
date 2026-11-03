@@ -25,7 +25,7 @@ from core.client import (
 )
 
 # --- CHAT TOOLS ---
-import core.tools_context as tools_context  # registers context_raw
+import core.tools_context  # noqa: F401  registers context_raw
 import core.tools_duckduckgo  # noqa: F401  registers duckduckgo
 import core.tools_thread  # noqa: F401  registers thread
 import core.tools_admin  # noqa: F401  registers mute, timeout, kick, ban
@@ -344,16 +344,9 @@ class OnMessage(commands.Cog):
         # are left out of the list the model receives.
         admin_on = admin_tools_enabled()
         admin_visible = bool(speaker_is_owner and admin_on)
-        # context_raw is offered only when this message asks to see it.
-        # Otherwise the model dumps the pin on "what does that mean".
-        asked_context = tools_context.asks_for_own_context(cleaned)
+        # Every offered tool, context_raw included. The model decides when
+        # someone is asking about their own memory; there is no phrase trigger.
         offered = specs_for(speaker_is_owner=speaker_is_owner, admin_enabled=admin_on)
-        if not asked_context:
-            offered = [
-                spec
-                for spec in offered
-                if (spec.get("function") or {}).get("name") != "context_raw"
-            ]
         turn = await call_groq_turn(
             prompt,
             user_id=message.author.id,
@@ -369,46 +362,9 @@ class OnMessage(commands.Cog):
         )
         calls = [] if quota_reply else list(turn.tool_calls or [])
         names = visible_names(speaker_is_owner=speaker_is_owner, admin_enabled=admin_on)
-        if not asked_context:
-            names = {name for name in names if name.casefold() != "context_raw"}
-        typed_calls = False
         if not calls and not quota_reply:
-            # The model typed a tool call or ?context_raw instead of the API.
+            # The model typed a tool call instead of using the API.
             calls = calls_from_model_text(turn.reply, names)
-            typed_calls = bool(calls)
-        if not calls and not quota_reply and asked_context:
-            # The ask was clear and the model answered in prose. Run the tool.
-            calls = [{"name": "context_raw", "arguments": {}}]
-        dropped_context = False
-        if not asked_context and calls:
-            kept = []
-            for call in calls:
-                if isinstance(call, dict) and str(call.get("name") or "").casefold() == "context_raw":
-                    dropped_context = True
-                    continue
-                kept.append(call)
-            calls = kept
-        if dropped_context and not calls and not quota_reply:
-            prose = (reply or "").strip()
-            if typed_calls or not prose:
-                try:
-                    turn = await call_groq_turn(
-                        prompt,
-                        user_id=message.author.id,
-                        max_completion_tokens=completion_tokens,
-                        tools=None,
-                        include_tool_note=False,
-                        extra_system=admin_injection(enabled=admin_visible),
-                        images=media.images or None,
-                    )
-                except Exception as exc:
-                    dprint(f"[on_message] context repair failed: {exc}")
-                else:
-                    reply = turn.reply or ""
-                    quota_reply = turn.quota or reply.strip().lower().startswith(
-                        "sorry, i'm being rate limited"
-                    )
-                    calls = []
         if not calls and not quota_reply and turn.cut:
             turn = await settle_cut_reply(
                 turn,
