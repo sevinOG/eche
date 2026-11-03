@@ -523,6 +523,28 @@ def _cap_help() -> dict[str, tuple[str, str]]:
         "**Reset to defaults** puts every slider back to the value Eche used "
         "before these were settings.",
     )
+    out["blocked_words"] = (
+        "Blocked words",
+        "### What it does\n"
+        "Eche refuses anything involving minors: the message, its own reply, "
+        "tool calls, thread posts, and every ?asset or picture/video prompt. "
+        "The model and the image API are not called for a blocked request. "
+        "The built-in list is in core/blocklist.py.\n\n"
+        "### Adding words\n"
+        "One word or phrase per line, or commas between them. Whole words only, "
+        "any case, so `kid` does not block `kidney`. Saved as `blocked_words`.\n\n"
+        "### When it changes\n"
+        "Save Settings. The next message uses the new list.",
+    )
+    out["memory_mask_slurs"] = (
+        "Mask slurs in memory",
+        "### On (default)\n"
+        "Slurs in memory pins and memory prompts are starred out, and the "
+        "summarizer is told not to record them.\n\n"
+        "### Off\n"
+        "Memory keeps the words as said, and the summarizer's \"No slurs\" rule "
+        "is dropped. Mentions and Discord ids are always stripped either way.",
+    )
     out["reset_memory"] = (
         "Reset all memory",
         "### What it does\n"

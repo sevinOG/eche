@@ -377,6 +377,12 @@ def _memory_rows(notes: list[str]) -> str:
 
 # Shared by every memory prompt. Durable facts only, short bullets, a hard
 # length target. The summarizer's output-token cap matches that target.
+def _slur_rule(text: str) -> str:
+    from core.content_filter import slur_rule
+
+    return slur_rule(text)
+
+
 _MEMORY_DROP = (
     "Drop: greetings, small talk, play-by-play of the chat, quotes, jokes, "
     "one-off reactions, examples, and guesses. "
@@ -420,7 +426,7 @@ def fold_memory_prompt(side: str, existing: str, notes: list[str], limit: int) -
         recent_label = "Recent messages"
     return (
         f"{intro}"
-        f"{_MEMORY_DROP}\n"
+        f"{_slur_rule(_MEMORY_DROP)}\n"
         "Merge new facts in. Replace facts that changed. Keep older facts that still hold.\n"
         f"{_MEMORY_FORMAT}\n"
         f"{_length_line(room)}\n\n"
@@ -447,7 +453,7 @@ def condense_memory_prompt(side: str, existing: str, fresh: str, limit: int) -> 
         f"{intro}"
         f"Combine the existing summary and the new summary. Keep {keep}. "
         "Merge duplicates. Drop anything trivial or one-off.\n"
-        f"{_MEMORY_DROP}\n"
+        f"{_slur_rule(_MEMORY_DROP)}\n"
         f"{_MEMORY_FORMAT}\n"
         f"{_length_line(room)}\n\n"
         f"Existing summary:\n{prose}\n\n"

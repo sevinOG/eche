@@ -31,6 +31,7 @@ from PyQt6.QtWidgets import (
     QButtonGroup,
     QSpinBox,
     QSlider,
+    QPlainTextEdit,
 )
 
 from gui.theme import APP_NAME, APP_VERSION
@@ -75,6 +76,12 @@ except Exception:
 def load_settings():
     from core.secrets import load_all
     return load_all(PROJECT_ROOT)
+
+
+def _split_blocked(raw: str) -> list[str]:
+    from core.blocklist import parse_extra
+
+    return parse_extra(raw)
 
 
 def save_settings(data: dict):
@@ -626,6 +633,7 @@ class SettingsWindow(QWidget):
         ))
         layout.addWidget(self._context_caps_card())
         layout.addWidget(self._reset_memory_card())
+        layout.addWidget(self._content_card())
         body = QVBoxLayout()
         body.setSpacing(10)
         hint = QLabel(
@@ -720,6 +728,44 @@ class SettingsWindow(QWidget):
             "How much history and memory goes into each prompt, and how long the "
             "stored summaries are. Defaults match how Eche worked before. "
             "Smaller is faster on local models.",
+            body,
+        )
+
+    def _content_card(self) -> QFrame:
+        from core.blocklist import BLOCKED_WORDS
+
+        body = QVBoxLayout()
+        body.setSpacing(10)
+        head = QHBoxLayout()
+        label = QLabel("Blocked words")
+        label.setObjectName("FieldLabel")
+        head.addWidget(label)
+        head.addStretch()
+        head.addWidget(self._info_button("blocked_words"))
+        body.addLayout(head)
+        self.blocked_words_edit = QPlainTextEdit()
+        self.blocked_words_edit.setPlaceholderText("One word or phrase per line, or separated by commas")
+        self.blocked_words_edit.setPlainText(
+            "\n".join(_split_blocked(self.data.get("blocked_words") or ""))
+        )
+        self.blocked_words_edit.setFixedHeight(96)
+        body.addWidget(self.blocked_words_edit)
+        built_in = QLabel("Always blocked: " + ", ".join(BLOCKED_WORDS) + ", ages under 18, and baby in a sexual message.")
+        built_in.setObjectName("CardHint")
+        built_in.setWordWrap(True)
+        body.addWidget(built_in)
+        row = QHBoxLayout()
+        self.mask_slurs_box = QCheckBox("Mask slurs in memory")
+        stored = str(self.data.get("memory_mask_slurs") or "").strip().lower()
+        self.mask_slurs_box.setChecked((not stored) or stored in ("1", "true", "yes", "on"))
+        row.addWidget(self.mask_slurs_box)
+        row.addStretch()
+        row.addWidget(self._info_button("memory_mask_slurs"))
+        body.addLayout(row)
+        return self._card(
+            "Content",
+            "Anything involving minors is refused in chat, threads, and pictures or "
+            "videos, before the model or API is called. Add more words here.",
             body,
         )
 
@@ -1609,6 +1655,16 @@ class SettingsWindow(QWidget):
                 payload[key] = str(self.data.get(key) or "").strip()
         if hasattr(self, "project_path_edit"):
             payload["project_path"] = self.project_path_edit.text().strip()
+        if hasattr(self, "blocked_words_edit"):
+            payload["blocked_words"] = "\n".join(
+                _split_blocked(self.blocked_words_edit.toPlainText())
+            )
+        else:
+            payload["blocked_words"] = str(self.data.get("blocked_words") or "").strip()
+        if hasattr(self, "mask_slurs_box"):
+            payload["memory_mask_slurs"] = "1" if self.mask_slurs_box.isChecked() else "0"
+        else:
+            payload["memory_mask_slurs"] = str(self.data.get("memory_mask_slurs") or "").strip()
         if hasattr(self, "security_admin_box"):
             payload["admin_tools"] = "1" if self.security_admin_box.isChecked() else "0"
         else:

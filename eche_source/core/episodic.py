@@ -332,6 +332,12 @@ _EPISODE_KEEP = (
     "Keep: subjects people raised, decisions or plans the server made, "
     "recurring topics, and tools that ran."
 )
+def _slur_rule(text: str) -> str:
+    from core.content_filter import slur_rule
+
+    return slur_rule(text)
+
+
 _EPISODE_DROP = (
     "Drop: who said what, greetings, small talk, play-by-play, quotes, numbers, "
     "links, and guesses. "
@@ -355,7 +361,7 @@ def fold_prompt(summary: str, recent: list[str], limit: int) -> str:
     return (
         "Update this server's episode summary. Reply with the updated summary only.\n"
         f"{_EPISODE_KEEP}\n"
-        f"{_EPISODE_DROP}\n"
+        f"{_slur_rule(_EPISODE_DROP)}\n"
         "Merge the recent lines in. Keep older subjects that still matter; drop finished ones.\n"
         f"{_EPISODE_FORMAT}\n"
         f"Length: at most {room} characters. Shorter is better.\n\n"
@@ -375,7 +381,7 @@ def condense_prompt(existing: str, fresh: str, limit: int) -> str:
         "Shorten this server's episode summary. Reply with the shortened summary only.\n"
         "Combine the existing summary and the new summary. "
         f"{_EPISODE_KEEP} Merge duplicates. Drop anything trivial or finished.\n"
-        f"{_EPISODE_DROP}\n"
+        f"{_slur_rule(_EPISODE_DROP)}\n"
         f"{_EPISODE_FORMAT}\n"
         f"Length: at most {room} characters.\n\n"
         f"Existing summary:\n{prose}\n\n"

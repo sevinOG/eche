@@ -182,7 +182,9 @@ def get_summarizer_model() -> str:
 
 
 def build_summary_prompt(combined_for_summary: str) -> str:
-    template = get_summarizer_prompt()
+    from core.content_filter import slur_rule
+
+    template = slur_rule(get_summarizer_prompt())
     if "{combined_for_summary}" in template:
         return template.replace("{combined_for_summary}", combined_for_summary)
     return template.rstrip() + "\n\n" + combined_for_summary
@@ -197,8 +199,9 @@ def build_merge_prompt(
 
     {char_limit} in a custom prompt file is the length target.
     """
-    template = get_summarizer_prompt().replace("{char_limit}", str(int(char_limit)))
-    from core.content_filter import clean_memory_text
+    from core.content_filter import clean_memory_text, slur_rule
+
+    template = slur_rule(get_summarizer_prompt()).replace("{char_limit}", str(int(char_limit)))
 
     existing = clean_memory_text((existing_summary or "").strip()) or "(none yet)"
     fresh = clean_memory_text((new_lines or "").strip()) or "(none)"
@@ -211,8 +214,9 @@ def build_merge_prompt(
 
 
 def build_condense_prompt(existing_summary: str, char_limit: int = 1400) -> str:
-    template = DEFAULT_CONDENSE_PROMPT.strip()
-    from core.content_filter import clean_memory_text
+    from core.content_filter import clean_memory_text, slur_rule
+
+    template = slur_rule(DEFAULT_CONDENSE_PROMPT.strip())
 
     text = template.replace(
         "{existing_summary}", clean_memory_text((existing_summary or "").strip())

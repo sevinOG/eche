@@ -126,6 +126,7 @@ class TempRoot(unittest.TestCase):
         self._env.start()
         os.makedirs(os.path.join(self.root, "config"), exist_ok=True)
         ds.clear_caches()
+        cf._mask_cache = ("", -1.0, True)
 
     def tearDown(self):
         self._env.stop()
@@ -301,7 +302,7 @@ class MemoryWipeTests(TempRoot):
 # ------------------------------------------------------------- the filters
 
 
-class FilterTests(unittest.TestCase):
+class FilterTests(TempRoot):
     def test_mentions_and_ids_go(self):
         text = "hi <@123456789012345678> <@!123456789012345678> <@&123456789012345678> <#123456789012345678> id 123456789012345678 ok"
         out = cf.clean_memory_text(text)
@@ -464,7 +465,7 @@ class ContextToolTests(TempRoot):
 # --------------------------------------------------- picture/video prompts
 
 
-class AssetPromptTests(unittest.TestCase):
+class AssetPromptTests(TempRoot):
     """Slurs no longer refuse a picture. Only the minors block does (test_blocklist)."""
 
     def test_slur_prompt_is_not_refused(self):
