@@ -24,6 +24,10 @@ async def reply_local(user_text: str) -> str:
     user_text = (user_text or "").strip()
     if not user_text:
         return ""
+    from core.blocklist import REFUSAL, is_blocked
+
+    if is_blocked(user_text):
+        return REFUSAL
 
     # Push settings (incl. Ollama mode + key) into this process for client.py
     try:
@@ -96,6 +100,8 @@ async def reply_local(user_text: str) -> str:
         else:
             text = out
         text = _strip_tags(str(text or ""))
+        if is_blocked(text):
+            return REFUSAL
         return text or "(empty model reply)"
     except Exception as e:
         return f"(local chat error: {e})"

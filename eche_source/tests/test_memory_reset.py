@@ -465,22 +465,20 @@ class ContextToolTests(TempRoot):
 
 
 class AssetPromptTests(unittest.TestCase):
-    def test_plan_refuses_slur_prompt(self):
-        with self.assertRaises(imagine.ImagineError) as caught:
-            imagine.plan_asset(f"image of a sign that says {SLUR}")
-        self.assertEqual(caught.exception.text, cf.ASSET_REFUSAL)
+    """Slurs no longer refuse a picture. Only the minors block does (test_blocklist)."""
 
-    def test_run_refuses_before_any_request(self):
-        plan = imagine.AssetPlan(mode="image", prompt=f"a {WORD_SLUR} cartoon")
-        with mock.patch.object(imagine, "http_json") as http:
-            with self.assertRaises(imagine.ImagineError):
-                run(imagine.run_asset(plan, "key"))
-            http.assert_not_called()
+    def test_slur_prompt_is_not_refused(self):
+        plan = imagine.plan_asset(f"image of a sign that says {SLUR}")
+        self.assertIn(SLUR, plan.prompt)
+        imagine.check_prompt(f"a {WORD_SLUR} cartoon")  # no raise
+
+    def test_content_filter_has_no_asset_refusal(self):
+        self.assertFalse(hasattr(cf, "ASSET_REFUSAL"))
+        self.assertFalse(hasattr(cf, "prompt_allowed"))
 
     def test_clean_prompt_passes(self):
         plan = imagine.plan_asset("image of a raccoon eating spice cake")
         self.assertIn("raccoon", plan.prompt)
-        self.assertTrue(cf.prompt_allowed("a cocoon in Niger"))
 
 
 # ----------------------------------------------------------- reply style
@@ -491,8 +489,21 @@ class ReplyStyleTests(unittest.TestCase):
         from core import prompt_text
 
         text = prompt_text.system_text(job="channel") if _job_ok(prompt_text) else prompt_text._STYLE
-        for needle in ("one line", "names or quotes", "make up", "search ran"):
+        for needle in ("No lectures", "names or quotes", "make up", "search ran"):
             self.assertIn(needle, text)
+
+    def test_no_refusal_guidance(self):
+        from core import prompt_text
+
+        for job in ("channel", "plain", "lookup"):
+            text = prompt_text.system_text(job=job) if _job_ok(prompt_text) else prompt_text._STYLE
+            self.assertNotIn("won't do something", text)
+            self.assertNotIn("say so in one line", text)
+
+    def test_reply_length_rule_kept(self):
+        from core import prompt_text
+
+        self.assertIn("Match the length of the message", prompt_text._CHANNEL_SHAPE)
 
     def test_personality_migrates(self):
         from core import personality

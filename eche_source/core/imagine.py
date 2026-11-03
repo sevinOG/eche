@@ -164,15 +164,16 @@ def refusal(is_owner: bool) -> str:
 
 
 def check_prompt(text: str) -> None:
-    """Content check for every picture or video prompt, before any API call.
+    """Hard block for every picture or video prompt, before any API call.
 
-    Same word list the memory filter uses (core/content_filter.py). The image
-    model prints words it is given, so a slur prompt is refused here.
+    Only the minors list in core/blocklist.py (plus Settings → Blocked words)
+    refuses here. Crude or offensive prompts go through.
     """
-    from core.content_filter import ASSET_REFUSAL, prompt_allowed
+    from core.blocklist import REFUSAL, is_blocked, note
 
-    if not prompt_allowed(text or ""):
-        raise ImagineError(ASSET_REFUSAL)
+    if is_blocked(text):
+        note("asset prompt")
+        raise ImagineError(REFUSAL)
 
 
 def mime_for(content_type: str, filename: str) -> str:

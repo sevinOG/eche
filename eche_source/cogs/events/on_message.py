@@ -43,6 +43,9 @@ from core.tools import (
 # --- SEVIN SELF-MEMORY ---
 from core.bot_memory import remember_bot
 
+# --- HARD BLOCK (minors) ---
+from core.blocklist import REFUSAL as BLOCK_REFUSAL, is_blocked, note as block_note
+
 # --- BOO SYSTEM ---
 from core.boo_kaitar import maybe_boo
 
@@ -83,6 +86,15 @@ async def _send_reply(message, content: str):
         else:
             sent = await message.channel.send(chunk)
     return sent
+
+
+def _flat_arguments(arguments) -> str:
+    """Every string in a tool call's arguments, for the block check."""
+    if isinstance(arguments, dict):
+        return " ".join(_flat_arguments(value) for value in arguments.values())
+    if isinstance(arguments, (list, tuple)):
+        return " ".join(_flat_arguments(value) for value in arguments)
+    return str(arguments) if isinstance(arguments, str) else ""
 
 
 class OnMessage(commands.Cog):
@@ -178,7 +190,19 @@ class OnMessage(commands.Cog):
             if render_in_thread and name.casefold() == "asset":
                 continue
             seen.add(name.casefold())
-            result = await execute(name, (call or {}).get("arguments") or {}, ctx)
+            arguments = (call or {}).get("arguments") or {}
+            if is_blocked(_flat_arguments(arguments)):
+                # The model asked a tool for something on the block list.
+                block_note(f"{name} arguments")
+                try:
+                    await _send_reply(message, BLOCK_REFUSAL)
+                except Exception as e:
+                    dprint(f"[on_message] refusal send failed: {e}")
+                    continue
+                said.append(BLOCK_REFUSAL)
+                ran_any = True
+                break
+            result = await execute(name, arguments, ctx)
             if not result.ran:
                 continue
             tools_used.append(name)
@@ -189,6 +213,9 @@ class OnMessage(commands.Cog):
                     "sorry, i'm being rate limited"
                 ):
                     lookup_quota = True
+            if not result.quiet and is_blocked(spoken):
+                block_note(f"{name} reply")
+                spoken = BLOCK_REFUSAL
             # A quiet tool already posted everything, including its announcement.
             shown = "" if result.quiet else spoken
             chunks = format_tool_messages(
@@ -312,6 +339,16 @@ class OnMessage(commands.Cog):
             await self._answer_and_remember(message, guild, cleaned, remembered, media)
 
     async def _answer_and_remember(self, message, guild, cleaned, remembered, media):
+        # Hard block before any prompt is built or model is called. Nothing
+        # from this message is remembered or added to the episode.
+        if is_blocked(cleaned, getattr(media, "text", "")):
+            block_note("chat message")
+            try:
+                await _send_reply(message, BLOCK_REFUSAL)
+            except Exception as e:
+                dprint(f"[on_message] refusal send failed: {e}")
+            return
+
         # Build from older memory first, so this turn appears only once,
         # under MOST RECENT MESSAGE, with its pictures.
         prompt = await build_prompt(
@@ -398,6 +435,11 @@ class OnMessage(commands.Cog):
                 dprint(f"[on_message] tool delivery failed: {e}")
                 ran_tools = False
 
+        if not ran_tools and reply.strip() and is_blocked(reply):
+            # The model's own reply is checked before it is sent.
+            block_note("model reply")
+            reply = BLOCK_REFUSAL
+
         if ran_tools:
             if getattr(self.bot, "next_reply_override", False):
                 self.bot.next_reply_override = False
@@ -465,6 +507,9 @@ class OnMessage(commands.Cog):
             return
         body = " ".join((text or "").split())
         if not body and not tool_lines and not getattr(message, "attachments", None):
+            return
+        if is_blocked(body):
+            # Blocked text never reaches the episode or its summarizer.
             return
         try:
             from core.episodic import append_episodic, turn_lines

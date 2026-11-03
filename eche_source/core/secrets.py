@@ -74,6 +74,8 @@ PUBLIC_KEYS = (
     "thread_posted_chars",          # earlier posts each thread post sees; blank/0 = all
     "thread_topic_scan",            # messages searched for a thread subject; blank uses 8
     "local_history_turns",          # desktop chat turns sent; blank uses 20
+    "blocked_words",                # extra hard-blocked words, one per line or comma (core/blocklist.py)
+    "memory_mask_slurs",            # "0" stops masking slurs in memory pins. Blank stays on.
 )
 
 # Map settings key -> environment variable used by the bot

@@ -140,11 +140,58 @@ def _tidy_spacing(text: str) -> str:
     return "\n".join(lines).strip("\n")
 
 
+_mask_cache: tuple[str, float, bool] = ("", -1.0, True)
+
+
+def masking_enabled() -> bool:
+    """Settings → Context & Memory: "Mask slurs in memory". Blank stays on."""
+    global _mask_cache
+    try:
+        import os
+
+        from core.secrets import public_value, settings_path
+
+        path = settings_path()
+        mtime = os.path.getmtime(path) if os.path.isfile(path) else 0.0
+        if _mask_cache[0] == path and _mask_cache[1] == mtime:
+            return _mask_cache[2]
+        stored = public_value("memory_mask_slurs").strip().lower()
+    except Exception:
+        return True
+    enabled = (not stored) or stored in ("1", "true", "yes", "on")
+    _mask_cache = (path, mtime, enabled)
+    return enabled
+
+
 def clean_memory_text(text: str) -> str:
-    """What may go on a memory pin or into a memory prompt."""
+    """What may go on a memory pin or into a memory prompt.
+
+    Mentions and ids always go. Slurs are masked while the toggle is on.
+    """
     if not text:
         return text or ""
-    return _tidy_spacing(mask_slurs(strip_mentions(text)))
+    cleaned = strip_mentions(text)
+    if masking_enabled():
+        cleaned = mask_slurs(cleaned)
+    return _tidy_spacing(cleaned)
+
+
+# The summarizer's "No slurs" rule follows the same toggle.
+_SLUR_RULES = (
+    ("No slurs, ids, or @mentions.", "No ids or @mentions."),
+    ("No slurs, no Discord ids or long id numbers, and no @mentions.",
+     "No Discord ids or long id numbers, and no @mentions."),
+)
+
+
+def slur_rule(prompt: str) -> str:
+    """The prompt as is while masking is on. Off: the "No slurs" part is dropped."""
+    text = prompt or ""
+    if masking_enabled():
+        return text
+    for with_slurs, without in _SLUR_RULES:
+        text = text.replace(with_slurs, without)
+    return text
 
 
 def clean_lines(lines) -> list[str]:
@@ -154,13 +201,3 @@ def clean_lines(lines) -> list[str]:
         if cleaned:
             out.append(cleaned)
     return out
-
-
-# Imagine prompts. Chat leans on the model's own judgement; a picture or a
-# video is checked here first because the image model will print words.
-ASSET_REFUSAL = "Not making that one."
-
-
-def prompt_allowed(text: str) -> bool:
-    """False when a picture or video prompt carries a slur."""
-    return not has_slur(text or "")

@@ -887,7 +887,12 @@ async def _execute(
     need_sentence = False
     search_tools = _duckduckgo_tools()
 
+    from core.blocklist import REFUSAL, is_blocked, note
+
     for query in searches or []:
+        if is_blocked(query):
+            note("thread search")
+            continue
         if not query_stays_on(query, focus):
             dprint(f"[tools] thread lookup skipped: {query!r}")
             continue
@@ -946,6 +951,15 @@ async def _execute(
                 break
             continue
         need_sentence = False
+        if is_blocked(body):
+            # A thread post is checked before it is sent. The thread stops here.
+            note("thread post")
+            try:
+                await thread.send(REFUSAL)
+                posted.append(REFUSAL)
+            except Exception as exc:
+                dprint(f"[tools] thread refusal failed: {exc}")
+            break
         stopped = False
         for chunk in discord_chunks(body):
             try:
@@ -1067,6 +1081,12 @@ async def open_thread(ctx: ToolContext, arguments: dict) -> ToolResult:
         source = await previous_topic(message) or asking
     from core.imagine import asset_thread_kind, asset_thread_request
 
+    from core.blocklist import REFUSAL, is_blocked, note
+
+    if is_blocked(asking, source):
+        # Before the planner is called and before a thread is opened.
+        note("thread request")
+        return ToolResult(text=REFUSAL, fence=False)
     rendering = asset_thread_request(asking) or asset_thread_request(source)
     kind = asset_thread_kind(asking) or asset_thread_kind(source)
     brief = (
@@ -1080,6 +1100,9 @@ async def open_thread(ctx: ToolContext, arguments: dict) -> ToolResult:
             "Not a paragraph."
         )
     title, plan, searches = await _name_and_plan(brief, source)
+    if is_blocked(title, plan):
+        note("thread plan")
+        return ToolResult(text=REFUSAL, fence=False)
     arguments["title"] = title
 
     if isinstance(channel, discord.Thread):
