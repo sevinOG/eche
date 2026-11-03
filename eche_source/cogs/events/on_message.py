@@ -294,8 +294,14 @@ class OnMessage(commands.Cog):
         if not cleaned:
             cleaned = "(no text)" if media.text else "(no content)"
         remembered = cleaned if not media.memory else f"{cleaned}\n{media.memory}"
-        if len(remembered) > 700:
-            remembered = remembered[:699].rstrip() + "…"
+        from core.context_caps import get as context_cap
+
+        # An attachment-only turn is remembered by its note. 700 unless the
+        # Context & Memory slider sets a tighter per-message cap.
+        remember_cap = context_cap("memory_message_chars") or 700
+        remember_cap = min(700, remember_cap)
+        if len(remembered) > remember_cap:
+            remembered = remembered[: remember_cap - 1].rstrip() + "…"
 
         guild = self.bot.get_guild(HOME_SERVER_ID)
 

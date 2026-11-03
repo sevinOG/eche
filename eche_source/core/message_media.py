@@ -69,6 +69,16 @@ class DiscordMedia:
     message: object = None
 
 
+def _cap(key: str, default: int) -> int:
+    """Settings → Context & Memory. The constant above is the default."""
+    try:
+        from core.context_caps import get
+
+        return get(key)
+    except Exception:
+        return default
+
+
 def _clip(text: str, limit: int) -> str:
     raw = (text or "").strip()
     if len(raw) <= limit:
@@ -312,7 +322,7 @@ async def _read_text(item) -> str:
         return ""
     if not isinstance(data, (bytes, bytearray)):
         return ""
-    return _clip(bytes(data).decode("utf-8", errors="replace"), _TEXT_CLIP)
+    return _clip(bytes(data).decode("utf-8", errors="replace"), _cap("attachment_text_chars", _TEXT_CLIP))
 
 
 async def _read_image(item, seen: set[str]) -> dict | None:
@@ -447,7 +457,7 @@ async def collect_discord_media(message) -> DiscordMedia:
     if text and saw_image:
         text = "If you cannot see an image, say so. Do not guess what is in it.\n" + text
     if text:
-        text = _clip(text, _MEDIA_CLIP)
+        text = _clip(text, _cap("media_prompt_chars", _MEDIA_CLIP))
     images = _fit_images(images)
     summary = ", ".join(labels[:4])
     if len(labels) > 4:
@@ -455,7 +465,7 @@ async def collect_discord_media(message) -> DiscordMedia:
     # Reply text stays on this turn. It is not written into the memory pin.
     return DiscordMedia(
         text=text,
-        memory=_clip(own, _MEMORY_CLIP) if own else "",
+        memory=_clip(own, _cap("media_memory_chars", _MEMORY_CLIP)) if own else "",
         summary=summary,
         images=images,
         message=refreshed,

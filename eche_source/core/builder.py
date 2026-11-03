@@ -195,15 +195,30 @@ def _merge_rows(*groups) -> list[str]:
     return merged
 
 
-def _summary_block(label: str, summary: str) -> str:
-    """Long-term prose only, clipped the same way as the server episode."""
-    from core.episodic import PROMPT_CHARS, _clip_prose
+def summary_prompt_chars() -> int:
+    """Settings → Context & Memory → Long-term summary in the prompt."""
+    from core.context_caps import get
+
+    return get("memory_summary_prompt_chars")
+
+
+def memory_prompt_chars() -> int:
+    """Settings → Context & Memory → Whole memory prompt."""
+    from core.context_caps import get
+
+    return get("memory_prompt_chars")
+
+
+def _summary_block(label: str, summary: str, limit: int | None = None) -> str:
+    """Long-term summary only, clipped the same way as the server episode."""
+    from core.episodic import _clip_prose
 
     prose = " ".join((summary or "").split())
     if not prose or prose == "none":
         prose = "none"
     else:
-        prose = _clip_prose(prose, PROMPT_CHARS) or "none"
+        room = summary_prompt_chars() if limit is None else int(limit)
+        prose = _clip_prose(summary, room) or "none"
     return f"{label}{prose}"
 
 
@@ -260,9 +275,14 @@ def fit_memory_prompt(
     bot_rows: list[str],
     episode: str,
     latest: str,
-    limit: int = 3500,
+    limit: int | None = None,
 ) -> str:
-    """Keep the latest turn and the rolling messages. Shorten the clouds first."""
+    """Keep the latest turn and the rolling messages. Shorten the clouds first.
+
+    limit defaults to Settings → Context & Memory → Whole memory prompt.
+    """
+    if limit is None:
+        limit = memory_prompt_chars()
     user_kept = _filled(user_rows)
     bot_kept = _filled(bot_rows)
     while True:
