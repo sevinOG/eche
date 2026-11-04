@@ -18,6 +18,11 @@ def main():
         # One-time owner reset on its own connection. Needs --yes.
         from core.memory_wipe import main as wipe_main
         raise SystemExit(wipe_main([arg for arg in sys.argv[1:] if arg != "--reset-memory"]))
+    if "--unlock-memory" in sys.argv:
+        # Owner only: read-only access to each person's own memory channel.
+        # Needs --yes or --dry-run.
+        from core.memory_access import main as access_main
+        raise SystemExit(access_main([arg for arg in sys.argv[1:] if arg != "--unlock-memory"]))
     want_bot = "--bot" in sys.argv or os.environ.get("ECHE_RUNNING", "").upper() == "BOT"
     if sys.platform.startswith("win"):
         try:

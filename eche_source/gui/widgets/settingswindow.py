@@ -40,7 +40,7 @@ from gui.widgets.personalitywindow import PersonalityWindow
 from gui.widgets.loading import LoadingIndicator
 from gui.widgets.dialogs import show_error, show_info, present_failure
 from gui.widgets.settings_help import FIELD_HELP
-from gui.widgets.settings_workers import MemoryWipeWorker, SettingsSaveWorker, UpdatePrepareWorker
+from gui.widgets.settings_workers import MemoryAccessWorker, MemoryWipeWorker, SettingsSaveWorker, UpdatePrepareWorker
 
 UNSPLASH_DEV_URL = "https://unsplash.com/developers"
 UNSPLASH_APPS_URL = "https://unsplash.com/oauth/applications"
@@ -632,6 +632,7 @@ class SettingsWindow(QWidget):
             prompt_body,
         ))
         layout.addWidget(self._context_caps_card())
+        layout.addWidget(self._memory_access_card())
         layout.addWidget(self._reset_memory_card())
         layout.addWidget(self._content_card())
         body = QVBoxLayout()
@@ -768,6 +769,68 @@ class SettingsWindow(QWidget):
             "videos, before the model or API is called. Add more words here.",
             body,
         )
+
+    def _memory_access_card(self) -> QFrame:
+        body = QVBoxLayout()
+        row = QHBoxLayout()
+        self.memory_access_btn = QPushButton("Let users see their memory")
+        self.memory_access_btn.setMinimumHeight(36)
+        self.memory_access_btn.clicked.connect(self._confirm_memory_access)
+        row.addWidget(self.memory_access_btn)
+        row.addStretch()
+        row.addWidget(self._info_button("memory_access"))
+        body.addLayout(row)
+        return self._card(
+            "Let users see their memory",
+            "Gives each person read-only access to their own user channel and its "
+            "context thread on the home server. Only people already on that server "
+            "can be given access.",
+            body,
+        )
+
+    def _confirm_memory_access(self) -> None:
+        answer = QMessageBox.question(
+            self,
+            "Let users see their memory?",
+            "Each person on the home server gets read-only access to their own "
+            "user-<id> channel in \"bot memory\". They can read it but not post, "
+            "react, or start threads. Other people's channels and #bot stay hidden.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        main = self.main_window
+        running = bool(main and hasattr(main, "_bot_is_running") and main._bot_is_running())
+        if running:
+            try:
+                main.bot_process.stdin.write("UNLOCK_MEMORY\n")
+                main.bot_process.stdin.flush()
+            except Exception as exc:
+                show_error(self, "Let users see their memory", f"Could not reach the bot: {exc}")
+                return
+            if hasattr(main, "append_log"):
+                main.append_log("[memory] Memory access sent to the bot. The report follows in the log.")
+            show_info(self, "Let users see their memory", "The bot is doing it now. The report shows in the log.")
+            return
+        self.memory_access_btn.setEnabled(False)
+        self.memory_access_btn.setText("Working…")
+        self._memory_access_worker = MemoryAccessWorker()
+        self._memory_access_worker.finished_ok.connect(self._on_memory_access_done)
+        self._memory_access_worker.start()
+
+    def _on_memory_access_done(self, ok: bool, message: str) -> None:
+        self.memory_access_btn.setEnabled(True)
+        self.memory_access_btn.setText("Let users see their memory")
+        main = self.main_window
+        if main and hasattr(main, "append_log"):
+            for line in message.splitlines():
+                if line.strip():
+                    main.append_log(f"[memory] {line}")
+        if ok:
+            show_info(self, "Let users see their memory", message)
+        else:
+            show_error(self, "Let users see their memory", message)
 
     def _reset_memory_card(self) -> QFrame:
         body = QVBoxLayout()
