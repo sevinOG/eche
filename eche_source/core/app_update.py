@@ -162,6 +162,20 @@ def write_handoff_script(
     stage_s = _safe_path(stage) if stage else ""
     if stage_s and os.path.normcase(stage_s) == os.path.normcase(target_s):
         stage_s = ""
+    # Never let the cleanup step delete (or the copy land on) the Data folder.
+    try:
+        from core.data_folder import guard_paths
+        from core.paths import is_within
+        for guarded in guard_paths():
+            if stage_s and (is_within(guarded, stage_s) or is_within(stage_s, guarded)):
+                stage_s = ""
+            if is_within(guarded, target_s):
+                raise ValueError(
+                    f"The Data folder {guarded} is inside the update target {target_s}. "
+                    "Move it outside the app folder first."
+                )
+    except ImportError:
+        pass
     fd, path = tempfile.mkstemp(prefix="eche-update-", suffix=".bat")
     os.close(fd)
     skip_dirs = " ".join(_SKIP_DIRS)

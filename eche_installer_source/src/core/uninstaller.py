@@ -10,6 +10,41 @@ from .shortcut import remove_shortcut
 from .registry import unregister_uninstall
 from .installer import MANIFEST_NAME
 
+def data_folder_pointer() -> Path | None:
+    """Eche's Data folder pointer (%LOCALAPPDATA%\\Eche\\data_root.txt). Mirrors core.paths."""
+    override = (os.environ.get("ECHE_POINTER_FILE") or "").strip()
+    if override:
+        pf = Path(override)
+    else:
+        base = (os.environ.get("LOCALAPPDATA") or "").strip()
+        pf = Path(base, "Eche", "data_root.txt") if base else Path.home() / ".config" / "eche" / "data_root.txt"
+    try:
+        for line in pf.read_text(encoding="utf-8-sig").splitlines():
+            line = line.strip().strip('"')
+            if line and not line.startswith("#"):
+                return Path(os.path.abspath(os.path.expanduser(line)))
+    except OSError:
+        return None
+    return None
+
+
+def protected_data_dirs() -> List[Path]:
+    out: List[Path] = []
+    p = data_folder_pointer()
+    if p:
+        out.append(p)
+    env = (os.environ.get("ECHE_USER_ROOT") or "").strip()
+    if env:
+        out.append(Path(os.path.abspath(env)))
+    return out
+
+
+def _inside(child: Path, parent: Path) -> bool:
+    c = os.path.normcase(os.path.abspath(str(child)))
+    p = os.path.normcase(os.path.abspath(str(parent)))
+    return c == p or c.startswith(p.rstrip("\\/") + os.sep)
+
+
 class Uninstaller:
     def __init__(self, log_callback: Callable[[str], None] = None, progress_callback: Callable[[int, str], None] = None):
         self.log_cb = log_callback or (lambda m: print(m))
@@ -77,7 +112,10 @@ class Uninstaller:
                 self.log("Registry cleanup done / skipped")
 
             self.progress(70, "Removing files...")
+            guarded_dirs = protected_data_dirs()
             for f in files_to_remove:
+                if any(_inside(Path(f), g) for g in guarded_dirs):
+                    continue
                 try:
                     p = Path(f)
                     try:
@@ -89,6 +127,15 @@ class Uninstaller:
                 except Exception as exc:
                     self.log(f"File remove warning {f}: {exc}")
 
+            if remove_dir:
+                for guarded in protected_data_dirs():
+                    if _inside(guarded, install_path):
+                        self.log(
+                            f"Data folder {guarded} is inside {install_path}; "
+                            "keeping the folder. Only listed files were removed."
+                        )
+                        remove_dir = False
+                        break
             if remove_dir:
                 self.log(f"Removing directory tree {install_path}")
                 try:

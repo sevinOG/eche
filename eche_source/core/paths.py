@@ -5,8 +5,8 @@
 #   eche_source/       ← this tree when developing (core/ gui/ cogs/)
 #   eche_installer/    ← deploy / recover wizard
 #
-# Writable data always lives next to the package root (portable), never AppData
-# unless the user overrides ECHE_USER_ROOT.
+# Writable data lives next to the package root (portable) unless ECHE_USER_ROOT
+# or the Data folder pointer (%LOCALAPPDATA%\Eche\data_root.txt) says otherwise.
 
 from __future__ import annotations
 
@@ -205,15 +205,94 @@ def bundle_dir() -> str:
     return package_root()
 
 
+POINTER_FILENAME = "data_root.txt"
+
+
+def pointer_file() -> str:
+    """
+    Where the "Data folder" pointer lives. It sits outside every install,
+    source and portable folder so no update, rebuild or reinstall touches it:
+      Windows: %LOCALAPPDATA%\\Eche\\data_root.txt
+      other:   ~/.config/eche/data_root.txt
+    ECHE_POINTER_FILE overrides the location (tests).
+    """
+    override = (os.environ.get("ECHE_POINTER_FILE") or "").strip()
+    if override:
+        return os.path.abspath(override)
+    base = (os.environ.get("LOCALAPPDATA") or "").strip()
+    if base:
+        return os.path.join(base, "Eche", POINTER_FILENAME)
+    return os.path.join(os.path.expanduser("~"), ".config", "eche", POINTER_FILENAME)
+
+
+def read_pointer() -> str | None:
+    """Folder named in the pointer file, or None if missing/blank/not a folder."""
+    path = pointer_file()
+    try:
+        with open(path, "r", encoding="utf-8-sig") as f:
+            for line in f:
+                line = line.strip().strip('"')
+                if line and not line.startswith("#"):
+                    target = os.path.abspath(os.path.expanduser(line))
+                    return target if os.path.isdir(target) else None
+    except OSError:
+        return None
+    return None
+
+
+def write_pointer(folder: str | None) -> str:
+    """Save (or clear with None/"") the Data folder pointer. Returns the pointer path."""
+    path = pointer_file()
+    if not folder:
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+        return path
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write("# Eche data folder (settings, secrets, memory). Delete this file to use the app folder.\n")
+        f.write(os.path.abspath(folder) + "\n")
+    os.replace(tmp, path)
+    return path
+
+
+def user_dir_source() -> str:
+    """Which rule chose user_dir(): 'env', 'pointer' or 'package'."""
+    override = (os.environ.get("ECHE_USER_ROOT") or "").strip()
+    if override and os.path.isdir(override):
+        return "env"
+    if read_pointer():
+        return "pointer"
+    return "package"
+
+
 def user_dir() -> str:
     """
-    Writable data root — always the portable package root.
-    Override with ECHE_USER_ROOT only for a deliberate split layout.
+    Writable data root. Resolution order:
+      1. ECHE_USER_ROOT env (GUI passes this to the bot process)
+      2. Data folder pointer file (Settings → Updates → Data folder)
+      3. portable package root
     """
     override = (os.environ.get("ECHE_USER_ROOT") or "").strip()
     if override and os.path.isdir(override):
         return os.path.abspath(override)
+    pointed = read_pointer()
+    if pointed:
+        return pointed
     return package_root()
+
+
+def is_within(child: str | None, parent: str | None) -> bool:
+    """True if child is parent or inside it (case-insensitive on Windows)."""
+    if not child or not parent:
+        return False
+    c = os.path.normcase(os.path.abspath(child)).rstrip("\\/")
+    p = os.path.normcase(os.path.abspath(parent)).rstrip("\\/")
+    if c == p:
+        return True
+    return c.startswith(p + os.sep) or c.startswith(p + "/")
 
 
 def project_root() -> str:
