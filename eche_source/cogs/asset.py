@@ -9,7 +9,7 @@ from discord.ext import commands
 
 from core.asset_message import source_from_message
 from core.debuglog import dprint
-from core.imagine import AssetFile, ImagineError, api_key, plan_asset, refusal, run_asset, speaker_allowed
+from core.imagine import AssetFile, ImagineError, api_key, check_prompt, plan_asset, refusal, run_asset, speaker_allowed
 from core.tools_asset import asset_text
 
 
@@ -30,6 +30,8 @@ class Asset(commands.Cog):
             await ctx.reply(refusal(is_owner), mention_author=False)
             return
         try:
+            # The block check runs before the source file is even fetched.
+            check_prompt(prompt)
             source = await source_from_message(ctx.message)
             plan = plan_asset(prompt, source=source)
         except ImagineError as exc:

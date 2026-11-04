@@ -557,7 +557,8 @@ async def previous_topic(message) -> str:
     if channel is None or not hasattr(channel, "history"):
         return ""
     try:
-        async for item in channel.history(limit=8, before=message):
+        scan = _thread_cap("thread_topic_scan", 8)
+        async for item in channel.history(limit=scan, before=message):
             text = usable_previous(getattr(item, "content", None) or "")
             if text:
                 return text
@@ -659,15 +660,44 @@ def name_plan_prompt(brief: str) -> str:
     return f"Assignment:\n{text}"
 
 
-def append_notes(notes: str, found: str) -> str:
+def _thread_cap(key: str, default: int) -> int:
+    """Settings → Context & Memory. The module constant is the default."""
+    try:
+        from core.context_caps import get
+
+        return get(key)
+    except Exception:
+        return default
+
+
+def append_notes(notes: str, found: str, cap: int | None = None) -> str:
     """Keep lookup text for later posts. The newest text stays when it is long."""
     piece = (found or "").strip()
     if not piece:
         return notes
+    limit = _thread_cap("thread_notes_chars", _NOTES_CAP) if cap is None else int(cap)
     combined = f"{notes}\n\n{piece}".strip() if (notes or "").strip() else piece
-    if len(combined) <= _NOTES_CAP:
+    if len(combined) <= limit:
         return combined
-    return combined[-_NOTES_CAP:].lstrip()
+    return combined[-limit:].lstrip()
+
+
+def posted_so_far(posted: list[str], cap: int | None = None) -> str:
+    """Earlier posts for the next round. 0 keeps all; otherwise the newest text."""
+    if not posted:
+        return "(nothing yet)"
+    text = "\n\n".join(posted)
+    limit = _thread_cap("thread_posted_chars", 0) if cap is None else int(cap)
+    if limit <= 0 or len(text) <= limit:
+        return text
+    tail = text[-limit:]
+    # Start on a paragraph or sentence, not mid-word.
+    for sep in ("\n\n", ". ", " "):
+        at = tail.find(sep)
+        if 0 <= at < limit // 3:
+            tail = tail[at + len(sep):]
+            break
+    return "…" + tail.lstrip()
 
 
 def _fallback_plan(source: str) -> str:
@@ -857,7 +887,12 @@ async def _execute(
     need_sentence = False
     search_tools = _duckduckgo_tools()
 
+    from core.blocklist import REFUSAL, is_blocked, note
+
     for query in searches or []:
+        if is_blocked(query):
+            note("thread search")
+            continue
         if not query_stays_on(query, focus):
             dprint(f"[tools] thread lookup skipped: {query!r}")
             continue
@@ -881,7 +916,7 @@ async def _execute(
             notes = append_notes(notes, found)
 
     for _ in range(THREAD_STEPS):
-        already = "\n\n".join(posted) if posted else "(nothing yet)"
+        already = posted_so_far(posted)
         prompt = body_round_prompt(
             plan,
             notes,
@@ -916,6 +951,15 @@ async def _execute(
                 break
             continue
         need_sentence = False
+        if is_blocked(body):
+            # A thread post is checked before it is sent. The thread stops here.
+            note("thread post")
+            try:
+                await thread.send(REFUSAL)
+                posted.append(REFUSAL)
+            except Exception as exc:
+                dprint(f"[tools] thread refusal failed: {exc}")
+            break
         stopped = False
         for chunk in discord_chunks(body):
             try:
@@ -1037,6 +1081,12 @@ async def open_thread(ctx: ToolContext, arguments: dict) -> ToolResult:
         source = await previous_topic(message) or asking
     from core.imagine import asset_thread_kind, asset_thread_request
 
+    from core.blocklist import REFUSAL, is_blocked, note
+
+    if is_blocked(asking, source):
+        # Before the planner is called and before a thread is opened.
+        note("thread request")
+        return ToolResult(text=REFUSAL, fence=False)
     rendering = asset_thread_request(asking) or asset_thread_request(source)
     kind = asset_thread_kind(asking) or asset_thread_kind(source)
     brief = (
@@ -1050,6 +1100,9 @@ async def open_thread(ctx: ToolContext, arguments: dict) -> ToolResult:
             "Not a paragraph."
         )
     title, plan, searches = await _name_and_plan(brief, source)
+    if is_blocked(title, plan):
+        note("thread plan")
+        return ToolResult(text=REFUSAL, fence=False)
     arguments["title"] = title
 
     if isinstance(channel, discord.Thread):

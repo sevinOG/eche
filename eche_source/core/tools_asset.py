@@ -15,6 +15,7 @@ from core.imagine import (
     AssetFile,
     ImagineError,
     api_key,
+    check_prompt,
     plan_asset,
     refusal,
     run_asset,
@@ -86,6 +87,7 @@ async def make_asset(ctx, arguments: dict) -> ToolResult:
     if kind not in ("image", "video"):
         kind = ""
     try:
+        check_prompt(prompt)
         source = await source_from_message(ctx.message)
         plan = plan_asset(prompt, kind=kind, source=source)
         key = api_key()

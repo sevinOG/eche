@@ -194,6 +194,8 @@ class ContextEditorWorker(QThread):
         return {"ok": False, "message": f"Unknown action {self.action}", "text": ""}
 
     async def _bot(self, guild) -> dict:
+        import discord
+
         from core.discord_store import (
             THREAD_CONTEXT,
             find_bot_record,
@@ -227,13 +229,13 @@ class ContextEditorWorker(QThread):
         if self.action == "fetch":
             return {"ok": True, "message": "Loaded the bot pin.", "text": pin.content or ""}
         if self.action == "save":
-            await pin.edit(content=self.content)
+            await pin.edit(content=self.content, allowed_mentions=discord.AllowedMentions.none())
             return {"ok": True, "message": "Saved the bot pin.", "text": self.content}
         if self.action == "reset":
             from core.discord_store import bot_memory_initial
 
             blank = bot_memory_initial(self.target_id)
-            await pin.edit(content=blank)
+            await pin.edit(content=blank, allowed_mentions=discord.AllowedMentions.none())
             return {"ok": True, "message": "Reset the bot pin.", "text": blank}
         return {"ok": False, "message": f"Unknown action {self.action}", "text": ""}
 

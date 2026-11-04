@@ -44,6 +44,12 @@ OWNED_HEADER = "OWNED ITEMS"
 HOSTED_HEADER = "HOSTED ITEMS"
 
 _layout_lock = asyncio.Lock()
+
+
+def quiet_mentions():
+    """Stored records never ping. A pin that names someone is still just text."""
+    return discord.AllowedMentions.none()
+
 # Message ids live only for this process. Discord stays the copy.
 # A record is pinned when it is created, then found by this cache.
 _records: dict[tuple[int, str], object] = {}
@@ -156,6 +162,15 @@ def _forget_channel_tree(channel_id: int) -> None:
         forget_parent(thread_id)
 
 
+def clear_caches() -> None:
+    """Forget every cached record, pin scan, and thread. The next read asks Discord."""
+    _records.clear()
+    _missing.clear()
+    _pins_scanned.clear()
+    _threads.clear()
+    _ready_channels.clear()
+
+
 def forget_parent(parent_id: int) -> None:
     """Drop cached records and the pin scan for one thread or channel."""
     parent_id = int(parent_id)
@@ -241,7 +256,7 @@ async def edit_record(message, content: str) -> None:
     pin from before this edit.
     """
     try:
-        edited = await message.edit(content=content)
+        edited = await message.edit(content=content, allowed_mentions=quiet_mentions())
     except Exception:
         forget_record(message)
         channel = getattr(message, "channel", None)
@@ -551,7 +566,7 @@ async def _ensure_record_locked(parent, header: str, initial: str):
     if parent is None or (int(parent.id), header) not in _missing:
         return None
     try:
-        message = await parent.send(initial)
+        message = await parent.send(initial, allowed_mentions=quiet_mentions())
     except Exception as exc:
         dprint(f"[discord_store] could not write {header!r}: {exc}")
         return None
@@ -888,7 +903,7 @@ async def _create_pinned(parent, header: str, content: str):
         remember_record(int(parent.id), found)
         return found, "found"
     try:
-        message = await parent.send(content)
+        message = await parent.send(content, allowed_mentions=quiet_mentions())
     except Exception as exc:
         dprint(f"[discord_store] could not write {header!r}: {exc}")
         return None, "create-failed"

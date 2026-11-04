@@ -400,3 +400,169 @@ FIELD_HELP: dict[str, tuple[str, str]] = {
         "user in `config/secrets.dpapi.json`. Do not share that file.",
     ),
 }
+
+# ---------------------------------------------------------------------------
+# Context & Memory sliders (core/context_caps.py). Default and range come
+# from the cap table so this copy cannot drift from the code.
+# ---------------------------------------------------------------------------
+_CAP_HELP: dict[str, str] = {
+    "memory_prompt_chars": (
+        "The whole memory part of a reply prompt: today's date, both long-term "
+        "summaries, the recent messages, this server's episode, and the message "
+        "being answered. When it is over, the long-term summaries are shortened "
+        "first, then the oldest recent messages. The newest message always stays."
+    ),
+    "memory_summary_prompt_chars": (
+        "How much of each long-term summary the reply sees: **About this person** "
+        "and **About you with this person**. The stored summary can be longer; this "
+        "only limits what goes into each prompt. Cut on a whole bullet or sentence."
+    ),
+    "episode_prompt_chars": (
+        "How much of this server's episode summary (**This server:**) the reply "
+        "sees. Turning **Episodic memory** off above leaves it out entirely."
+    ),
+    "memory_recent_messages": (
+        "How many full recent messages are kept word for word for each side: the "
+        "person's last messages and your last replies to them. These sit next to "
+        "the message being answered. Older ones live only in the long-term summary."
+    ),
+    "memory_message_chars": (
+        "The longest a single message can be in the recent-message buffer, for "
+        "both sides. Longer messages are cut with an ellipsis. **0** keeps whole "
+        "messages, which was the behaviour before this setting existed."
+    ),
+    "media_prompt_chars": (
+        "Text read from a turn's attachments, link embeds, the replied-to message, "
+        "and forwards, all together."
+    ),
+    "attachment_text_chars": (
+        "How much of one attached text or code file is read before it is cut."
+    ),
+    "media_memory_chars": (
+        "How much attachment text is stored with the message in memory, so it can "
+        "be summarized later. The prompt for the current turn uses the larger "
+        "**Attachments & embeds** cap instead."
+    ),
+    "memory_fold_every": (
+        "How many new messages from one side wait before the summarizer updates "
+        "that side's long-term summary. Higher means fewer summarizer calls and "
+        "bigger batches. Messages waiting on a summary are never dropped."
+    ),
+    "memory_summary_chars": (
+        "The size of each person's long-term summary pin, and the length target "
+        "the summarizer is given. The summarizer's output-token cap follows it. "
+        "Discord allows 2000 characters per message, so 1900 is the most. "
+        "A smaller number gives tighter summaries."
+    ),
+    "episode_fold_after": (
+        "How many server lines collect in the local file before the summarizer "
+        "updates the server's episode summary."
+    ),
+    "episode_summary_chars": (
+        "The size of each server's episode pin, and the length target the "
+        "summarizer is given. The output-token cap follows it."
+    ),
+    "thread_notes_chars": (
+        "Search results gathered before a thread's posts are written. Each post "
+        "sees these notes. When they run over, the newest results are kept."
+    ),
+    "thread_posted_chars": (
+        "Each new post in a thread sees the posts already written, so it does "
+        "not repeat them. **0** sends all of them. A number keeps only the newest "
+        "text, which keeps long threads fast on small context windows."
+    ),
+    "thread_topic_scan": (
+        "When someone asks for \"more room\" without naming a subject, Eche looks "
+        "back this many channel messages for the subject."
+    ),
+    "local_history_turns": (
+        "Earlier turns of the desktop chat window sent with each new message. "
+        "0 sends none."
+    ),
+}
+
+
+def _cap_help() -> dict[str, tuple[str, str]]:
+    try:
+        from core.context_caps import CAPS
+    except Exception:
+        return {}
+    out: dict[str, tuple[str, str]] = {}
+    for cap in CAPS:
+        what = _CAP_HELP.get(cap.key, cap.hint)
+        default = f"{cap.default} {cap.unit}"
+        if cap.default == 0 and cap.zero_label:
+            default = f"0 ({cap.zero_label})"
+        body = (
+            "### What is this?\n"
+            f"{what}\n\n"
+            "### Default\n"
+            f"{default}. This is what Eche used before the slider existed.\n\n"
+            "### Range\n"
+            f"{cap.low} through {cap.high} {cap.unit}.\n\n"
+            "### When it changes\n"
+            "Save Settings. The next message uses the new number. "
+            f"Saved as `{cap.key}` in config/settings.json."
+        )
+        out[cap.key] = (cap.label, body)
+    out["context_memory"] = (
+        "Context & Memory",
+        "### What is this?\n"
+        "Every limit on how much history and memory goes into a prompt, and how "
+        "long the stored summaries are.\n\n"
+        "### Smaller prompts, faster replies\n"
+        "Local models answer faster with less text to read. Lowering **Whole "
+        "memory prompt**, **Long-term summary in the prompt**, and **Recent "
+        "messages kept** is the quickest win.\n\n"
+        "### Tighter summaries\n"
+        "**Long-term summary length** and **Server episode length** are the "
+        "summarizer's length target. The stored summary only reaches the prompt "
+        "up to the **in the prompt** caps, so a summary much longer than those is "
+        "mostly unused.\n\n"
+        "### Reset\n"
+        "**Reset to defaults** puts every slider back to the value Eche used "
+        "before these were settings.",
+    )
+    out["blocked_words"] = (
+        "Blocked words",
+        "### What it does\n"
+        "Eche refuses anything involving minors: the message, its own reply, "
+        "tool calls, thread posts, and every ?asset or picture/video prompt. "
+        "The model and the image API are not called for a blocked request. "
+        "The built-in list is in core/blocklist.py.\n\n"
+        "### Adding words\n"
+        "One word or phrase per line, or commas between them. Whole words only, "
+        "any case, so `kid` does not block `kidney`. Saved as `blocked_words`.\n\n"
+        "### When it changes\n"
+        "Save Settings. The next message uses the new list.",
+    )
+    out["memory_mask_slurs"] = (
+        "Mask slurs in memory",
+        "### On (default)\n"
+        "Slurs in memory pins and memory prompts are starred out, and the "
+        "summarizer is told not to record them.\n\n"
+        "### Off\n"
+        "Memory keeps the words as said, and the summarizer's \"No slurs\" rule "
+        "is dropped. Mentions and Discord ids are always stripped either way.",
+    )
+    out["reset_memory"] = (
+        "Reset all memory",
+        "### What it does\n"
+        "Empties every memory pin Eche keeps on the home server: each person's "
+        "**Context for** pin and **Eche with** pin, and every server's "
+        "**Episodic** pin. The local rolling buffers (memories/user-*/ and each "
+        "server's recent.txt) are cleared too.\n\n"
+        "### What it does not do\n"
+        "Channels and threads stay. Pins are edited, not deleted. Bank, items, "
+        "workers, music, and reminders are not touched. Nobody is pinged.\n\n"
+        "### When the bot is running\n"
+        "The reset runs inside the bot on its own connection, and the counts show "
+        "in the log. When it is stopped, the reset connects on its own.\n\n"
+        "### Command line\n"
+        "`python -m core.memory_wipe --yes` from eche_source, or "
+        "`Eche.exe --reset-memory --yes`. Running it twice is safe.",
+    )
+    return out
+
+
+FIELD_HELP.update(_cap_help())

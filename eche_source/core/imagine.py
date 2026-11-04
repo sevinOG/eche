@@ -163,6 +163,19 @@ def refusal(is_owner: bool) -> str:
     return "Only the owner can ask for assets."
 
 
+def check_prompt(text: str) -> None:
+    """Hard block for every picture or video prompt, before any API call.
+
+    Only the minors list in core/blocklist.py (plus Settings → Blocked words)
+    refuses here. Crude or offensive prompts go through.
+    """
+    from core.blocklist import REFUSAL, is_blocked, note
+
+    if is_blocked(text):
+        note("asset prompt")
+        raise ImagineError(REFUSAL)
+
+
 def mime_for(content_type: str, filename: str) -> str:
     raw = (content_type or "").split(";", 1)[0].strip().lower()
     if raw in _IMAGE_MIME or raw in _VIDEO_MIME:
@@ -357,6 +370,7 @@ def plan_asset(text: str, *, kind: str = "", source: SourceMedia | None = None) 
         raise ImagineError("Say what to change.")
     if len(prompt) > MAX_PROMPT:
         prompt = prompt[:MAX_PROMPT].rstrip()
+    check_prompt(raw)
     visual = asked in ("image", "video") or _has_word(prompt, _VIDEO_WORDS + _IMAGE_WORDS)
     if source is None and not visual and _has_word(prompt, _AUDIO_WORDS):
         raise ImagineError(
@@ -625,6 +639,8 @@ def http_bytes(url: str, limit: int = MAX_BYTES, timeout: int = 120) -> tuple[by
 
 async def run_asset(plan: AssetPlan, key: str) -> AssetFile | str:
     """Make one asset. A string result is a temporary URL that was too large to attach."""
+    # A plan built without plan_asset is checked too.
+    check_prompt(getattr(plan, "prompt", "") or "")
     if not key:
         raise ImagineError("Add a Grok API key in Media settings.")
     path, body = request_for(plan)

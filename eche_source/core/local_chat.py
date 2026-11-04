@@ -24,6 +24,10 @@ async def reply_local(user_text: str) -> str:
     user_text = (user_text or "").strip()
     if not user_text:
         return ""
+    from core.blocklist import REFUSAL, is_blocked
+
+    if is_blocked(user_text):
+        return REFUSAL
 
     # Push settings (incl. Ollama mode + key) into this process for client.py
     try:
@@ -61,9 +65,15 @@ async def reply_local(user_text: str) -> str:
         if model:
             os.environ["GROQ_MODEL"] = model
 
-    turns = load_turns(limit=40)
+    try:
+        from core.context_caps import get as context_cap
+
+        keep_turns = context_cap("local_history_turns")
+    except Exception:
+        keep_turns = 20
+    turns = load_turns(limit=keep_turns) if keep_turns > 0 else []
     history_lines = []
-    for t in turns[-20:]:
+    for t in turns:
         role = (t.get("role") or "user").upper()
         content = (t.get("content") or "").strip()
         if content:
@@ -90,6 +100,8 @@ async def reply_local(user_text: str) -> str:
         else:
             text = out
         text = _strip_tags(str(text or ""))
+        if is_blocked(text):
+            return REFUSAL
         return text or "(empty model reply)"
     except Exception as e:
         return f"(local chat error: {e})"

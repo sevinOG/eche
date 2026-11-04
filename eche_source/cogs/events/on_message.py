@@ -25,7 +25,7 @@ from core.client import (
 )
 
 # --- CHAT TOOLS ---
-import core.tools_context as tools_context  # registers context_raw
+import core.tools_context  # noqa: F401  registers context_raw
 import core.tools_duckduckgo  # noqa: F401  registers duckduckgo
 import core.tools_thread  # noqa: F401  registers thread
 import core.tools_admin  # noqa: F401  registers mute, timeout, kick, ban
@@ -42,6 +42,9 @@ from core.tools import (
 
 # --- SEVIN SELF-MEMORY ---
 from core.bot_memory import remember_bot
+
+# --- HARD BLOCK (minors) ---
+from core.blocklist import REFUSAL as BLOCK_REFUSAL, is_blocked, note as block_note
 
 # --- BOO SYSTEM ---
 from core.boo_kaitar import maybe_boo
@@ -83,6 +86,15 @@ async def _send_reply(message, content: str):
         else:
             sent = await message.channel.send(chunk)
     return sent
+
+
+def _flat_arguments(arguments) -> str:
+    """Every string in a tool call's arguments, for the block check."""
+    if isinstance(arguments, dict):
+        return " ".join(_flat_arguments(value) for value in arguments.values())
+    if isinstance(arguments, (list, tuple)):
+        return " ".join(_flat_arguments(value) for value in arguments)
+    return str(arguments) if isinstance(arguments, str) else ""
 
 
 class OnMessage(commands.Cog):
@@ -178,7 +190,19 @@ class OnMessage(commands.Cog):
             if render_in_thread and name.casefold() == "asset":
                 continue
             seen.add(name.casefold())
-            result = await execute(name, (call or {}).get("arguments") or {}, ctx)
+            arguments = (call or {}).get("arguments") or {}
+            if is_blocked(_flat_arguments(arguments)):
+                # The model asked a tool for something on the block list.
+                block_note(f"{name} arguments")
+                try:
+                    await _send_reply(message, BLOCK_REFUSAL)
+                except Exception as e:
+                    dprint(f"[on_message] refusal send failed: {e}")
+                    continue
+                said.append(BLOCK_REFUSAL)
+                ran_any = True
+                break
+            result = await execute(name, arguments, ctx)
             if not result.ran:
                 continue
             tools_used.append(name)
@@ -189,6 +213,9 @@ class OnMessage(commands.Cog):
                     "sorry, i'm being rate limited"
                 ):
                     lookup_quota = True
+            if not result.quiet and is_blocked(spoken):
+                block_note(f"{name} reply")
+                spoken = BLOCK_REFUSAL
             # A quiet tool already posted everything, including its announcement.
             shown = "" if result.quiet else spoken
             chunks = format_tool_messages(
@@ -294,8 +321,14 @@ class OnMessage(commands.Cog):
         if not cleaned:
             cleaned = "(no text)" if media.text else "(no content)"
         remembered = cleaned if not media.memory else f"{cleaned}\n{media.memory}"
-        if len(remembered) > 700:
-            remembered = remembered[:699].rstrip() + "…"
+        from core.context_caps import get as context_cap
+
+        # An attachment-only turn is remembered by its note. 700 unless the
+        # Context & Memory slider sets a tighter per-message cap.
+        remember_cap = context_cap("memory_message_chars") or 700
+        remember_cap = min(700, remember_cap)
+        if len(remembered) > remember_cap:
+            remembered = remembered[: remember_cap - 1].rstrip() + "…"
 
         guild = self.bot.get_guild(HOME_SERVER_ID)
 
@@ -306,6 +339,16 @@ class OnMessage(commands.Cog):
             await self._answer_and_remember(message, guild, cleaned, remembered, media)
 
     async def _answer_and_remember(self, message, guild, cleaned, remembered, media):
+        # Hard block before any prompt is built or model is called. Nothing
+        # from this message is remembered or added to the episode.
+        if is_blocked(cleaned, getattr(media, "text", "")):
+            block_note("chat message")
+            try:
+                await _send_reply(message, BLOCK_REFUSAL)
+            except Exception as e:
+                dprint(f"[on_message] refusal send failed: {e}")
+            return
+
         # Build from older memory first, so this turn appears only once,
         # under MOST RECENT MESSAGE, with its pictures.
         prompt = await build_prompt(
@@ -338,16 +381,9 @@ class OnMessage(commands.Cog):
         # are left out of the list the model receives.
         admin_on = admin_tools_enabled()
         admin_visible = bool(speaker_is_owner and admin_on)
-        # context_raw is offered only when this message asks to see it.
-        # Otherwise the model dumps the pin on "what does that mean".
-        asked_context = tools_context.asks_for_own_context(cleaned)
+        # Every offered tool, context_raw included. The model decides when
+        # someone is asking about their own memory; there is no phrase trigger.
         offered = specs_for(speaker_is_owner=speaker_is_owner, admin_enabled=admin_on)
-        if not asked_context:
-            offered = [
-                spec
-                for spec in offered
-                if (spec.get("function") or {}).get("name") != "context_raw"
-            ]
         turn = await call_groq_turn(
             prompt,
             user_id=message.author.id,
@@ -363,46 +399,9 @@ class OnMessage(commands.Cog):
         )
         calls = [] if quota_reply else list(turn.tool_calls or [])
         names = visible_names(speaker_is_owner=speaker_is_owner, admin_enabled=admin_on)
-        if not asked_context:
-            names = {name for name in names if name.casefold() != "context_raw"}
-        typed_calls = False
         if not calls and not quota_reply:
-            # The model typed a tool call or ?context_raw instead of the API.
+            # The model typed a tool call instead of using the API.
             calls = calls_from_model_text(turn.reply, names)
-            typed_calls = bool(calls)
-        if not calls and not quota_reply and asked_context:
-            # The ask was clear and the model answered in prose. Run the tool.
-            calls = [{"name": "context_raw", "arguments": {}}]
-        dropped_context = False
-        if not asked_context and calls:
-            kept = []
-            for call in calls:
-                if isinstance(call, dict) and str(call.get("name") or "").casefold() == "context_raw":
-                    dropped_context = True
-                    continue
-                kept.append(call)
-            calls = kept
-        if dropped_context and not calls and not quota_reply:
-            prose = (reply or "").strip()
-            if typed_calls or not prose:
-                try:
-                    turn = await call_groq_turn(
-                        prompt,
-                        user_id=message.author.id,
-                        max_completion_tokens=completion_tokens,
-                        tools=None,
-                        include_tool_note=False,
-                        extra_system=admin_injection(enabled=admin_visible),
-                        images=media.images or None,
-                    )
-                except Exception as exc:
-                    dprint(f"[on_message] context repair failed: {exc}")
-                else:
-                    reply = turn.reply or ""
-                    quota_reply = turn.quota or reply.strip().lower().startswith(
-                        "sorry, i'm being rate limited"
-                    )
-                    calls = []
         if not calls and not quota_reply and turn.cut:
             turn = await settle_cut_reply(
                 turn,
@@ -435,6 +434,11 @@ class OnMessage(commands.Cog):
             except Exception as e:
                 dprint(f"[on_message] tool delivery failed: {e}")
                 ran_tools = False
+
+        if not ran_tools and reply.strip() and is_blocked(reply):
+            # The model's own reply is checked before it is sent.
+            block_note("model reply")
+            reply = BLOCK_REFUSAL
 
         if ran_tools:
             if getattr(self.bot, "next_reply_override", False):
@@ -503,6 +507,9 @@ class OnMessage(commands.Cog):
             return
         body = " ".join((text or "").split())
         if not body and not tool_lines and not getattr(message, "attachments", None):
+            return
+        if is_blocked(body):
+            # Blocked text never reaches the episode or its summarizer.
             return
         try:
             from core.episodic import append_episodic, turn_lines

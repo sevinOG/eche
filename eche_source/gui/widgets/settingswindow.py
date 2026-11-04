@@ -30,6 +30,8 @@ from PyQt6.QtWidgets import (
     QRadioButton,
     QButtonGroup,
     QSpinBox,
+    QSlider,
+    QPlainTextEdit,
 )
 
 from gui.theme import APP_NAME, APP_VERSION
@@ -38,7 +40,7 @@ from gui.widgets.personalitywindow import PersonalityWindow
 from gui.widgets.loading import LoadingIndicator
 from gui.widgets.dialogs import show_error, show_info, present_failure
 from gui.widgets.settings_help import FIELD_HELP
-from gui.widgets.settings_workers import SettingsSaveWorker, UpdatePrepareWorker
+from gui.widgets.settings_workers import MemoryWipeWorker, SettingsSaveWorker, UpdatePrepareWorker
 
 UNSPLASH_DEV_URL = "https://unsplash.com/developers"
 UNSPLASH_APPS_URL = "https://unsplash.com/oauth/applications"
@@ -74,6 +76,12 @@ except Exception:
 def load_settings():
     from core.secrets import load_all
     return load_all(PROJECT_ROOT)
+
+
+def _split_blocked(raw: str) -> list[str]:
+    from core.blocklist import parse_extra
+
+    return parse_extra(raw)
 
 
 def save_settings(data: dict):
@@ -623,6 +631,9 @@ class SettingsWindow(QWidget):
             "Episodic memory is separate. Admin tools stay on the Security page.",
             prompt_body,
         ))
+        layout.addWidget(self._context_caps_card())
+        layout.addWidget(self._reset_memory_card())
+        layout.addWidget(self._content_card())
         body = QVBoxLayout()
         body.setSpacing(10)
         hint = QLabel(
@@ -657,6 +668,224 @@ class SettingsWindow(QWidget):
         layout.addWidget(self._card("Personality & context editors", None, body))
         layout.addStretch(1)
         return page
+
+    # ------------------------------------------------------------------
+    # Context & Memory sliders (core/context_caps.py)
+    # ------------------------------------------------------------------
+    _CAP_GROUPS = (
+        ("What a reply sees", (
+            "memory_prompt_chars",
+            "memory_summary_prompt_chars",
+            "episode_prompt_chars",
+            "memory_recent_messages",
+            "memory_message_chars",
+            "media_prompt_chars",
+            "attachment_text_chars",
+            "media_memory_chars",
+        )),
+        ("What the summarizer keeps", (
+            "memory_fold_every",
+            "memory_summary_chars",
+            "episode_fold_after",
+            "episode_summary_chars",
+        )),
+        ("Threads & desktop chat", (
+            "thread_notes_chars",
+            "thread_posted_chars",
+            "thread_topic_scan",
+            "local_history_turns",
+        )),
+    )
+
+    def _context_caps_card(self) -> QFrame:
+        from core.context_caps import BY_KEY, CAPS
+
+        self._cap_controls: dict[str, tuple[QSlider, QSpinBox]] = {}
+        body = QVBoxLayout()
+        body.setSpacing(10)
+        grouped = [key for _title, keys in self._CAP_GROUPS for key in keys]
+        groups = list(self._CAP_GROUPS)
+        # A cap added to the table but not to a group still gets a slider.
+        extra = tuple(cap.key for cap in CAPS if cap.key not in grouped)
+        if extra:
+            groups.append(("Other", extra))
+        for title, keys in groups:
+            head = QLabel(title)
+            head.setObjectName("FieldLabel")
+            body.addWidget(head)
+            for key in keys:
+                body.addLayout(self._cap_slider_block(BY_KEY[key]))
+        row = QHBoxLayout()
+        reset = QPushButton("Reset to defaults")
+        reset.setObjectName("ghost")
+        reset.clicked.connect(self._reset_context_caps)
+        row.addWidget(reset)
+        row.addStretch()
+        row.addWidget(self._info_button("context_memory"))
+        body.addLayout(row)
+        return self._card(
+            "Context & Memory",
+            "How much history and memory goes into each prompt, and how long the "
+            "stored summaries are. Defaults match how Eche worked before. "
+            "Smaller is faster on local models.",
+            body,
+        )
+
+    def _content_card(self) -> QFrame:
+        from core.blocklist import BLOCKED_WORDS
+
+        body = QVBoxLayout()
+        body.setSpacing(10)
+        head = QHBoxLayout()
+        label = QLabel("Blocked words")
+        label.setObjectName("FieldLabel")
+        head.addWidget(label)
+        head.addStretch()
+        head.addWidget(self._info_button("blocked_words"))
+        body.addLayout(head)
+        self.blocked_words_edit = QPlainTextEdit()
+        self.blocked_words_edit.setPlaceholderText("One word or phrase per line, or separated by commas")
+        self.blocked_words_edit.setPlainText(
+            "\n".join(_split_blocked(self.data.get("blocked_words") or ""))
+        )
+        self.blocked_words_edit.setFixedHeight(96)
+        body.addWidget(self.blocked_words_edit)
+        built_in = QLabel("Always blocked: " + ", ".join(BLOCKED_WORDS) + ", ages under 18, and baby in a sexual message.")
+        built_in.setObjectName("CardHint")
+        built_in.setWordWrap(True)
+        body.addWidget(built_in)
+        row = QHBoxLayout()
+        self.mask_slurs_box = QCheckBox("Mask slurs in memory")
+        stored = str(self.data.get("memory_mask_slurs") or "").strip().lower()
+        self.mask_slurs_box.setChecked((not stored) or stored in ("1", "true", "yes", "on"))
+        row.addWidget(self.mask_slurs_box)
+        row.addStretch()
+        row.addWidget(self._info_button("memory_mask_slurs"))
+        body.addLayout(row)
+        return self._card(
+            "Content",
+            "Anything involving minors is refused in chat, threads, and pictures or "
+            "videos, before the model or API is called. Add more words here.",
+            body,
+        )
+
+    def _reset_memory_card(self) -> QFrame:
+        body = QVBoxLayout()
+        row = QHBoxLayout()
+        self.reset_memory_btn = QPushButton("Reset all memory")
+        self.reset_memory_btn.setObjectName("danger")
+        self.reset_memory_btn.setMinimumHeight(36)
+        self.reset_memory_btn.clicked.connect(self._confirm_reset_memory)
+        row.addWidget(self.reset_memory_btn)
+        row.addStretch()
+        row.addWidget(self._info_button("reset_memory"))
+        body.addLayout(row)
+        return self._card(
+            "Reset all memory",
+            "Empties every person's memory pins and every server episode on the home "
+            "server, and clears the local buffers. Pins are edited, not deleted. "
+            "This cannot be undone.",
+            body,
+        )
+
+    def _confirm_reset_memory(self) -> None:
+        answer = QMessageBox.question(
+            self,
+            "Reset all memory?",
+            "This empties every Context for, Eche with, and Episodic pin on the home "
+            "server and clears the local memory buffers.\n\n"
+            "Eche starts fresh with everyone. This cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        main = self.main_window
+        running = bool(main and hasattr(main, "_bot_is_running") and main._bot_is_running())
+        if running:
+            # The bot does it on its own connection and drops its caches.
+            try:
+                main.bot_process.stdin.write("RESET_MEMORY\n")
+                main.bot_process.stdin.flush()
+            except Exception as exc:
+                show_error(self, "Reset all memory", f"Could not reach the bot: {exc}")
+                return
+            if hasattr(main, "append_log"):
+                main.append_log("[memory] Reset all memory sent to the bot. Counts follow in the log.")
+            show_info(self, "Reset all memory", "The bot is resetting memory now. The counts show in the log.")
+            return
+        self.reset_memory_btn.setEnabled(False)
+        self.reset_memory_btn.setText("Resetting…")
+        self._memory_wipe_worker = MemoryWipeWorker()
+        self._memory_wipe_worker.finished_ok.connect(self._on_reset_memory_done)
+        self._memory_wipe_worker.start()
+
+    def _on_reset_memory_done(self, ok: bool, message: str) -> None:
+        self.reset_memory_btn.setEnabled(True)
+        self.reset_memory_btn.setText("Reset all memory")
+        main = self.main_window
+        if main and hasattr(main, "append_log"):
+            main.append_log(f"[memory] {message}")
+        if ok:
+            show_info(self, "Reset all memory", message)
+        else:
+            show_error(self, "Reset all memory", message)
+
+    def _cap_slider_block(self, cap) -> QVBoxLayout:
+        block = QVBoxLayout()
+        block.setSpacing(2)
+        top = QHBoxLayout()
+        top.setSpacing(8)
+        lab = QLabel(cap.label)
+        top.addWidget(lab)
+        top.addStretch()
+        if cap.key in FIELD_HELP:
+            top.addWidget(self._info_button(cap.key), alignment=Qt.AlignmentFlag.AlignTop)
+        block.addLayout(top)
+        hint = QLabel(f"{cap.hint} Default {cap.default}.")
+        hint.setObjectName("FieldHint")
+        hint.setWordWrap(True)
+        block.addWidget(hint)
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        slider = QSlider(Qt.Orientation.Horizontal)
+        slider.setObjectName(f"cap_{cap.key}")
+        slider.setRange(cap.low, cap.high)
+        slider.setSingleStep(cap.step)
+        slider.setPageStep(cap.step * 4)
+        span = cap.high - cap.low
+        slider.setTickInterval(max(cap.step, span // 10))
+        slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        spin = QSpinBox()
+        spin.setObjectName(f"cap_{cap.key}_value")
+        spin.setRange(cap.low, cap.high)
+        spin.setSingleStep(cap.step)
+        spin.setSuffix(f" {cap.unit}")
+        if cap.zero_label:
+            spin.setSpecialValueText(cap.zero_label)
+        spin.setMinimumWidth(130)
+        spin.setMinimumHeight(30)
+        slider.valueChanged.connect(spin.setValue)
+        spin.valueChanged.connect(slider.setValue)
+        value = self._saved_cap(cap.key)
+        slider.setValue(value)
+        spin.setValue(value)
+        row.addWidget(slider, stretch=1)
+        row.addWidget(spin)
+        block.addLayout(row)
+        self._cap_controls[cap.key] = (slider, spin)
+        return block
+
+    def _saved_cap(self, key: str) -> int:
+        from core.context_caps import clamp
+
+        return clamp(key, self.data.get(key))
+
+    def _reset_context_caps(self) -> None:
+        from core.context_caps import BY_KEY
+
+        for key, (_slider, spin) in getattr(self, "_cap_controls", {}).items():
+            spin.setValue(BY_KEY[key].default)
 
     def _page_economy(self) -> QWidget:
         page = QWidget()
@@ -1197,6 +1426,8 @@ class SettingsWindow(QWidget):
             )
         for key, (spin, *_rest) in getattr(self, "_int_spins", {}).items():
             spin.setValue(self._saved_int(key))
+        for key, (_slider, spin) in getattr(self, "_cap_controls", {}).items():
+            spin.setValue(self._saved_cap(key))
         if hasattr(self, "channel_token_spin"):
             low, high, channel_default, thread_default = self._token_limits()
             del low, high
@@ -1414,8 +1645,26 @@ class SettingsWindow(QWidget):
                 payload[key] = str(spins[key][0].value())
             else:
                 payload[key] = str(self.data.get(key) or "").strip()
+        from core.context_caps import KEYS as CAP_KEYS
+
+        controls = getattr(self, "_cap_controls", {})
+        for key in CAP_KEYS:
+            if key in controls:
+                payload[key] = str(controls[key][1].value())
+            else:
+                payload[key] = str(self.data.get(key) or "").strip()
         if hasattr(self, "project_path_edit"):
             payload["project_path"] = self.project_path_edit.text().strip()
+        if hasattr(self, "blocked_words_edit"):
+            payload["blocked_words"] = "\n".join(
+                _split_blocked(self.blocked_words_edit.toPlainText())
+            )
+        else:
+            payload["blocked_words"] = str(self.data.get("blocked_words") or "").strip()
+        if hasattr(self, "mask_slurs_box"):
+            payload["memory_mask_slurs"] = "1" if self.mask_slurs_box.isChecked() else "0"
+        else:
+            payload["memory_mask_slurs"] = str(self.data.get("memory_mask_slurs") or "").strip()
         if hasattr(self, "security_admin_box"):
             payload["admin_tools"] = "1" if self.security_admin_box.isChecked() else "0"
         else:

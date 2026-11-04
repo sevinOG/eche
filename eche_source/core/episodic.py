@@ -9,6 +9,9 @@ import asyncio
 import os
 
 _LOCKS: dict[int, asyncio.Lock] = {}
+# Defaults. The live values are Settings → Memory & Prompts → Context & Memory
+# (core/context_caps.py): episode_summary_chars, episode_prompt_chars,
+# episode_fold_after.
 MAX_STORE = 1900
 # Condense before the pin sits against the cap. A full-size rewrite is cut
 # off by the completion budget while still looking short enough to store.
@@ -19,6 +22,72 @@ FOLD_AFTER = 5
 # A turn can add two lines as the file crosses five. Keep those until the fold.
 _RECENT_CAP = 8
 _RECENT_NAME = "recent.txt"
+
+
+def max_store() -> int:
+    """Stored episode size. Never above Discord's room under 2000."""
+    from core.context_caps import get
+
+    return min(MAX_STORE, get("episode_summary_chars"))
+
+
+def soft_store() -> int:
+    """Condense once the pin reaches this size. Same ratio as 1500 of 1900."""
+    return max_store() * _SOFT_STORE // MAX_STORE
+
+
+def prompt_chars() -> int:
+    from core.context_caps import get
+
+    return get("episode_prompt_chars")
+
+
+def fold_after() -> int:
+    from core.context_caps import get
+
+    return get("episode_fold_after")
+
+
+def recent_cap() -> int:
+    """Lines the local file holds. A turn can add two lines past the fold point."""
+    return max(_RECENT_CAP, fold_after() + 3)
+
+
+_BULLETS = ("- ", "* ", "• ", "– ")
+
+
+def _bullet_body(line: str) -> str | None:
+    for mark in _BULLETS:
+        if line.startswith(mark):
+            return line[len(mark):].strip()
+    return None
+
+
+def is_bulleted(text: str) -> bool:
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    return bool(lines) and sum(1 for line in lines if _bullet_body(line) is not None) * 2 >= len(lines)
+
+
+def tidy_summary(text: str) -> str:
+    """One line of prose, or one "- " line per bullet. Extra spaces go."""
+    lines = [" ".join(line.split()) for line in (text or "").splitlines()]
+    lines = [line for line in lines if line]
+    if not lines:
+        return ""
+    if not is_bulleted("\n".join(lines)):
+        return " ".join(lines)
+    out: list[str] = []
+    for line in lines:
+        body = _bullet_body(line)
+        if body is None:
+            # A wrapped bullet continues on the next line.
+            if out:
+                out[-1] = f"{out[-1]} {line}"
+                continue
+            body = line
+        if body:
+            out.append(f"- {body}")
+    return "\n".join(out)
 
 
 def _lock(guild_id: int) -> asyncio.Lock:
@@ -75,7 +144,7 @@ def split_episode(body: str) -> tuple[str, list[str]]:
             log.append(stripped)
         elif mode == "summary" and stripped not in ("(none yet)", "(none)"):
             summary_lines.append(stripped)
-    return " ".join(summary_lines).strip(), log
+    return tidy_summary("\n".join(summary_lines)), log
 
 
 def render_summary(heading: str, summary: str) -> str:
@@ -84,18 +153,20 @@ def render_summary(heading: str, summary: str) -> str:
     This does not chop the prose. The caller condenses a summary that will
     not fit instead of ending it mid-sentence.
     """
-    prose = " ".join((summary or "").split())
+    from core.content_filter import clean_memory_text
+
+    prose = clean_memory_text(tidy_summary(summary))
     return "\n".join([heading.rstrip(), "Summary:", prose]).rstrip() + "\n"
 
 
 def summary_room(heading: str) -> int:
     """Characters of prose that still fit under the Discord message cap."""
     overhead = len((heading or "").rstrip()) + len("\nSummary:\n") + 1
-    return max(1, MAX_STORE - overhead)
+    return max(1, max_store() - overhead)
 
 
 def summary_fits(heading: str, summary: str) -> bool:
-    return len(render_summary(heading, summary)) <= MAX_STORE
+    return len(render_summary(heading, summary)) <= max_store()
 
 
 def _message_len(heading: str, summary: str) -> int:
@@ -104,13 +175,23 @@ def _message_len(heading: str, summary: str) -> int:
 
 def _crowded(heading: str, summary: str) -> bool:
     """The pin is full enough that the next full-size rewrite will be cut off."""
-    return bool((summary or "").strip()) and _message_len(heading, summary) >= _SOFT_STORE
+    return bool((summary or "").strip()) and _message_len(heading, summary) >= soft_store()
 
 
 def _cut_off(summary: str) -> bool:
-    """A long reply that does not end on a sentence was stopped mid-thought."""
-    body = " ".join((summary or "").split())
+    """A long reply that does not end on a sentence was stopped mid-thought.
+
+    A bullet list counts as cut off when most bullets end with a stop and the
+    last one does not. A list that never uses stops is taken as finished.
+    """
+    body = tidy_summary(summary)
     if len(body) < 400:
+        return False
+    if is_bulleted(body):
+        lines = body.splitlines()
+        stopped = sum(1 for line in lines[:-1] if line.rstrip()[-1:] in ".!?")
+        if len(lines) > 1 and stopped * 2 >= len(lines) - 1:
+            return lines[-1].rstrip()[-1:] not in ".!?"
         return False
     return body[-1] not in ".!?"
 
@@ -126,7 +207,7 @@ def needs_condense(heading: str, folded: str) -> bool:
 
 def condense_room(heading: str) -> int:
     """Character budget for the shorten pass. Smaller than a full pin."""
-    return max(400, summary_room(heading) // 2)
+    return max(200, summary_room(heading) // 2)
 
 
 def _ready_summary(heading: str, text: str) -> bool:
@@ -193,14 +274,14 @@ def read_recent(guild_id: int) -> list[str]:
         return []
     with open(path, "r", encoding="utf-8") as handle:
         lines = [line.strip() for line in handle if line.strip()]
-    return lines[-_RECENT_CAP:]
+    return lines[-recent_cap():]
 
 
 def write_recent(guild_id: int, lines: list[str]) -> None:
     """Rewrite the file so it is exactly these lines."""
     path = recent_path(guild_id)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    kept = [line for line in lines if line.strip()][-_RECENT_CAP:]
+    kept = [line for line in lines if line.strip()][-recent_cap():]
     text = ("\n".join(kept) + "\n") if kept else ""
     temporary = path + ".tmp"
     with open(temporary, "w", encoding="utf-8") as handle:
@@ -210,12 +291,14 @@ def write_recent(guild_id: int, lines: list[str]) -> None:
 
 def push_recent(guild_id: int, new_lines: list[str]) -> list[str]:
     """Add lines. Returns what the file now holds, including a turn that crosses five."""
+    from core.content_filter import clean_memory_text
+
     rows = read_recent(guild_id)
     for line in new_lines:
-        text = " ".join(str(line or "").split())
+        text = " ".join(clean_memory_text(str(line or "")).split())
         if text:
             rows.append(text)
-    rows = rows[-_RECENT_CAP:]
+    rows = rows[-recent_cap():]
     write_recent(guild_id, rows)
     return rows
 
@@ -228,7 +311,7 @@ def episode_summary_text(raw: str) -> str:
     """Prose from the summarizer. An error string is not a summary."""
     from core.client import drop_safety_preamble
 
-    text = " ".join(drop_safety_preamble(raw or "").split())
+    text = tidy_summary(drop_safety_preamble(raw or ""))
     if not text or text.upper().startswith("ERROR"):
         return ""
     low = text.lower()
@@ -237,7 +320,7 @@ def episode_summary_text(raw: str) -> str:
     for label in ("existing summary:", "new summary:", "summary:"):
         idx = low.find(label)
         if 0 <= idx <= 48:
-            text = text[idx + len(label) :].strip()
+            text = tidy_summary(text[idx + len(label) :])
             low = text.lower()
             break
     if not text or "existing summary:" in low or "new summary:" in low:
@@ -245,20 +328,43 @@ def episode_summary_text(raw: str) -> str:
     return text
 
 
+_EPISODE_KEEP = (
+    "Keep: subjects people raised, decisions or plans the server made, "
+    "recurring topics, and tools that ran."
+)
+def _slur_rule(text: str) -> str:
+    from core.content_filter import slur_rule
+
+    return slur_rule(text)
+
+
+_EPISODE_DROP = (
+    "Drop: who said what, greetings, small talk, play-by-play, quotes, numbers, "
+    "links, and guesses. "
+    "No slurs, no Discord ids or long id numbers, and no @mentions. "
+    "Do not record anything that was made up, wrong, or a refusal. "
+    "Drop requests that were answered, refused, or are stale."
+)
+_EPISODE_FORMAT = (
+    'Format: short "- " bullets, one subject each, each ending with a period. '
+    "No headings, no intro."
+)
+
+
 def fold_prompt(summary: str, recent: list[str], limit: int) -> str:
     """Previous summary plus the local file. Not the chat prompt."""
-    prose = " ".join((summary or "").split()) or "(none yet)"
-    rows = "\n".join(line for line in recent if str(line).strip()) or "(none)"
+    from core.content_filter import clean_lines, clean_memory_text
+
+    prose = clean_memory_text(tidy_summary(summary)) or "(none yet)"
+    rows = "\n".join(clean_lines(recent)) or "(none)"
     room = max(1, int(limit))
     return (
-        "Summarize this server's public episode. Reply with the summary only.\n"
-        "Finished prose about the server, not notes to yourself.\n"
-        "Update the summary with the recent lines. Keep earlier topics that still matter.\n"
-        "Keep the subjects people raised and the tools that ran.\n"
-        "Stay general. Name the subject. Leave out quotes, numbers, links, and fine detail.\n"
-        "Drop greetings, agreements, and one-off reactions.\n"
-        "Plain prose. No bullet list. "
-        f"Stay under {room} characters.\n\n"
+        "Update this server's episode summary. Reply with the updated summary only.\n"
+        f"{_EPISODE_KEEP}\n"
+        f"{_slur_rule(_EPISODE_DROP)}\n"
+        "Merge the recent lines in. Keep older subjects that still matter; drop finished ones.\n"
+        f"{_EPISODE_FORMAT}\n"
+        f"Length: at most {room} characters. Shorter is better.\n\n"
         f"Summary:\n{prose}\n\n"
         f"Recent:\n{rows}"
     )
@@ -266,16 +372,18 @@ def fold_prompt(summary: str, recent: list[str], limit: int) -> str:
 
 def condense_prompt(existing: str, fresh: str, limit: int) -> str:
     """Second pass. The existing episode plus the summary that did not fit."""
-    prose = " ".join((existing or "").split()) or "(none yet)"
-    segment = " ".join((fresh or "").split()) or "(none)"
+    from core.content_filter import clean_memory_text
+
+    prose = clean_memory_text(tidy_summary(existing)) or "(none yet)"
+    segment = clean_memory_text(tidy_summary(fresh)) or "(none)"
     room = max(1, int(limit))
     return (
-        "Condense this server episode into one summary. Reply with the summary only.\n"
-        "Use the existing summary and the new summary. Keep the subjects people raised and the tools that ran.\n"
-        "Stay general. Name the subject. Leave out quotes, numbers, links, and fine detail.\n"
-        "Drop greetings, agreements, and one-off reactions.\n"
-        "Plain prose. No bullet list. "
-        f"Stay under {room} characters.\n\n"
+        "Shorten this server's episode summary. Reply with the shortened summary only.\n"
+        "Combine the existing summary and the new summary. "
+        f"{_EPISODE_KEEP} Merge duplicates. Drop anything trivial or finished.\n"
+        f"{_slur_rule(_EPISODE_DROP)}\n"
+        f"{_EPISODE_FORMAT}\n"
+        f"Length: at most {room} characters.\n\n"
         f"Existing summary:\n{prose}\n\n"
         f"New summary:\n{segment}"
     )
@@ -323,12 +431,19 @@ def _clip_prose(text: str, limit: int, *, finish: bool = False) -> str:
     finish drops a long reply that was cut off before a sentence, instead of
     storing the broken tail.
     """
-    text = " ".join((text or "").split())
+    text = tidy_summary(text)
     if not text:
         return ""
     if len(text) <= limit and not (finish and _cut_off(text)):
         return text
     window = text[:limit].rstrip()
+    if is_bulleted(text):
+        # Whole bullets first. A bullet cut mid-way is dropped.
+        if len(text) > limit and text[limit : limit + 1] == "\n":
+            return window
+        line_end = window.rfind("\n")
+        if line_end >= 40:
+            return window[:line_end].rstrip()
     cut = max(window.rfind("."), window.rfind("!"), window.rfind("?"))
     # A prompt clip ignores a tiny first sentence and keeps a longer word
     # clip. A stored episode keeps that sentence: the other choice is to
@@ -353,11 +468,14 @@ def prompt_episode(body: str) -> str:
     """The summary prose only. Raw lines stay in the local file."""
     from core.client import drop_safety_preamble
 
+    from core.content_filter import clean_memory_text
+
     summary, _log = split_episode(body)
-    text = " ".join(drop_safety_preamble(summary).split())
+    # No guild ids, mentions, or slurs in the server block of the prompt.
+    text = clean_memory_text(tidy_summary(drop_safety_preamble(summary)))
     if not text:
         return ""
-    return _clip_prose(text, PROMPT_CHARS)
+    return _clip_prose(text, prompt_chars())
 
 
 async def _episode_message(thread, prefix: str):
@@ -388,7 +506,8 @@ async def load_episodic(bot, guild_id) -> str:
 
 async def _fold_stored(summary: str, recent: list[str], limit: int) -> str:
     """Summarizer pass over the local file. Empty means try on a later turn."""
-    from core.client import call_groq_raw, tokens_for
+    from core.client import call_groq_raw
+    from core.context_caps import summary_tokens
     from core.debuglog import dprint
     from core.summarizer_prompt import get_summarizer_model
 
@@ -396,7 +515,7 @@ async def _fold_stored(summary: str, recent: list[str], limit: int) -> str:
         raw = await call_groq_raw(
             fold_prompt(summary, recent, limit),
             model=get_summarizer_model(),
-            max_completion_tokens=tokens_for(limit),
+            max_completion_tokens=summary_tokens(limit),
         )
     except Exception as exc:
         print(f"[episodic] summary failed: {exc}", flush=True)
@@ -410,7 +529,8 @@ async def _fold_stored(summary: str, recent: list[str], limit: int) -> str:
 
 async def _condense_stored(previous: str, fresh: str, limit: int) -> str:
     """Second summarizer pass. Empty means the first text stays unstored."""
-    from core.client import call_groq_raw, tokens_for
+    from core.client import call_groq_raw
+    from core.context_caps import summary_tokens
     from core.debuglog import dprint
     from core.summarizer_prompt import get_summarizer_model
 
@@ -418,7 +538,7 @@ async def _condense_stored(previous: str, fresh: str, limit: int) -> str:
         raw = await call_groq_raw(
             condense_prompt(previous, fresh, limit),
             model=get_summarizer_model(),
-            max_completion_tokens=tokens_for(limit),
+            max_completion_tokens=summary_tokens(limit),
         )
     except Exception as exc:
         print(f"[episodic] condense failed: {exc}", flush=True)
@@ -440,7 +560,7 @@ async def append_episodic(bot, guild_id, guild_name, lines: list[str]) -> None:
     guild_id = int(guild_id)
     async with _lock(guild_id):
         recent = push_recent(guild_id, fresh)
-        if len(recent) < FOLD_AFTER:
+        if len(recent) < fold_after():
             return
         print(
             f"[episodic] summarizing {len(recent)} lines for guild {guild_id}",
@@ -487,7 +607,7 @@ async def append_episodic(bot, guild_id, guild_name, lines: list[str]) -> None:
             )
             return
         packed = render_summary(heading, chosen)
-        if len(packed) > MAX_STORE:
+        if len(packed) > max_store():
             print(
                 f"[episodic] summary is {len(packed)} characters; keeping {len(recent)} lines",
                 flush=True,

@@ -43,6 +43,14 @@ class CharOverride(commands.Cog):
             return
 
         user_text = message.content
+        from core.blocklist import REFUSAL, is_blocked, note
+
+        if is_blocked(user_text):
+            note("override message")
+            await message.channel.send(REFUSAL)
+            self.bot.next_reply_override = False
+            self.bot.override_waiting_for = None
+            return
         from core.client import call_groq_turn, discord_chunks, settle_cut_reply, thread_completion_tokens
 
         speaker = getattr(message.author, "name", "") or ""
@@ -61,7 +69,11 @@ class CharOverride(commands.Cog):
                 message.author.id,
                 max_completion_tokens=budget,
             )
-        for chunk in discord_chunks(turn.reply or ""):
+        reply = turn.reply or ""
+        if is_blocked(reply):
+            note("override reply")
+            reply = REFUSAL
+        for chunk in discord_chunks(reply):
             await message.channel.send(chunk)
 
         # Reset override

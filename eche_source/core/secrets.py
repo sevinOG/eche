@@ -57,6 +57,25 @@ PUBLIC_KEYS = (
     "reasoning_top_p",            # thinking turns; blank uses 0.95 for Qwen
     "reasoning_top_k",            # thinking turns; blank uses 20 for Qwen
     "reasoning_models",           # per Ollama tag: "tag=auto|on|off|low|medium|high; ..."
+    # Context & Memory caps (core/context_caps.py). Blank uses the default.
+    "memory_prompt_chars",          # whole memory prompt; blank uses 3500
+    "memory_summary_prompt_chars",  # each long-term summary in the prompt; blank uses 600
+    "episode_prompt_chars",         # server episode in the prompt; blank uses 600
+    "memory_recent_messages",       # full recent messages kept per side; blank uses 3
+    "memory_message_chars",         # one message in the recent buffer; blank/0 = whole message
+    "media_prompt_chars",           # attachment/embed text per turn; blank uses 1600
+    "attachment_text_chars",        # one attached text file; blank uses 1000
+    "media_memory_chars",           # attachment text stored in memory; blank uses 500
+    "memory_fold_every",            # messages per long-term summary update; blank uses 3
+    "memory_summary_chars",         # long-term summary pin target; blank uses 1900
+    "episode_fold_after",           # server lines per episode summary; blank uses 5
+    "episode_summary_chars",        # server episode pin target; blank uses 1900
+    "thread_notes_chars",           # lookup notes carried into thread posts; blank uses 2000
+    "thread_posted_chars",          # earlier posts each thread post sees; blank/0 = all
+    "thread_topic_scan",            # messages searched for a thread subject; blank uses 8
+    "local_history_turns",          # desktop chat turns sent; blank uses 20
+    "blocked_words",                # extra hard-blocked words, one per line or comma (core/blocklist.py)
+    "memory_mask_slurs",            # "0" stops masking slurs in memory pins. Blank stays on.
 )
 
 # Map settings key -> environment variable used by the bot
