@@ -228,6 +228,20 @@ async def _reset_memory(bot) -> None:
         log(f"Memory reset failed: {e}", channel="memory")
 
 
+async def _unlock_memory(bot) -> None:
+    try:
+        from core.context_manager import get_home_guild
+        from core.memory_access import unlock_memory
+
+        report = await unlock_memory(
+            get_home_guild(bot),
+            log=lambda text: log(text, channel="memory"),
+        )
+        emit("memory_access", {"ok": report.ok, "summary": report.summary()})
+    except Exception as e:
+        log(f"Memory access failed: {e}", channel="memory")
+
+
 async def _handle_line(bot, line: str) -> None:
     line = line.strip()
     if not line:
@@ -250,6 +264,11 @@ async def _handle_line(bot, line: str) -> None:
     if upper == "RESET_MEMORY":
         # Only the desktop app writes this pipe. There is no Discord command.
         await _reset_memory(bot)
+        return
+
+    if upper == "UNLOCK_MEMORY":
+        # Only the desktop app writes this pipe. There is no Discord command.
+        await _unlock_memory(bot)
         return
 
     if upper.startswith("ANNOUNCE "):

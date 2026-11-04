@@ -545,6 +545,21 @@ def _cap_help() -> dict[str, tuple[str, str]]:
         "Memory keeps the words as said, and the summarizer's \"No slurs\" rule "
         "is dropped. Mentions and Discord ids are always stripped either way.",
     )
+    out["memory_access"] = (
+        "Let users see their memory",
+        "### What it does\n"
+        "For every **user-<id>** channel in **bot memory**, that person gets a "
+        "read-only permission on their own channel: they can see it and read its "
+        "history, including the **context** thread with their pins. They cannot "
+        "send, post in threads, react, or start threads.\n\n"
+        "### Who is skipped\n"
+        "People who are not on the home server. Invite them first, then run it "
+        "again. #bot and other people's channels are never changed.\n\n"
+        "### Command line\n"
+        "`python -m core.memory_access --dry-run` (shows who, changes nothing) or "
+        "`--yes` from eche_source, or `Eche.exe --unlock-memory --yes`. Running it "
+        "twice is safe.",
+    )
     out["reset_memory"] = (
         "Reset all memory",
         "### What it does\n"

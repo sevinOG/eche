@@ -65,6 +65,24 @@ class UpdatePrepareWorker(QThread):
                 pass
             self.finished_ok.emit(False, str(exc) or type(exc).__name__)
 
+class MemoryAccessWorker(QThread):
+    """Give each person read-only access to their own memory channel."""
+
+    finished_ok = pyqtSignal(bool, str)
+
+    def run(self):
+        try:
+            from core.memory_access import run_unlock
+
+            report = run_unlock()
+            text = report.summary()
+            if not report.problem:
+                text += "\n\n" + "\n".join(report.details())
+            self.finished_ok.emit(report.ok, text)
+        except Exception as exc:
+            self.finished_ok.emit(False, str(exc) or type(exc).__name__)
+
+
 class MemoryWipeWorker(QThread):
     """Reset every memory pin on its own Discord connection, off the GUI thread."""
 
