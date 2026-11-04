@@ -1185,9 +1185,97 @@ class SettingsWindow(QWidget):
             "GitHub download, or the folder you pick. The running app closes before files are replaced.",
             body,
         ))
+        layout.addWidget(self._data_folder_card())
         layout.addStretch(1)
         self._on_update_mode(True)
         return page
+
+    def _data_folder_card(self) -> QFrame:
+        body = QVBoxLayout()
+        body.setSpacing(8)
+        try:
+            from core.paths import user_dir, user_dir_source, pointer_file
+            current, how, ptr = user_dir(), user_dir_source(), pointer_file()
+        except Exception:
+            current, how, ptr = PROJECT_ROOT, "package", ""
+        label = {"env": "set by ECHE_USER_ROOT", "pointer": "set by the Data folder pointer",
+                 "package": "the app folder"}.get(how, how)
+        self.data_folder_status = QLabel(f"Now using: {current}  ({label})")
+        self.data_folder_status.setObjectName("FieldHint")
+        self.data_folder_status.setWordWrap(True)
+        body.addWidget(self.data_folder_status)
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        self.data_folder_edit = QLineEdit()
+        self.data_folder_edit.setText(current if how == "pointer" else "")
+        self.data_folder_edit.setPlaceholderText(r"C:\Users\you\EcheSafe")
+        self.data_folder_edit.setMinimumHeight(34)
+        row.addWidget(self.data_folder_edit, stretch=1)
+        browse = QPushButton("Browse…")
+        browse.setObjectName("ghost")
+        browse.setMinimumHeight(34)
+        browse.clicked.connect(self._browse_data_folder)
+        row.addWidget(browse)
+        move = QPushButton("Move data here")
+        move.setObjectName("primary")
+        move.setMinimumHeight(34)
+        move.clicked.connect(self._move_data_folder)
+        row.addWidget(move)
+        body.addLayout(row)
+        return self._card(
+            "Data folder",
+            "Keep settings, secrets and memory outside the app folder so updates can't wipe them. "
+            f"The choice is saved in {ptr}.",
+            body,
+        )
+
+    def _browse_data_folder(self):
+        start = self.data_folder_edit.text().strip() or os.path.expanduser("~")
+        path = QFileDialog.getExistingDirectory(self, "Choose Data folder", start)
+        if path:
+            self.data_folder_edit.setText(os.path.normpath(path))
+
+    def _move_data_folder(self):
+        from core import data_folder
+        target = self.data_folder_edit.text().strip()
+        err = data_folder.validate_target(target)
+        if err:
+            QMessageBox.warning(self, "Data folder", err)
+            return
+        plan = data_folder.plan_move(target)
+        overwrite = False
+        if plan.conflicts:
+            shown = "\n".join(plan.conflicts[:10])
+            more = f"\n…and {len(plan.conflicts) - 10} more" if len(plan.conflicts) > 10 else ""
+            box = QMessageBox(self)
+            box.setWindowTitle("Files already there")
+            box.setText(
+                f"{len(plan.conflicts)} file(s) already exist in the new folder and are different:\n\n"
+                f"{shown}{more}\n\nReplace them with the current ones?"
+            )
+            replace = box.addButton("Replace", QMessageBox.ButtonRole.DestructiveRole)
+            keep = box.addButton("Keep theirs", QMessageBox.ButtonRole.AcceptRole)
+            box.addButton(QMessageBox.StandardButton.Cancel)
+            box.exec()
+            clicked = box.clickedButton()
+            if clicked is replace:
+                overwrite = True
+            elif clicked is not keep:
+                return
+        try:
+            result = data_folder.apply_move(plan, overwrite=overwrite)
+        except Exception as exc:
+            QMessageBox.warning(self, "Data folder", f"Could not move data: {exc}")
+            return
+        self.data_folder_status.setText(
+            f"Saved. Copied {result['copied']} file(s), kept {result['skipped']}, "
+            f"{result['same']} already matched. Restart Eche to use {plan.target}."
+        )
+        QMessageBox.information(
+            self, "Data folder",
+            f"Data is in {plan.target}.\nRestart Eche (close it fully and open it again) to switch. "
+            "The old copy in the app folder was left in place.",
+        )
 
     def _on_update_mode(self, _checked: bool = False):
         local = bool(getattr(self, "radio_local", None) and self.radio_local.isChecked())
