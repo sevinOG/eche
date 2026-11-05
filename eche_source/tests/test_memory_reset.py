@@ -481,6 +481,34 @@ class AssetPromptTests(TempRoot):
         plan = imagine.plan_asset("image of a raccoon eating spice cake")
         self.assertIn("raccoon", plan.prompt)
 
+    def test_character_lock_needs_source(self):
+        with self.assertRaises(imagine.ImagineError) as ctx:
+            imagine.plan_asset(
+                "video of Female Lead A: Image 1 leaning on a railing, character lock"
+            )
+        self.assertIn("Attach or reply", str(ctx.exception.text))
+
+    def test_character_lock_with_source_ok(self):
+        source = imagine.SourceMedia(data=b"\x89PNG\r\n\x1a\n" + b"\x00" * 16, mime="image/png")
+        plan = imagine.plan_asset(
+            "video of Female Lead A: Image 1 leaning on a railing",
+            kind="video",
+            source=source,
+        )
+        self.assertEqual(plan.mode, "image_video")
+
+    def test_moderation_error_is_mapped(self):
+        msg = imagine._error_text(
+            {"error": {"message": "Generated image rejected by content moderation."}},
+            400,
+        )
+        self.assertEqual(msg, imagine._FILTERED)
+
+    def test_empty_batch_is_filtered(self):
+        with self.assertRaises(imagine.ImagineError) as ctx:
+            imagine.image_url({"data": []})
+        self.assertEqual(ctx.exception.text, imagine._FILTERED)
+
 
 # ----------------------------------------------------------- reply style
 

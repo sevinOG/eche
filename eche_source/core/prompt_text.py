@@ -24,7 +24,9 @@ TOOL_LINES = {
     ),
     "asset": (
         "asset: they asked for a picture, a video, or a change to one they attached. "
-        "prompt is what to make. kind is image or video when they named one. "
+        "prompt is their words, copied through — do not soften or rewrite for filters. "
+        "kind is image or video when they named one. "
+        "If they cite Image 1 or a character lock, they must attach or reply to that file. "
         "A thread of those files is the thread tool."
     ),
     "kick": "kick: only when an owner explicitly asks to kick one member.",

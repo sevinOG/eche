@@ -26,8 +26,9 @@ from core.tools import ACCESS_ANYONE, Tool, ToolResult, announcement, register
 
 _DESCRIPTION = (
     "Make a picture or a video with Grok Imagine when they ask for one. "
-    "prompt is what to make or how to change an attached picture or video. "
+    "prompt is their wording, copied through — do not soften, sanitize, or rewrite for filters. "
     "kind is image or video when they named one. Leave kind empty to decide from the prompt. "
+    "When they name Image 1 / a character lock / this picture, they must attach or reply to that file. "
     "A thread of those files is the thread tool."
 )
 
