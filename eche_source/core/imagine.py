@@ -345,6 +345,23 @@ def asset_shot_lines(plan: str, source: str, limit: int = 8) -> list[str]:
     return [one] if one else []
 
 
+_SOURCE_MARK = re.compile(
+    r"(?:"
+    r"\bimage\s*\d+\b|"
+    r"\bcharacter\s*lock\b|"
+    r"\breference\s*(?:image|photo|picture|frame)\b|"
+    r"\b(?:this|that|the)\s+(?:image|picture|photo|frame)\b|"
+    r"\bimg\s*\d+\b"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _needs_source(text: str) -> bool:
+    """True when the prompt points at an attached frame that is not present."""
+    return bool(_SOURCE_MARK.search(text or ""))
+
+
 def plan_asset(text: str, *, kind: str = "", source: SourceMedia | None = None) -> AssetPlan:
     """Decide image, video, edit, or image-to-video. Raises ImagineError when the ask is not one of those."""
     raw = _words(text)
@@ -371,6 +388,10 @@ def plan_asset(text: str, *, kind: str = "", source: SourceMedia | None = None) 
     if len(prompt) > MAX_PROMPT:
         prompt = prompt[:MAX_PROMPT].rstrip()
     check_prompt(raw)
+    if source is None and _needs_source(raw):
+        raise ImagineError(
+            "Attach or reply to the picture that prompt uses (Image 1 / character lock), then ask again."
+        )
     visual = asked in ("image", "video") or _has_word(prompt, _VIDEO_WORDS + _IMAGE_WORDS)
     if source is None and not visual and _has_word(prompt, _AUDIO_WORDS):
         raise ImagineError(
@@ -445,6 +466,21 @@ def request_for(plan: AssetPlan) -> tuple[str, dict]:
     return "/videos/generations", body
 
 
+_FILTERED = "That one was filtered."
+_FILTER_MARKERS = (
+    "content moderation",
+    "respect_moderation",
+    "filtered by moderation",
+    "did not respect moderation",
+    "moderation rules",
+)
+
+
+def _moderation_message(message: str) -> bool:
+    folded = (message or "").casefold()
+    return any(marker in folded for marker in _FILTER_MARKERS)
+
+
 def _error_text(payload: dict, status: int) -> str:
     err = payload.get("error") if isinstance(payload, dict) else None
     message = ""
@@ -453,6 +489,8 @@ def _error_text(payload: dict, status: int) -> str:
     elif isinstance(err, str):
         message = err
     message = " ".join(message.split())
+    if _moderation_message(message):
+        return _FILTERED
     if not message:
         message = f"Imagine returned {status}."
     if len(message) > 180:
@@ -469,6 +507,9 @@ def _filtered(payload: dict) -> bool:
     if isinstance(video, dict) and video.get("respect_moderation") is False:
         return True
     data = payload.get("data")
+    # An empty batch is how Imagine reports a full moderation block on HTTP 200.
+    if isinstance(data, list) and not data:
+        return True
     if isinstance(data, list):
         for item in data:
             if isinstance(item, dict) and item.get("respect_moderation") is False:
@@ -478,7 +519,7 @@ def _filtered(payload: dict) -> bool:
 
 def image_url(payload: dict) -> str:
     if _filtered(payload):
-        raise ImagineError("That one was filtered.")
+        raise ImagineError(_FILTERED)
     data = payload.get("data") if isinstance(payload, dict) else None
     item = data[0] if isinstance(data, list) and data else {}
     if not isinstance(item, dict):
@@ -510,7 +551,7 @@ def video_poll(payload: dict) -> tuple[str, str]:
         return "pending", ""
     if status == "done":
         if _filtered(payload):
-            raise ImagineError("That one was filtered.")
+            raise ImagineError(_FILTERED)
         video = payload.get("video") if isinstance(payload.get("video"), dict) else {}
         url = str(video.get("url") or "").strip()
         if not url:
@@ -596,6 +637,18 @@ def _sniff_image_mime(data: bytes) -> str:
     return ""
 
 
+def _sniff_media_mime(data: bytes) -> str:
+    """Prefer container magic over a wrong Content-Type header."""
+    image = _sniff_image_mime(data)
+    if image:
+        return image
+    if len(data) >= 12 and data[4:8] == b"ftyp":
+        return "video/mp4"
+    if data.startswith(b"\x1a\x45\xdf\xa3"):
+        return "video/webm"
+    return ""
+
+
 def http_bytes(url: str, limit: int = MAX_BYTES, timeout: int = 120) -> tuple[bytes, str]:
     """Download one finished file. Only https on an x.ai host, or a b64: image."""
     if url.startswith("b64:"):
@@ -673,6 +726,12 @@ async def run_asset(plan: AssetPlan, key: str) -> AssetFile | str:
     data, mime = await asyncio.to_thread(http_bytes, url)
     if not data:
         return url
-    if not mime or mime == "application/octet-stream":
+    sniffed = _sniff_media_mime(data)
+    if sniffed:
+        mime = sniffed
+    elif not mime or mime == "application/octet-stream":
         mime = "video/mp4" if "video" in plan.mode else "image/jpeg"
-    return AssetFile(data=data, filename=filename_for(mime), mime=mime, mode=plan.mode)
+    name = filename_for(mime)
+    if name == "asset.bin":
+        name = "asset.mp4" if "video" in plan.mode else "asset.jpg"
+    return AssetFile(data=data, filename=name, mime=mime, mode=plan.mode)
