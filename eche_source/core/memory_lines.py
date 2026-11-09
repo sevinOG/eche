@@ -34,8 +34,12 @@ def user_memory_line(message_text: str, *, picture: bool = False) -> str:
 
 
 def bot_memory_line(reply_text: str, tools: list[str] | None = None) -> str:
-    """What eche said. This is the bot pin's New: line."""
-    said = _said(reply_text)
+    """What eche said, in eche's own voice. The bot pin's New: line.
+
+    The bot pin is eche's record of its own outputs, so the line is first
+    person and never starts with "user".
+    """
+    said = _said(reply_text, 240)
     names: list[str] = []
     for tool in tools or []:
         name = " ".join(str(tool or "").split()).lower()
@@ -50,9 +54,75 @@ def bot_memory_line(reply_text: str, tools: list[str] | None = None) -> str:
     else:
         used = ""
     if used and said:
-        return f"eche used {used} and said {said}"
+        return f"I used {used} and said {said}"
     if used:
-        return f"eche used {used}"
+        return f"I used {used}"
     if said:
-        return f"eche said {said}"
-    return "eche answered"
+        return f"I said {said}"
+    return "I answered"
+
+
+# --- The bot's own record ---------------------------------------------------
+# The bot buffer and pin are eche's memory of its own outputs. A turn that ran
+# a tool keeps what the tool did and what eche posted, not only one of them.
+
+_ACTION_ARG_LIMIT = 160
+
+
+def _arg(arguments, key: str, limit: int = _ACTION_ARG_LIMIT) -> str:
+    if not isinstance(arguments, dict):
+        return ""
+    value = " ".join(str(arguments.get(key) or "").split()).strip().strip("\"'`")
+    if len(value) > limit:
+        value = value[: limit - 1].rstrip() + "…"
+    return value
+
+
+def tool_action(name: str, arguments: dict | None = None, posted: str = "") -> str:
+    """One bracketed note of what eche did with a tool, in eche's own voice.
+
+    posted is text a quiet tool already put on Discord itself (an asset
+    caption). It is kept so the record says what came out, not only the call.
+    """
+    tool = " ".join(str(name or "").split()).lower() or "a tool"
+    detail = ""
+    if tool == "asset":
+        kind = _arg(arguments, "kind", 10).lower()
+        prompt = _arg(arguments, "prompt")
+        what = f"a {kind}" if kind in ("image", "video") else "an asset"
+        detail = f"made {what}" + (f' of "{prompt}"' if prompt else "")
+    elif tool == "duckduckgo":
+        query = _arg(arguments, "query")
+        detail = f'searched "{query}"' if query else "searched the web"
+    elif tool == "thread":
+        title = _arg(arguments, "title", 80)
+        detail = f'opened a thread "{title}"' if title else "opened a thread"
+    head = f"I used {tool}"
+    if detail:
+        head = f"{head}: {detail}"
+    shown = " ".join(str(posted or "").split()).strip()
+    if shown:
+        if len(shown) > _ACTION_ARG_LIMIT:
+            shown = shown[: _ACTION_ARG_LIMIT - 1].rstrip() + "…"
+        head = f'{head}; posted "{shown}"'
+    return f"[{head}]"
+
+
+def bot_output_record(
+    reply_text: str = "",
+    said: list[str] | None = None,
+    actions: list[str] | None = None,
+) -> str:
+    """What eche actually output this turn, as one stored message.
+
+    A plain reply is stored as written. When tools ran, the bracketed action
+    notes come first, then every message eche posted (tool replies). The
+    model's draft reply is only used when nothing was posted, because the
+    draft is not sent on a tool turn.
+    """
+    notes = [str(a).strip() for a in (actions or []) if str(a or "").strip()]
+    spoken = [" ".join(str(s).split()) for s in (said or []) if str(s or "").strip()]
+    if not notes and not spoken:
+        return str(reply_text or "").strip()
+    parts = notes + spoken
+    return " ".join(parts).strip()
