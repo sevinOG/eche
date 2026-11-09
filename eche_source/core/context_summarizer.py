@@ -400,6 +400,53 @@ def _length_line(room: int) -> str:
     return f"Length: at most {room} characters. Shorter is better."
 
 
+# The bot pin is eche's record of its own outputs. It is written in the first
+# person, about what eche said and did. Facts about the person live on their
+# own pin. Jokes and running bits are kept here: they are eche's to repeat.
+_BOT_MEMORY_KEEP = (
+    "Keep, in my own words: what I said and claimed, opinions I gave, "
+    "promises and plans I agreed to, jokes, nicknames, and running bits I keep "
+    "up, pictures and videos I made (and of what), tools I used and what they "
+    "found, and open threads I should follow up on.\n"
+)
+_BOT_MEMORY_DROP = (
+    "Drop: greetings, filler, play-by-play of the chat, and one-off reactions. "
+    "No slurs, no Discord ids or long id numbers, and no @mentions. "
+    "Do not record refusals or anything I refused, or a claim I later corrected. "
+    "Drop promises I already kept and requests that are stale."
+)
+_BOT_MEMORY_VOICE = (
+    'Write as me, Eche. Every bullet is about my own output and starts with "I" '
+    '(for example "I told them...", "I made a video of...", "I keep joking that..."). '
+    'Never start a bullet with "user", "the user", or "they". '
+    "Name the person only as context for what I said. Facts about them belong in their own memory.\n"
+    'Rewrite any older bullet that is about the person as what I said or did, or drop it.\n'
+)
+_BOT_RECENT_LABEL = "My recent outputs (what I posted, oldest first)"
+# A bullet that opens on the person. The bot pin is never written this way.
+_USER_LEAD = re.compile(r"^(?:-\s*)?(?:the\s+)?users?\b", re.I)
+
+
+def user_centric_bullets(text: str) -> list[str]:
+    """Bullets on a bot fold that are about the person, not eche's own output."""
+    out = []
+    for line in (text or "").splitlines():
+        body = line.strip()
+        if body and _USER_LEAD.match(body):
+            out.append(body)
+    return out
+
+
+def bot_voice_only(text: str) -> str:
+    """Drop bullets that open on the person. The rest of the fold stays."""
+    kept = [
+        line
+        for line in (text or "").splitlines()
+        if line.strip() and not _USER_LEAD.match(line.strip())
+    ]
+    return "\n".join(kept).strip()
+
+
 def fold_memory_prompt(side: str, existing: str, notes: list[str], limit: int) -> str:
     """Local buffer plus the long-term block. User and bot each keep their own job."""
     from core.content_filter import clean_lines, clean_memory_text
@@ -409,21 +456,25 @@ def fold_memory_prompt(side: str, existing: str, notes: list[str], limit: int) -
     rows = _memory_rows(clean_lines(notes))
     room = max(1, int(limit))
     if side == "bot":
-        intro = (
-            "Update your long-term memory of talking with this person. "
-            "Reply with the updated memory only.\n"
-            "Keep: what you promised or agreed to, answers they may come back to, "
-            "tools you used for them, and open threads.\n"
+        return (
+            "Update my long-term memory of my own outputs with this person: "
+            "what I, Eche, said and did. Reply with the updated memory only.\n"
+            f"{_BOT_MEMORY_KEEP}"
+            f"{_BOT_MEMORY_VOICE}"
+            f"{_slur_rule(_BOT_MEMORY_DROP)}\n"
+            "Merge new outputs in. Replace things I changed my mind on. "
+            "Keep older outputs that still matter for staying consistent.\n"
+            f"{_MEMORY_FORMAT}\n"
+            f"{_length_line(room)}\n\n"
+            f"Summary:\n{prose}\n\n"
+            f"{_BOT_RECENT_LABEL}:\n{rows}"
         )
-        recent_label = "Recent replies"
-    else:
-        intro = (
-            "Update the long-term memory of this person. "
-            "Reply with the updated memory only.\n"
-            "Keep: who they are, their preferences, how they want to be treated, "
-            "instructions they gave, decisions, and open threads.\n"
-        )
-        recent_label = "Recent messages"
+    intro = (
+        "Update the long-term memory of this person. "
+        "Reply with the updated memory only.\n"
+        "Keep: who they are, their preferences, how they want to be treated, "
+        "instructions they gave, decisions, and open threads.\n"
+    )
     return (
         f"{intro}"
         f"{_slur_rule(_MEMORY_DROP)}\n"
@@ -431,7 +482,7 @@ def fold_memory_prompt(side: str, existing: str, notes: list[str], limit: int) -
         f"{_MEMORY_FORMAT}\n"
         f"{_length_line(room)}\n\n"
         f"Summary:\n{prose}\n\n"
-        f"{recent_label}:\n{rows}"
+        f"Recent messages:\n{rows}"
     )
 
 
@@ -444,11 +495,21 @@ def condense_memory_prompt(side: str, existing: str, fresh: str, limit: int) -> 
     segment = clean_memory_text(tidy_summary(fresh)) or "(none)"
     room = max(1, int(limit))
     if side == "bot":
-        keep = "what you promised, answers they may come back to, tools you used, and open threads"
-        intro = "Shorten your long-term memory of this person. Reply with the shortened memory only.\n"
-    else:
-        keep = "who they are, preferences, instructions, decisions, and open threads"
-        intro = "Shorten this person's long-term memory. Reply with the shortened memory only.\n"
+        return (
+            "Shorten my long-term memory of my own outputs with this person. "
+            "Reply with the shortened memory only.\n"
+            "Combine the existing summary and the new summary. Keep what I said and "
+            "claimed, my opinions, promises, running bits, what I made, and open threads. "
+            "Merge duplicates.\n"
+            f"{_BOT_MEMORY_VOICE}"
+            f"{_slur_rule(_BOT_MEMORY_DROP)}\n"
+            f"{_MEMORY_FORMAT}\n"
+            f"{_length_line(room)}\n\n"
+            f"Existing summary:\n{prose}\n\n"
+            f"New summary:\n{segment}"
+        )
+    keep = "who they are, preferences, instructions, decisions, and open threads"
+    intro = "Shorten this person's long-term memory. Reply with the shortened memory only.\n"
     return (
         f"{intro}"
         f"Combine the existing summary and the new summary. Keep {keep}. "
@@ -488,6 +549,29 @@ async def _memory_completion(prompt: str, limit: int) -> str:
         max_completion_tokens=summary_tokens(limit),
     )
     return episode_summary_text(raw)
+
+
+async def _in_bot_voice(folded: str, existing: str, rows: list[str], room: int) -> str:
+    """The bot pin stays in eche's voice. A fold written about the person is
+    asked for once more, then any bullet that still opens on "user" is dropped.
+    Empty means the fold is not used and the buffer is kept for next time.
+    """
+    if not user_centric_bullets(folded):
+        return folded
+    print("[context_summarizer] bot summary was written about the person. Retrying in first person.")
+    retry = ""
+    try:
+        retry = await _memory_completion(
+            fold_memory_prompt("bot", existing, rows, room)
+            + '\n\nYour last answer started bullets with "user". '
+            'Every bullet must start with "I" and describe what I said or did.',
+            room,
+        )
+    except Exception as exc:
+        print(f"[context_summarizer] bot first-person retry failed: {exc}")
+    retry = _usable_fold(retry)
+    best = retry if retry and not user_centric_bullets(retry) else (retry or folded)
+    return bot_voice_only(best)
 
 
 async def fold_long_memory(
@@ -555,6 +639,8 @@ async def fold_long_memory(
         print(f"[context_summarizer] {side} summary failed: {exc}")
         return False
     folded = _usable_fold(folded)
+    if folded and side == "bot":
+        folded = await _in_bot_voice(folded, existing, rows, room)
     if not folded:
         print(f"[context_summarizer] {side} summary returned no usable text.")
         return False
@@ -573,6 +659,8 @@ async def fold_long_memory(
             print(f"[context_summarizer] {side} compact failed: {exc}")
             condensed = ""
         condensed = _usable_fold(condensed)
+        if condensed and side == "bot":
+            condensed = bot_voice_only(condensed)
         chosen = choose_memory(title, folded, condensed)
     if not chosen:
         print(f"[context_summarizer] {side} summary did not fit.")

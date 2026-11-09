@@ -414,7 +414,7 @@ _CAP_HELP: dict[str, str] = {
     ),
     "memory_summary_prompt_chars": (
         "How much of each long-term summary the reply sees: **About this person** "
-        "and **About you with this person**. The stored summary can be longer; this "
+        "and **Your own past outputs with this person**. The stored summary can be longer; this "
         "only limits what goes into each prompt. Cut on a whole bullet or sentence."
     ),
     "episode_prompt_chars": (

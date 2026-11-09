@@ -65,7 +65,8 @@ async def load_bot_context(bot, user_id, username=None):
 
 _BACKGROUND = "Background. Use this only when the message at the end needs it."
 _ABOUT_USER = "About this person:\n"
-_ABOUT_BOT = "About you with this person:\n"
+# The bot pin is your own record of what you said and did with this person.
+_ABOUT_BOT = "Your own past outputs with this person (what you said and did; stay consistent):\n"
 _THIS_SERVER = "This server:\n"
 
 
@@ -156,7 +157,9 @@ def _speaker(username: str, user_id) -> str:
     return name
 
 
-_RECENT_LABELS = ("Recent messages from them:", "Recent replies from you:")
+_RECENT_THEM = "Recent messages from them:"
+_RECENT_YOU = "Your own recent replies to them, as you posted them:"
+_RECENT_LABELS = (_RECENT_THEM, _RECENT_YOU)
 
 
 def _recent_at(prompt: str) -> int:
@@ -261,8 +264,8 @@ def render_memory_prompt(
     recent_bits = [
         bit
         for bit in (
-            _recent_block("Recent messages from them:", user_rows),
-            _recent_block("Recent replies from you:", bot_rows),
+            _recent_block(_RECENT_THEM, user_rows),
+            _recent_block(_RECENT_YOU, bot_rows),
         )
         if bit
     ]

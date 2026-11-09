@@ -154,13 +154,16 @@ class OnMessage(commands.Cog):
         Run the model's tool calls. The visible line is the announcement,
         then the tool body. A lookup body is rewritten by the model first.
         Returns whether a tool ran, the episode lines, the tool names,
-        and the reply text that was posted. A quiet tool posts nothing here.
+        the reply text that was posted, the quota flag, and one first-person
+        action note per tool for eche's own memory. A quiet tool posts
+        nothing here.
         """
         ctx = ToolContext(bot=self.bot, message=message)
         ran_any = False
         acts: list[str] = []
         tools_used: list[str] = []
         said: list[str] = []
+        actions: list[str] = []
         seen: set[str] = set()
         lookup_quota = False
         # A thread of pictures or videos posts the files there. The same
@@ -239,6 +242,18 @@ class OnMessage(commands.Cog):
                 continue
             if not result.quiet and (spoken or "").strip():
                 said.append(spoken.strip())
+            try:
+                from core.memory_lines import tool_action
+
+                actions.append(
+                    tool_action(
+                        name,
+                        (call or {}).get("arguments") or {},
+                        posted=(result.text or "") if result.quiet else "",
+                    )
+                )
+            except Exception as exc:
+                dprint(f"[on_message] tool action note failed: {type(exc).__name__}")
             ran_any = True
             who = getattr(message.author, "name", None) or str(message.author.id)
             try:
@@ -265,7 +280,7 @@ class OnMessage(commands.Cog):
                     today_day(),
                 )
             )
-        return ran_any, acts, tools_used, said, lookup_quota
+        return ran_any, acts, tools_used, said, lookup_quota, actions
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -418,6 +433,7 @@ class OnMessage(commands.Cog):
         episode_lines: list[str] = []
         tools_used: list[str] = []
         tool_said: list[str] = []
+        tool_actions: list[str] = []
         if calls:
             try:
                 (
@@ -426,6 +442,7 @@ class OnMessage(commands.Cog):
                     tools_used,
                     tool_said,
                     lookup_quota,
+                    tool_actions,
                 ) = await self._deliver_tool_calls(
                     message, calls, prompt
                 )
@@ -482,12 +499,15 @@ class OnMessage(commands.Cog):
             except Exception as e:
                 dprint(f"[on_message] user memory store failed: {e}")
             if tools_used or (not ran_tools and reply.strip()):
-                said = reply
-                if ran_tools:
-                    said = " ".join(part.strip() for part in tool_said if part and part.strip())
-                if not str(said or "").strip():
-                    from core.memory_lines import bot_memory_line
+                # Eche's own record of this turn: what it did and what it
+                # posted. A tool turn keeps both the action and the words.
+                from core.memory_lines import bot_memory_line, bot_output_record
 
+                if ran_tools:
+                    said = bot_output_record("", tool_said, tool_actions)
+                else:
+                    said = reply
+                if not str(said or "").strip():
                     said = bot_memory_line("", tools_used)
                 try:
                     await remember_bot(
