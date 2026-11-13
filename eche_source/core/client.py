@@ -354,8 +354,8 @@ def _model() -> str:
     else:
         fallback = DEFAULT_MODEL
     try:
-        from core.media_scan import reject_image_model
-        raw = reject_image_model(raw, "")
+        from core.media_scan import usable_chat_model
+        raw = usable_chat_model(raw, "")
     except Exception:
         pass
     if _model_is_unset(raw):
