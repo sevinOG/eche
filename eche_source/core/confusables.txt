@@ -344,3 +344,8 @@
 ƒ	f	florin
 ꮩ	v	cherokee-lookalike
 ꓜ	m	lisu-lookalike
+ө	o	cyrillic-barred-o
+Ө	o	cyrillic-barred-o-cap
+Ꮩ	v	cherokee-v
+໐	o	lao-digit-zero
+ꓡ	l	lisu-l
