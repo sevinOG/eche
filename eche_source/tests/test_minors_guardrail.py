@@ -27,6 +27,18 @@ def run(coro):
     return asyncio.run(coro)
 
 
+INCIDENT_PROMPT = (
+    "?asset animation twig boy kisses match girl and catches fire and starts "
+    "screaming horribly as match girl watches in horror at her boyfriend burning"
+)
+INCIDENT_RP = (
+    "animation twig boy kisses match girl and catches fire and starts "
+    "screaming horribly as match girl watches in horror at her boyfriend burning"
+)
+
+
+
+
 class FooterTests(unittest.TestCase):
     def test_footer_is_a_code_constant_from_the_category_list(self):
         self.assertEqual(sf.SAFETY_FOOTER, sf.render_safety_footer(sf.SAFETY_CATEGORIES))
@@ -192,6 +204,9 @@ class InputCheckTests(unittest.TestCase):
             "she's 17 but still in the scene",
             "she looks young",
             "she's in high school",
+            "young woman: a girl",
+            "a young-looking girl",
+            "y o u n g g i r l",
         ]
         for text in cases:
             with self.subTest(text=text):
@@ -249,6 +264,11 @@ class InputCheckTests(unittest.TestCase):
             "minority report",
             "I graduated high school in 2004",
             "she's 17 minutes late",
+            "my boyfriend is late",
+            "oh boy",
+            "boy band",
+            "girls night",
+            "young woman",
         ):
             with self.subTest(text=text):
                 self.assertFalse(bl.is_blocked(text), text)
@@ -339,6 +359,87 @@ class MatchExtensionTests(unittest.TestCase):
         # 18+ allows context terms, not always terms.
         self.assertEqual(bl.match_info("25 years old and looks young"), ("", ""))
         self.assertTrue(bl.match("a little girl who is 25 years old"))
+
+    def test_young_and_girl_combinations(self):
+        for text in (
+            "young girl",
+            "a young-looking girl",
+            "girl who is young",
+            "young woman: a girl",
+            "gaming PC as a young woman: a girl with long hair",
+            "y o u n g g i r l",
+            "animate a y0ung g1rl",
+        ):
+            with self.subTest(text=text):
+                self.assertTrue(bl.match(text), text)
+
+    def test_bare_boy_girl_is_blocked_even_without_media_cue(self):
+        # Unqualified boy/girl is always blocked, including anthropomorphized
+        # objects and ordinary "a girl" wording. Idioms stay allowed.
+        self.assertTrue(bl.match("draw a scene with a boy"))
+        self.assertTrue(bl.match("roleplay a match girl"))
+        self.assertTrue(bl.match("animation twig boy kisses match girl"))
+        self.assertTrue(bl.match("?asset a twig boy"))
+        self.assertTrue(bl.match("twig boy kisses match girl"))
+        self.assertTrue(bl.match("that girl at work is late"))
+        self.assertTrue(bl.match("a boy"))
+        self.assertFalse(bl.match("oh boy"))
+        self.assertFalse(bl.match("boy band"))
+        self.assertFalse(bl.match("girls night"))
+
+    def test_boyfriend_girlfriend_only_in_media_or_rp(self):
+        self.assertTrue(bl.match("animation she watches her boyfriend burning"))
+        self.assertFalse(bl.match("my boyfriend is late"))
+        self.assertFalse(bl.match("her girlfriend called"))
+
+    def test_adult_qualifier_allows_boy_or_girl_in_media(self):
+        self.assertFalse(bl.match("animate an adult girl"))
+        self.assertFalse(bl.match("animation of a girl who is 25"))
+        self.assertFalse(bl.match("animate an 18 year old girl"))
+
+    def test_casual_boy_girl_idioms_are_allowed(self):
+        for text in ("oh boy", "boy band", "girls night", "young woman"):
+            with self.subTest(text=text):
+                self.assertFalse(bl.is_blocked(text), text)
+
+
+class IncidentPromptTests(unittest.TestCase):
+    """Regression: the 2026-11-13 11:47:56 AM ET ?asset video (message 1570842665740927110)."""
+
+    def setUp(self):
+        bl.clear_recent_blocks()
+        self.sent = []
+
+        def fake_post(url, payload, headers, timeout=45):
+            self.sent.append(payload)
+            return {"choices": [{"message": {"content": "should not run"}, "finish_reason": "stop"}]}
+
+        self._patches = [
+            mock.patch.object(cl, "_provider_backend", return_value="ollama"),
+            mock.patch.object(cl, "_api_key", return_value="ollama"),
+            mock.patch.object(cl, "_model", return_value="test-model"),
+            mock.patch.object(cl, "_sync_post", side_effect=fake_post),
+            mock.patch.object(cl, "_async_post", side_effect=lambda *a, **k: fake_post(*a, **k)),
+        ]
+        for patch in self._patches:
+            patch.start()
+
+    def tearDown(self):
+        for patch in self._patches:
+            patch.stop()
+        bl.clear_recent_blocks()
+
+    def test_incident_prompt_with_asset_prefix(self):
+        self.assertTrue(bl.match(INCIDENT_PROMPT), INCIDENT_PROMPT)
+        turn = run(cl.call_groq_turn(INCIDENT_PROMPT))
+        self.assertEqual(turn.reply, bl.REFUSAL)
+        self.assertFalse(self.sent)
+
+    def test_incident_prompt_as_plain_rp_text(self):
+        self.assertTrue(bl.match(INCIDENT_RP), INCIDENT_RP)
+        turn = run(cl.call_groq_turn(INCIDENT_RP))
+        self.assertEqual(turn.reply, bl.REFUSAL)
+        self.assertFalse(self.sent)
 
 
 if __name__ == "__main__":

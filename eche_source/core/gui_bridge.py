@@ -114,7 +114,10 @@ def normalize_cog_module(module: str) -> str:
 
 
 def _deny_if_media(module: str) -> str:
-    """Return a log line if this module must never load; otherwise empty."""
+    """Return a log line if this module must never load; otherwise empty.
+
+    Hard denylist for leftover media modules removed from the tree.
+    """
     from core.denied_modules import is_denied_module, normalize_module
 
     name = normalize_cog_module(module)

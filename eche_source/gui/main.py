@@ -702,8 +702,10 @@ class MainWindow(QMainWindow):
         reply = (reply or "").strip() or "(empty)"
         self.local_output.append(f"Eche: {reply}")
         try:
+            from core.guardrails import is_refusal_text
             from core.local_chat_memory import append_turn
-            append_turn("assistant", reply)
+            if not is_refusal_text(reply):
+                append_turn("assistant", reply)
         except Exception as e:
             self.local_output.append(f"(save assistant turn failed: {e})")
         sb = self.local_output.verticalScrollBar()

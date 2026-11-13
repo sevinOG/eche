@@ -52,6 +52,11 @@ _MODULE_NEEDLES = (
 _MODULE_NAME_OK = {
     ROOT / "core" / "denied_modules.py",
 }
+# The minors matcher still recognizes a leftover "?asset …" prompt. That is
+# not a generation client.
+_MODULE_NEEDLE_OK = {
+    ROOT / "core" / "blocklist.py": {"?asset"},
+}
 
 # Comments in secrets.py may name dropped keys so leftover install files
 # are ignored. Those names must not appear in loadable key maps.
@@ -125,8 +130,9 @@ class NoMediaGenerationTests(unittest.TestCase):
                     hits.append(f"{path.relative_to(ROOT)}: {needle}")
             if path in _MODULE_NAME_OK:
                 continue
+            allowed = _MODULE_NEEDLE_OK.get(path, set())
             for needle in _MODULE_NEEDLES:
-                if needle in text:
+                if needle in text and needle not in allowed:
                     hits.append(f"{path.relative_to(ROOT)}: {needle}")
         self.assertEqual(hits, [], "generation markers found in production source")
 

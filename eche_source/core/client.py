@@ -10,6 +10,7 @@ import os
 import re
 import json
 import asyncio
+import contextvars
 from dataclasses import dataclass, field
 import requests
 import aiohttp
@@ -25,6 +26,12 @@ load_dotenv()
 # ---------------------------------------------------------------------------
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 OLLAMA_API_URL = "http://localhost:11434/v1/chat/completions"
+
+# Recent request text (persona/cards/latest user) for the output check.
+_output_context: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "eche_output_context", default=""
+)
+
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 DEFAULT_MODEL = "qwen/qwen3.8-27b"
@@ -710,16 +717,48 @@ def _reasoning_for(payload: dict | None) -> bool:
     return reasoning_enabled()
 
 
+def _request_output_context(messages: list) -> str:
+    """Persona, character cards, and the latest user text for the output check."""
+    from core.blocklist import split_transcript
+    from core.safety import is_footer_message, is_user_guard, message_text
+
+    parts: list[str] = []
+    last_user = ""
+    for message in messages or []:
+        if is_footer_message(message) or is_user_guard(message):
+            continue
+        text = message_text(message) if isinstance(message, dict) else str(message or "")
+        role = (message.get("role") if isinstance(message, dict) else "") or ""
+        history, latest = split_transcript(text)
+        if latest is not None:
+            last_user = latest
+            continue
+        if role.lower() == "system":
+            parts.append(text)
+        elif role.lower() == "user":
+            last_user = text
+    if last_user.strip():
+        parts.append(last_user)
+    return "\n".join(p for p in parts if p and p.strip())
+
+
 def _outgoing_messages(messages: list) -> list:
     """Apply the hardcoded safety footer and the minors input check.
 
     This is the single choke point shared by every provider path.
     """
     from core.blocklist import note, scan_messages
-    from core.safety import MinorsBlocked, prepare_llm_messages
+    from core.classifier import classify_request, extract_images
+    from core.safety import MinorsBlocked, prepare_llm_messages, request_texts
 
     prepared = prepare_llm_messages(messages)
+    _output_context.set(_request_output_context(prepared))
     check = scan_messages(prepared)
+    if check:
+        note(check)
+        raise MinorsBlocked(check)
+    images = extract_images(prepared)
+    check = classify_request("\n".join(request_texts(prepared)), images=images or None)
     if check:
         note(check)
         raise MinorsBlocked(check)
@@ -727,8 +766,13 @@ def _outgoing_messages(messages: list) -> list:
 
 
 def _output_blocked(*texts, tool_calls=None) -> bool:
-    """True when a model reply or tool call depicts or sexualizes a minor."""
-    from core.blocklist import is_blocked, note
+    """True when a model reply or tool call depicts or sexualizes a minor.
+
+    The reply is checked on its own and together with recent RP / card
+    context so school or young cues in the scene are not missed.
+    """
+    from core.blocklist import is_blocked, match_info, note
+    from core.classifier import classify_response
     import json as _json
 
     parts = [str(t) for t in texts if t]
@@ -745,8 +789,15 @@ def _output_blocked(*texts, tool_calls=None) -> bool:
                 parts.append(_json.dumps(args, ensure_ascii=False))
             except Exception:
                 parts.append(str(args))
-    if is_blocked(*parts):
+    reply = "\n".join(parts)
+    context = _output_context.get("")
+    combined = (context + "\n" + reply).strip() if context else reply
+    if is_blocked(*parts) or (combined and match_info(combined, force_context=True)[1]):
         note("llm-output")
+        return True
+    check = classify_response(combined or reply)
+    if check:
+        note(check)
         return True
     return False
 
