@@ -314,6 +314,15 @@ class NoMediaGenerationTests(unittest.TestCase):
             "openai/dall",
             "synthesia",
             "talking-head",
+            "fl0x",
+            "auraflow",
+            "wan3",
+            "sd4",
+            "leonardo-phoenix",
+            "sana-1.5",
+            "lumiere",
+            "hedra-character",
+            "\u0455\u057fable-diffusion",
             "wav2lip",
             "liveportrait",
             "i2vgen-xl",
@@ -527,6 +536,11 @@ class NoMediaGenerationTests(unittest.TestCase):
                     if needle in text:
                         hits.append(f"{path.relative_to(ROOT)}: {needle}")
         self.assertEqual(hits, [], "runtime-built generation URLs found")
+
+    def test_chat_lookalikes_are_not_rejected_as_generators(self):
+        from core.media_scan import is_image_model_id
+        for model in ("didi-chat", "d-idea", "nijinsky-chat"):
+            self.assertFalse(is_image_model_id(model), model)
 
 
 if __name__ == "__main__":
