@@ -64,6 +64,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import os
 import re
 import threading
@@ -126,6 +128,22 @@ BLOCKED_WORDS = (
     "joshikousei", "joshi kousei", "joshi-kousei",
     "ロリ", "ショタ", "中学生", "小学生",
     "девочка", "девочки", "ребенок", "ребёнок", "дети",
+    "mãdchen", "madchen", "mädchen", "kinder",
+    "fillette", "fillettes", "gamine", "gamines",
+    "menina", "meninas", "crianca", "criança", "criancas", "crianças",
+    "школьница", "школьницы", "малолетка", "малолетки",
+    "여중생", "어린이", "미성년자", "로리",
+    "طفلة", "قاصر", "طفل",
+    "bambina", "bambine", "bambino", "bambini",
+    "dziewczynka", "dziewczynki",
+    "cocuk", "çocuk", "çocuklar",
+    "बच्ची", "बच्चा", "बच्चे",
+    "meisje", "meisjes",
+    "幼女", "萝莉", "未成年", "児童", "女子小学生",
+    "elfling", "elflings",
+    "randoseru",
+    "pinocchio",
+    "cherub", "cherubs", "cherubim",
 )
 
 # "baby" is only blocked when the same message is sexual.
@@ -157,6 +175,18 @@ CONTEXT_PHRASES = (
     "jk uniform",
     "daughter", "daughters",
     "middle school classroom",
+    "just started high school", "started high school",
+    "gcse", "gcses",
+    "too young for prom", "young for prom",
+    "youthful", "youthful features",
+    "pigtails and braces", "pigtails",
+    "school uniform", "sailor fuku", "sailor uniform",
+    "pupil", "pupils",
+    "chibi",
+    "in a child's body", "in a childs body", "child's body",
+    "looks about", "looks like a",
+    "step-sister", "step sister", "stepsister",
+    "babysitter",
 )
 
 _NUMBER_WORDS = (
@@ -173,17 +203,40 @@ _LEET = str.maketrans({
 _DASHES = re.compile(r"[\u2010-\u2015\u2212]")
 # Lookalike letters (Cyrillic, Greek, and a few others) folded to Latin.
 # Native words such as девочка stay in the raw (unfolded) variant.
-_CONFUSABLE_TABLE = str.maketrans({
+# Extra mappings live in core/confusables.txt and are merged in below.
+_CONFUSABLE_MAP = {
     "а": "a", "А": "a", "е": "e", "Е": "e", "о": "o", "О": "o",
     "р": "p", "Р": "p", "с": "c", "С": "c", "у": "y", "У": "y",
     "х": "x", "Х": "x", "і": "i", "І": "i", "ї": "i", "Ї": "i",
     "ј": "j", "Ј": "j", "ѕ": "s", "Ѕ": "s", "һ": "h", "Һ": "h",
     "ѵ": "v", "Ѵ": "v", "ԁ": "d", "Ԍ": "g", "ԛ": "q",
+    "т": "t", "п": "n", "н": "h", "и": "n", "к": "k",
     "α": "a", "Α": "a", "ο": "o", "Ο": "o", "ε": "e", "Ε": "e",
     "ι": "i", "Ι": "i", "ν": "v", "Ν": "v", "ρ": "p", "Ρ": "p",
     "τ": "t", "Τ": "t", "χ": "x", "Χ": "x", "η": "n", "Η": "h",
     "κ": "k", "Κ": "k", "μ": "u", "Μ": "m", "γ": "y", "β": "b",
-})
+    "δ": "d",
+    "օ": "o", "Օ": "o", "ɩ": "i", "ı": "i", "ꮶ": "k",
+}
+
+def _load_confusables() -> dict[str, str]:
+    mapping = dict(_CONFUSABLE_MAP)
+    path = Path(__file__).with_name("confusables.txt")
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return mapping
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split("	")
+        if len(parts) >= 2 and parts[0] and len(parts[0]) == 1 and parts[1] is not None:
+            mapping[parts[0]] = parts[1]
+    return mapping
+
+
+_CONFUSABLE_TABLE = str.maketrans(_load_confusables())
 
 
 
@@ -397,7 +450,180 @@ def _collapse_repeats(text: str) -> str:
     return re.sub(r"(.)\1{2,}", r"\1", text)
 
 
-_CJK_TERMS = ("ロリ", "ショタ", "中学生", "小学生")
+_CJK_TERMS = (
+    "ロリ", "ショタ", "中学生", "小学生", "女子小学生", "幼女", "児童",
+    "萝莉", "未成年",
+)
+
+
+_FLIP_UNUSUAL = {
+    "ɐ": "a", "ɔ": "c", "ə": "e", "ɟ": "f", "ƃ": "g",
+    "ɥ": "h", "ı": "i", "ɾ": "j", "ʞ": "k", "ɯ": "m", "ʌ": "v", "ʍ": "w",
+    "ʎ": "y", "ʇ": "t", "ɹ": "r",
+}
+# Regular p/d/b/q/n/u are only flipped when the text already uses an
+# unusual upside-down letter, so "process" is not rewritten as "drocess".
+_FLIP_LATIN = {"p": "d", "d": "p", "q": "b", "b": "q", "n": "u", "u": "n"}
+_FLIP_UNUSUAL_TABLE = str.maketrans(_FLIP_UNUSUAL)
+_FLIP_FULL_TABLE = str.maketrans({**_FLIP_UNUSUAL, **_FLIP_LATIN})
+
+_EMOJI_CHILD_RE = re.compile(r"[👧🧒👶👦]")
+
+# Roman numerals 1-17.
+_ROMAN_VALUES = {
+    "i": 1, "ii": 2, "iii": 3, "iv": 4, "v": 5, "vi": 6, "vii": 7,
+    "viii": 8, "ix": 9, "x": 10, "xi": 11, "xii": 12, "xiii": 13,
+    "xiv": 14, "xv": 15, "xvi": 16, "xvii": 17,
+}
+_ROMAN_AGE_RE = re.compile(
+    r"(?<![\w])(?:is|age|aged|years?|yo|turned)\s*"
+    r"(i|ii|iii|iv|v|vi|vii|viii|ix|x|xi|xii|xiii|xiv|xv|xvi|xvii)"
+    r"(?:\s*(?:years?|yrs?|yo|years?\s*old))?(?![\w])"
+    r"|(?<![\w])(i|ii|iii|iv|v|vi|vii|viii|ix|x|xi|xii|xiii|xiv|xv|xvi|xvii)"
+    r"\s*(?:years?\s*old|yrs?\s*old|yo)(?![\w])",
+    re.IGNORECASE,
+)
+_CLASS_OF_RE = re.compile(r"(?<![\w])class\s+of\s+((?:19|20)\d{2})(?!\d)", re.IGNORECASE)
+_LOOKS_AGE_RE = re.compile(
+    r"(?<![\w])looks?(?:\s+about|\s+like(?:\s+a|\s+she(?:['’]s| is)|\s+he(?:['’]s| is))?|\s+around)?\s*"
+    r"(?:1[0-7]|[0-9]|" + "|".join(_NUMBER_WORDS) + r")(?![\w])",
+    re.IGNORECASE,
+)
+_INTL_AGE_RE = re.compile(
+    r"(?<![\w])(?:ist|hat|hatte|a|tem|tiene|ей)\s+"
+    r"(?:1[0-7]|[0-9]|" + "|".join(_NUMBER_WORDS) + r")"
+    r"\s*(?:jahre|ans|anos|años|лет|jaar|let)(?:\s*alt)?"
+    r"|(?<![\w])(?:1[0-7]|[0-9]|" + "|".join(_NUMBER_WORDS) + r")"
+    r"\s*(?:jahre|ans|anos|años|лет|jaar|let)(?:\s*alt)?(?![\w])",
+    re.IGNORECASE,
+)
+_JUST_TURNED_RE = re.compile(
+    r"(?<![\w])just\s+turned\s+(?:1[0-7]|[0-9]|" + "|".join(_NUMBER_WORDS) + r")(?![\w])",
+    re.IGNORECASE,
+)
+_MATH_AGE_RE = re.compile(
+    r"(?<![\w])(?:is|age|aged|she(?:'s| is)|he(?:'s| is)|they(?:'re| are)|her age is|his age is|age is)\s+"
+    r"(?:"
+    r"(\d+)\s*\*\s*(\d+)"
+    r"|(\d+)\s*\+\s*(\d+)"
+    r"|0x([0-9a-f]+)"
+    r"|twenty\s+minus\s+(?:five|5|four|4|three|3|two|2|one|1|six|6|seven|7|eight|8|nine|9|ten|10|eleven|11|twelve|12)"
+    r"|half\s+of\s+(?:thirty|30|twenty|20|twenty[- ]two|twenty[- ]four|twenty[- ]six|twenty[- ]eight|32|28|26|24|22)"
+    r")",
+    re.IGNORECASE,
+)
+_HEX_TOKEN_RE = re.compile(r"(?<![\w])(?:0x)?([0-9a-f]{6,})(?![\w])", re.IGNORECASE)
+_B64_TOKEN_RE = re.compile(r"(?<![\w])([A-Za-z0-9+/]{8,}={0,2})(?![\w])")
+_ASCII_CODES_RE = re.compile(r"(?<!\d)((?:1[0-2]\d|12[0-6]|[3-9]\d)(?:\s+(?:1[0-2]\d|12[0-6]|[3-9]\d)){2,})(?!\d)")
+_DECODE_HINT_RE = re.compile(
+    r"(?i)(?:decode|decod(?:e|ed|ing)|rot13|base64|hex|backwards|reversed|read backwards|then (?:write|roleplay|act))"
+)
+
+
+def _flip_and_reverse(text: str) -> list[str]:
+    out = []
+    table = _FLIP_FULL_TABLE if any(ch in _FLIP_UNUSUAL for ch in text) else _FLIP_UNUSUAL_TABLE
+    flipped = text.translate(table)
+    if flipped != text:
+        out.append(flipped)
+        out.append(flipped[::-1])
+    unusual = any(ch in _FLIP_UNUSUAL for ch in text)
+    hinted = bool(_DECODE_HINT_RE.search(text))
+    # Do not reverse digit strings by default: "21 y/o" backwards is "12 yo".
+    if unusual or hinted or not re.search(r"\d", text):
+        out.append(text[::-1])
+        words = re.findall(r"\w+", text)
+        if words:
+            out.append(" ".join(w[::-1] for w in words))
+    else:
+        words = [w for w in re.findall(r"[A-Za-z]+", text) if len(w) >= 3]
+        for w in words:
+            out.append(w[::-1])
+    return out
+
+
+def _leet_alt(text: str) -> str:
+    """Second leet pass where 1 and | also read as L, and |< as K.
+
+    Purely numeric tokens stay digits, so "18 year old girl" is not
+    rewritten as "l8 year old girl".
+    """
+    s = re.sub(r"\|<", "k", text)
+    def _token(match: re.Match) -> str:
+        token = match.group(0)
+        if token.isdigit():
+            return token
+        return token.replace("1", "l").replace("|", "l")
+    return re.sub(r"[A-Za-z0-9|]+", _token, s)
+
+
+def _decode_candidates(text: str) -> list[str]:
+    """Strings obtained by decoding encodings or following a decode-and-act request."""
+    import base64
+    import binascii
+    import codecs
+
+    raw = text or ""
+    found: list[str] = []
+
+    def add(value: str) -> None:
+        value = (value or "").strip()
+        if value and value not in found and value != raw:
+            found.append(value)
+
+    hinted = bool(_DECODE_HINT_RE.search(raw))
+    # rot13 of the whole text (and hinted payloads).
+    try:
+        add(codecs.decode(raw, "rot_13"))
+    except Exception:
+        pass
+    for match in _HEX_TOKEN_RE.finditer(raw.replace(" ", "")):
+        token = match.group(1)
+        if len(token) % 2:
+            continue
+        try:
+            decoded = binascii.unhexlify(token).decode("utf-8", "ignore")
+        except (binascii.Error, ValueError):
+            continue
+        if decoded and any(ch.isalpha() for ch in decoded):
+            add(decoded)
+    # Also hex with spaces stripped from original tokens
+    compact = re.sub(r"\s+", "", raw)
+    if re.fullmatch(r"(?:0x)?[0-9a-fA-F]{6,}", compact or ""):
+        token = compact[2:] if compact.lower().startswith("0x") else compact
+        if len(token) % 2 == 0:
+            try:
+                add(binascii.unhexlify(token).decode("utf-8", "ignore"))
+            except (binascii.Error, ValueError):
+                pass
+    for match in _B64_TOKEN_RE.finditer(raw):
+        token = match.group(1)
+        pad = "=" * (-len(token) % 4)
+        try:
+            decoded = base64.b64decode(token + pad, validate=False).decode("utf-8", "ignore")
+        except Exception:
+            continue
+        if decoded and any(ch.isalpha() for ch in decoded):
+            # Skip if it looks like random binary noise
+            if sum(ch.isprintable() for ch in decoded) >= max(3, int(len(decoded) * 0.8)):
+                add(decoded)
+    for match in _ASCII_CODES_RE.finditer(raw):
+        try:
+            add("".join(chr(int(n)) for n in match.group(1).split()))
+        except ValueError:
+            pass
+    # "read backwards:" remainder
+    back = re.search(r"(?i)(?:read backwards|backwards|reversed)\s*:\s*(.+)$", raw)
+    if back:
+        add(back.group(1)[::-1])
+        add(re.sub(r"\s+", " ", back.group(1)[::-1]))
+    if hinted:
+        for item in list(found):
+            try:
+                add(codecs.decode(item, "rot_13"))
+            except Exception:
+                pass
+    return found
 
 
 def _variants(text: str) -> list[str]:
@@ -408,12 +634,30 @@ def _variants(text: str) -> list[str]:
     """
     native = normalize(text, confusable=False)
     raw = normalize(text, confusable=True)
+    seeds = [native, raw]
+    # Emoji children are themselves a minor signal later; also strip emoji
+    # so l🍭o🍭l🍭i collapses.
+    stripped = re.sub(r"[🌀-🫿✀-➿]", " ", raw)
+    if stripped not in seeds:
+        seeds.append(stripped)
     out: list[str] = []
-    for base in (native, raw):
+    bases = list(seeds)
+    for seed in list(seeds):
+        bases.extend(_flip_and_reverse(seed))
+        alt = _leet_alt(seed)
+        if alt not in bases:
+            bases.append(alt)
+        for decoded in _decode_candidates(seed):
+            if decoded not in bases:
+                bases.append(decoded)
+    for base in bases:
+        if not base:
+            continue
         folded = _folded(base)
         squeezed = _join_spaced_letters(folded)
         collapsed = _collapse_repeats(squeezed)
-        for item in (base, folded, squeezed, collapsed):
+        leet_l = _folded(_leet_alt(base))
+        for item in (base, folded, squeezed, collapsed, leet_l, _join_spaced_letters(leet_l)):
             if item and item not in out:
                 out.append(item)
     return out
@@ -552,6 +796,51 @@ def _underage_age_hit(candidates) -> str:
                 continue
             if year >= cutoff:
                 return year_hit.group(0)
+        hit = _ROMAN_AGE_RE.search(item)
+        if hit:
+            return hit.group(0)
+        hit = _CLASS_OF_RE.search(item)
+        if hit:
+            try:
+                year = int(hit.group(1))
+            except (TypeError, ValueError):
+                year = 0
+            if year >= date.today().year:
+                return hit.group(0)
+        hit = _JUST_TURNED_RE.search(item)
+        if hit:
+            return hit.group(0)
+        hit = _LOOKS_AGE_RE.search(item)
+        if hit:
+            return hit.group(0)
+        hit = _INTL_AGE_RE.search(item)
+        if hit:
+            return hit.group(0)
+        hit = _MATH_AGE_RE.search(item)
+        if hit:
+            if hit.group(1) and hit.group(2):
+                try:
+                    product = int(hit.group(1)) * int(hit.group(2))
+                except ValueError:
+                    product = 0
+                if 1 <= product <= 17:
+                    return hit.group(0)
+            elif hit.group(3) and hit.group(4):
+                try:
+                    total = int(hit.group(3)) + int(hit.group(4))
+                except ValueError:
+                    total = 0
+                if 1 <= total <= 17:
+                    return hit.group(0)
+            elif hit.group(5):
+                try:
+                    value = int(hit.group(5), 16)
+                except ValueError:
+                    value = 0
+                if 1 <= value <= 17:
+                    return hit.group(0)
+            else:
+                return hit.group(0)
     return ""
 
 
@@ -623,6 +912,24 @@ def _masked_for_always(text: str) -> str:
     return masked
 
 
+
+_NATIVE_TERMS = (
+    "बच्ची", "बच्चा", "बच्चे",
+    "طفلة", "قاصر", "طفل",
+    "여중생", "어린이", "미성년자", "로리",
+    "幼女", "萝莉", "未成年", "児童", "女子小学生",
+    "школьница", "малолетка",
+    "Mädchen", "mädchen",
+)
+
+def _native_term_hit(text: str) -> str:
+    raw = text or ""
+    for term in _NATIVE_TERMS:
+        if term and term in raw:
+            return term
+    return ""
+
+
 def match_info(text: str, *, force_context: bool = False) -> tuple[str, str]:
     """(term, check) for the first hit, or ("", "") when the text is fine.
 
@@ -633,6 +940,11 @@ def match_info(text: str, *, force_context: bool = False) -> tuple[str, str]:
     if not raw.strip():
         return "", ""
     candidates = _variants(text)
+    # Check the raw string too so combining marks in Hindi/Arabic/etc. stay.
+    if _native_term_hit(text):
+        return _native_term_hit(text), "always"
+    if _EMOJI_CHILD_RE.search(text or "") or any(_EMOJI_CHILD_RE.search(c) for c in candidates):
+        return "child-emoji", "always"
     for candidate in candidates:
         for term in _CJK_TERMS:
             if term in candidate:
@@ -754,53 +1066,98 @@ def _looks_like_persona_or_card(text: str, role: str) -> bool:
     )
 
 
-def scan_messages(messages) -> str:
-    """Scan assembled LLM messages, skipping the hardcoded safety footer.
+def _drop_blocked_lines(text: str) -> tuple[str, bool]:
+    """Remove line-level matcher hits from an inlined history blob."""
+    lines = (text or "").splitlines()
+    kept: list[str] = []
+    dropped = False
+    for line in lines:
+        if match_info(line)[1]:
+            dropped = True
+            continue
+        kept.append(line)
+    cleaned = "\n".join(kept)
+    # If the whole remaining blob still matches (no clean line split), drop it.
+    if cleaned.strip() and match_info(cleaned)[1]:
+        return "", True
+    return cleaned, dropped
 
-    Each message, character, and the latest user line are evaluated on their
-    own. An adult age in persona or history never unlocks a later minor
-    signal. Hits in older channel history are quarantined (logged, dropped
-    from the scan) instead of refusing the whole turn.
+
+def _is_hard_message(role: str, text: str, index: int, last_user: int) -> bool:
+    role_l = (role or "").lower()
+    return (
+        index == last_user
+        or _looks_like_persona_or_card(text, role)
+        or (role_l == "system" and "persona" in (text or "").lower())
+    )
+
+
+def sanitize_messages(messages) -> tuple[list, str]:
+    """Return (messages to send, refuse reason).
+
+    Latest turn, persona, and character cards are hard checks. Hits in
+    older history are dropped from the request instead of locking the
+    channel. The hardcoded safety footer is left untouched.
     """
     from core.safety import is_footer_message, is_user_guard, message_text
 
-    rows = [
-        m for m in (messages or [])
-        if not is_footer_message(m) and not is_user_guard(m)
-    ]
-    last_user = -1
-    for i, message in enumerate(rows):
-        if isinstance(message, dict) and (message.get("role") or "").lower() == "user":
-            last_user = i
-
-    for i, message in enumerate(rows):
+    original = list(messages or [])
+    rows = []
+    for i, message in enumerate(original):
+        if is_footer_message(message) or is_user_guard(message):
+            rows.append(("keep", i, message, "", ""))
+            continue
         role = (message.get("role") if isinstance(message, dict) else "") or ""
         text = message_text(message) if isinstance(message, dict) else str(message or "")
+        rows.append(("scan", i, message, role, text))
+
+    scan_indices = [n for n, row in enumerate(rows) if row[0] == "scan"]
+    last_user_row = -1
+    for n in scan_indices:
+        role = rows[n][3]
+        if role.lower() == "user":
+            last_user_row = n
+
+    cleaned: list = []
+    quarantined = False
+    for n, (kind, _i, message, role, text) in enumerate(rows):
+        if kind == "keep":
+            cleaned.append(message)
+            continue
         if not str(text).strip():
+            cleaned.append(message)
             continue
         history, latest = split_transcript(text)
         if latest is not None:
             _term, check = match_info(latest)
             if check:
-                return f"llm-input-{check}"
-            # History inlined into this blob: quarantine, do not lock the turn.
-            _term, check = match_info(history)
-            if check:
+                return original, f"llm-input-{check}"
+            new_history, dropped = _drop_blocked_lines(history)
+            if dropped:
                 note("llm-history-quarantine")
+                quarantined = True
+            if isinstance(message, dict):
+                marker = "=== MOST RECENT MESSAGE ==="
+                rebuilt = (new_history.rstrip() + "\n" + marker + "\n" + latest.lstrip()).strip()
+                message = {**message, "content": rebuilt}
+            cleaned.append(message)
             continue
         _term, check = match_info(text)
         if not check:
+            cleaned.append(message)
             continue
-        hard = (
-            i == last_user
-            or _looks_like_persona_or_card(text, role)
-            or (role.lower() == "system" and "persona" in text.lower())
-        )
-        if hard:
-            return f"llm-input-{check}"
-        # Older history / memory lines: do not refuse the current turn.
+        if _is_hard_message(role, text, n, last_user_row):
+            return original, f"llm-input-{check}"
         note("llm-history-quarantine")
-    return ""
+        quarantined = True
+        # Drop the offending history message from the outgoing request.
+    return cleaned, ""
+
+
+def scan_messages(messages) -> str:
+    """Refuse reason if the latest/persona hit; also used after sanitize."""
+    _cleaned, reason = sanitize_messages(messages)
+    return reason
 
 
 # ---------------------------------------------------------- sticky refusals

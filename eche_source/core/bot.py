@@ -286,6 +286,11 @@ class Eche(commands.Bot):
     # ---------------------------------------------------------
     async def setup_hook(self):
         print(">>> setup_hook: loading extensions")
+        try:
+            from core.classifier import warn_if_unconfigured
+            warn_if_unconfigured()
+        except Exception as e:
+            print(f">>> classifier startup check skipped: {e}")
 
         # Attach GUI bridge once the asyncio loop is running
         try:
