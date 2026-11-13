@@ -224,12 +224,21 @@ class NoMediaGenerationTests(unittest.TestCase):
             "grok-imagine",
             "openai/dall-e-3",
             "ollama/llava-imagen",
+            "google/veo-3",
+            "openai/sora-2",
+            "kling-video",
+            "wan2.2-t2v",
+            "minimax/hailuo-video",
+            "some-i2v-model",
         ):
             self.assertTrue(is_image_model_id(model), model)
             self.assertEqual(reject_image_model(model, "llama3"), "llama3")
         self.assertFalse(is_image_model_id("llama3"))
         self.assertFalse(is_image_model_id("qwen/qwen3.8-27b"))
         self.assertFalse(is_image_model_id("gpt-4o"))
+        self.assertFalse(is_image_model_id("llama-3.2-11b-vision-preview"))
+        self.assertFalse(is_image_model_id("llama-4-scout"))
+        self.assertFalse(is_image_model_id("qwen2.5-vl"))
 
         with tempfile.TemporaryDirectory(prefix="eche-model-") as raw:
             root = Path(raw)
