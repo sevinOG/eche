@@ -100,7 +100,7 @@ async def rebuild_jobs_from_pins(bot):
                 expires_at = datetime.fromisoformat(expires_str)
 
             except Exception as e:
-                print(f"[Entertainers] Failed to parse pinned batch: {e}")
+                print(f"[Entertainers] Failed to parse pinned batch: {e!r}")
                 continue
 
             # Enforce home server only

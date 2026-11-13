@@ -4,6 +4,7 @@ from discord.ext import commands
 from .showdown import do_showdown
 from cogs.games._core import release_view
 from cogs.games.showdown import prepare_table, send_hole_cards, table_text
+from core.chat_panel import edit_visible
 
 
 # ---------------------------------------------------------
@@ -94,7 +95,7 @@ class PokerLobbyView(discord.ui.View):
             description=desc,
             color=discord.Color.blurple()
         )
-        await self.message.edit(embed=embed, view=self)
+        await edit_visible(self.message, embed=embed, view=self)
 
     async def on_timeout(self):
         if not self.started:
@@ -107,14 +108,14 @@ class PokerLobbyView(discord.ui.View):
         release_view(self)
 
         try:
-            await self.message.edit(view=None)
+            await edit_visible(self.message, view=None)
         except Exception:
             pass
 
         try:
             community, pot, notes = await prepare_table(self)
         except Exception as exc:
-            await self.message.edit(
+            await edit_visible(self.message, 
                 embed=discord.Embed(
                     title="🃏 Poker",
                     description=f"The deal failed: {exc}",
@@ -123,7 +124,7 @@ class PokerLobbyView(discord.ui.View):
             )
             return
         if community is None:
-            await self.message.edit(
+            await edit_visible(self.message, 
                 embed=discord.Embed(
                     title="🃏 Poker",
                     description="\n".join(notes) or "The table could not start.",
@@ -144,7 +145,7 @@ class PokerLobbyView(discord.ui.View):
             ),
             color=discord.Color.blue(),
         )
-        await self.message.edit(embed=table_embed)
+        await edit_visible(self.message, embed=table_embed)
         await do_showdown(self, community, pot)
 
 
@@ -174,7 +175,7 @@ class PokerGame:
 
         view = PokerLobbyView(ctx, betvalue, load_callback, save_callback, message)
 
-        await message.edit(embed=embed, view=view)
+        await edit_visible(message, embed=embed, view=view)
 
 
 # Register game

@@ -39,7 +39,7 @@ async def _allowed(ctx) -> tuple[bool, str]:
         from core.admin_tools import author_is_owner
         is_owner = await author_is_owner(ctx.bot, getattr(ctx.message, "author", None))
     except Exception as exc:
-        dprint(f"[asset] owner check failed: {exc}")
+        dprint(f"[asset] owner check failed: {exc!r}")
         is_owner = False
     if speaker_allowed(is_owner):
         return True, ""

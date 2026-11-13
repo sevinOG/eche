@@ -43,12 +43,12 @@ class SearchModal(Modal, title="Image Search"):
             await send_visible(interaction, "Query cannot be empty.", ephemeral=True, sender=interaction.response.send_message)
             return
 
-        dprint(f">>> [SearchModal] New/updated query: {query}")
+        dprint(f">>> [SearchModal] New/updated query: {query!r}")
 
         try:
             results = await self.navigator.cog.unsplash_multi(query)
         except Exception as e:
-            dprint(f">>> [SearchModal] Search failed: {e}")
+            dprint(f">>> [SearchModal] Search failed: {e!r}")
             await send_visible(interaction, "Could not reach Unsplash right now. Please try again in a moment.",
                 ephemeral=True, sender=interaction.response.send_message)
             return
@@ -121,7 +121,7 @@ class ImageNavigator(View):
             if self.message:
                 await edit_visible(self.message, view=self)
         except Exception as e:
-            dprint(f">>> [ImageNavigator] Timeout edit failed: {e}")
+            dprint(f">>> [ImageNavigator] Timeout edit failed: {e!r}")
 
     # All buttons on the SAME row (row=0)
     @discord.ui.button(label="◀️", style=discord.ButtonStyle.secondary, row=0)
@@ -172,7 +172,7 @@ class ImageSearch(commands.Cog):
         dprint(">>> [ImageSearch] Cog initialized")
 
     async def unsplash_multi(self, query: str, count=10):
-        dprint(f">>> [unsplash_multi] Searching for: {query}")
+        dprint(f">>> [unsplash_multi] Searching for: {query!r}")
 
         if not UNSPLASH_ACCESS:
             dprint(">>> [unsplash_multi] ERROR: Missing UNSPLASH_ACCESS")
@@ -194,11 +194,11 @@ class ImageSearch(commands.Cog):
                     dprint(f">>> [unsplash_multi] Status: {resp.status}")
                     if resp.status != 200:
                         text = await resp.text()
-                        dprint(f">>> [unsplash_multi] ERROR BODY: {text}")
+                        dprint(f">>> [unsplash_multi] ERROR BODY: {text!r}")
                         return None
                     data = await resp.json()
         except Exception as e:
-            dprint(f">>> [unsplash_multi] Connection error: {e}")
+            dprint(f">>> [unsplash_multi] Connection error: {e!r}")
             raise
 
         results = data.get("results", [])
@@ -207,7 +207,7 @@ class ImageSearch(commands.Cog):
 
     @commands.command(name="image")
     async def image(self, ctx, *, query: str = None):
-        dprint(f">>> [image] Triggered by {ctx.author} | Query: {query}")
+        dprint(f">>> [image] Triggered by {ctx.author} | Query: {query!r}")
 
         if query:
             try:

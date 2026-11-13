@@ -25,6 +25,7 @@ from discord.ext import commands
 import asyncio
 import re
 from cogs.music.music_queue_storage import load_queue, save_queue
+from core.chat_panel import send_visible
 
 try:
     import yt_dlp
@@ -583,7 +584,7 @@ class Music(commands.Cog):
     # ---------------------------------------------------------
     async def ensure_vc(self, ctx):
         if ctx.author.voice is None:
-            await ctx.send("You need to be in a voice channel.")
+            await send_visible(ctx, "You need to be in a voice channel.", sender=ctx.send)
             return False
 
         if self.vc is None or not self.vc.is_connected():
@@ -610,13 +611,13 @@ class Music(commands.Cog):
             await self._load_queue_once()
             err = self._load_error
         if err:
-            await ctx.send(f"⚠️ Queue error: {err}")
+            await send_visible(ctx, f"⚠️ Queue error: {err}", sender=ctx.send)
 
     async def update_queue_message(self, ctx):
         try:
             await save_queue(self.bot, self.queue, self.current)
         except Exception as e:
-            await ctx.send(f"⚠️ Failed to save queue: {e}")
+            await send_visible(ctx, f"⚠️ Failed to save queue: {e}", sender=ctx.send)
 
     # ---------------------------------------------------------
     # Format duration
@@ -632,20 +633,20 @@ class Music(commands.Cog):
         artist = entry.get("artist", "Unknown")
         title = entry.get("title", "Unknown Title")
 
-        await ctx.send(
+        await send_visible(ctx, 
             f"🎶 **Now Playing:**\n"
             f"**{artist} | {title}**\n"
             f"⏱️ `{duration}`"
-        )
+        , sender=ctx.send)
 
     async def _resolve_ffmpeg(self, ctx):
         """Bundled or system ffmpeg, otherwise the one-time standalone download."""
         ffmpeg_path = find_ffmpeg()
         if ffmpeg_path:
             return ffmpeg_path
-        await ctx.send(
+        await send_visible(ctx, 
             "Downloading FFmpeg once (about 80 MB) so ?play works on this PC..."
-        )
+        , sender=ctx.send)
         from core.ffmpeg_fetch import ensure_ffmpeg, last_error
 
         ffmpeg_path = await asyncio.to_thread(ensure_ffmpeg)
@@ -655,7 +656,7 @@ class Music(commands.Cog):
             "Install ffmpeg from https://ffmpeg.org and restart Eche, "
             "or place ffmpeg.exe at C:\\ffmpeg\\bin\\ffmpeg.exe."
         )
-        await ctx.send(f"❌ FFmpeg playback error: ffmpeg was not found.\n{detail}")
+        await send_visible(ctx, f"❌ FFmpeg playback error: ffmpeg was not found.\n{detail}", sender=ctx.send)
         return None
 
     # ---------------------------------------------------------
@@ -701,7 +702,7 @@ class Music(commands.Cog):
             return
         query = self.build_query(current)
         if not query:
-            await ctx.send("❌ Invalid queue entry. Skipping.")
+            await send_visible(ctx, "❌ Invalid queue entry. Skipping.", sender=ctx.send)
             async with self._queue_lock:
                 self.current = None
                 self._starting = False
@@ -712,14 +713,14 @@ class Music(commands.Cog):
         try:
             info, audio_url = await asyncio.to_thread(self.extract_audio_url, query)
         except TrackError as err:
-            await ctx.send(str(err))
+            await send_visible(ctx, str(err), sender=ctx.send)
             async with self._queue_lock:
                 self.current = None
                 self._starting = False
             return await self.play_next(ctx)
 
         if not info or not audio_url:
-            await ctx.send(f"❌ Could not extract audio for {query}. Skipping.")
+            await send_visible(ctx, f"❌ Could not extract audio for {query}. Skipping.", sender=ctx.send)
             async with self._queue_lock:
                 self.current = None
                 self._starting = False
@@ -754,13 +755,13 @@ class Music(commands.Cog):
             from core.ffmpeg_fetch import last_error
             detail = last_error()
             extra = f"\n{detail}" if detail else ""
-            await ctx.send(
+            await send_visible(ctx, 
                 f"❌ FFmpeg playback error: {e}\n"
                 f"ffmpeg path: {ffmpeg_path}\n"
                 f"which(ffmpeg) at play: {shutil.which('ffmpeg')}\n"
                 f"file exists: {os.path.isfile(ffmpeg_path)}"
                 f"{extra}"
-            )
+            , sender=ctx.send)
             async with self._queue_lock:
                 if self.current is current:
                     self.queue.insert(0, current)
@@ -781,7 +782,7 @@ class Music(commands.Cog):
         try:
             self.vc.play(source, after=after_playback)
         except Exception as exc:
-            await ctx.send(f"❌ Could not start playback: {exc}")
+            await send_visible(ctx, f"❌ Could not start playback: {exc}", sender=ctx.send)
             async with self._queue_lock:
                 if self.current is current:
                     self.queue.insert(0, current)
@@ -795,10 +796,10 @@ class Music(commands.Cog):
     @commands.command()
     async def play(self, ctx, *, query=None):
         if yt_dlp is None:
-            return await ctx.send(
+            return await send_visible(ctx, 
                 "Music needs `yt-dlp` in this portable build. "
                 "Rebuild with `pip install -r requirements.txt` then `install.bat`."
-            )
+            , sender=ctx.send)
 
         if not await self.ensure_vc(ctx):
             return
@@ -820,21 +821,21 @@ class Music(commands.Cog):
                 if decision in ("resume", "start"):
                     self.playing = True
             if decision == "already":
-                return await ctx.send("Already playing.")
+                return await send_visible(ctx, "Already playing.", sender=ctx.send)
             if decision == "empty":
-                return await ctx.send("Queue is empty.")
+                return await send_visible(ctx, "Queue is empty.", sender=ctx.send)
             if decision == "resume":
                 try:
                     self.vc.resume()
                 except Exception:
-                    await ctx.send("Resuming playback…")
+                    await send_visible(ctx, "Resuming playback…", sender=ctx.send)
                     return await self.play_next(ctx)
-                return await ctx.send("Resuming playback…")
-            await ctx.send("Resuming playback…")
+                return await send_visible(ctx, "Resuming playback…", sender=ctx.send)
+            await send_visible(ctx, "Resuming playback…", sender=ctx.send)
             return await self.play_next(ctx)
 
         if is_playlist_query(query):
-            return await ctx.send(PLAYLIST_REFUSAL)
+            return await send_visible(ctx, PLAYLIST_REFUSAL, sender=ctx.send)
 
         label = query
         if bare_video_id(query) or "://" in query:
@@ -861,13 +862,13 @@ class Music(commands.Cog):
             await self.update_queue_message(ctx)
             err = self._load_error
         if err:
-            await ctx.send(f"⚠️ Queue error: {err}")
+            await send_visible(ctx, f"⚠️ Queue error: {err}", sender=ctx.send)
         if start:
             await self.play_next(ctx)
         elif label:
-            await ctx.send(f"Added: **{label}**")
+            await send_visible(ctx, f"Added: **{label}**", sender=ctx.send)
         else:
-            await ctx.send("Added to the queue. I'll show the title when it plays.")
+            await send_visible(ctx, "Added to the queue. I'll show the title when it plays.", sender=ctx.send)
 
     @commands.command()
     async def skip(self, ctx):
@@ -876,18 +877,18 @@ class Music(commands.Cog):
         playing = bool(vc and getattr(vc, "is_playing", lambda: False)())
         if playing or paused:
             vc.stop()
-            await ctx.send("Skipped.")
+            await send_visible(ctx, "Skipped.", sender=ctx.send)
         elif self.current or self.playing or self.queue:
             # Stale flag: nothing is actually on the voice client.
             async with self._queue_lock:
                 self.current = None
                 self.playing = bool(self.queue)
             if self.playing:
-                await ctx.send("Skipped.")
+                await send_visible(ctx, "Skipped.", sender=ctx.send)
                 return await self.play_next(ctx)
-            await ctx.send("Nothing is playing.")
+            await send_visible(ctx, "Nothing is playing.", sender=ctx.send)
         else:
-            await ctx.send("Nothing is playing.")
+            await send_visible(ctx, "Nothing is playing.", sender=ctx.send)
 
     @commands.command()
     async def stop(self, ctx):
@@ -899,7 +900,7 @@ class Music(commands.Cog):
             await self.update_queue_message(ctx)
         if self.vc:
             self.vc.stop()
-        await ctx.send("Stopped and cleared queue.")
+        await send_visible(ctx, "Stopped and cleared queue.", sender=ctx.send)
 
     @commands.command()
     async def queue(self, ctx):
@@ -915,8 +916,8 @@ class Music(commands.Cog):
             for i, item in enumerate(self.queue)
         )
         if not lines:
-            return await ctx.send("Queue is empty.")
-        await ctx.send("**Current Queue:**\n" + "\n".join(lines))
+            return await send_visible(ctx, "Queue is empty.", sender=ctx.send)
+        await send_visible(ctx, "**Current Queue:**\n" + "\n".join(lines), sender=ctx.send)
 
 
 async def setup(bot):

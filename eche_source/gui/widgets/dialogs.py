@@ -33,11 +33,13 @@ class _BaseDialog(QDialog):
         self._title = QLabel(title)
         self._title.setObjectName("Title")
         self._title.setWordWrap(True)
+        self._title.setTextFormat(Qt.TextFormat.PlainText)
         self._root.addWidget(self._title)
 
         self._subtitle = QLabel("")
         self._subtitle.setObjectName("Subtitle")
         self._subtitle.setWordWrap(True)
+        self._subtitle.setTextFormat(Qt.TextFormat.PlainText)
         self._subtitle.setVisible(False)
         self._root.addWidget(self._subtitle)
 
@@ -83,6 +85,7 @@ class ErrorDialog(_BaseDialog):
 
         body = QLabel(message)
         body.setWordWrap(True)
+        body.setTextFormat(Qt.TextFormat.PlainText)
         body.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         cl.addWidget(body)
 
@@ -90,6 +93,7 @@ class ErrorDialog(_BaseDialog):
             h = QLabel(hint)
             h.setObjectName("FieldHint")
             h.setWordWrap(True)
+            h.setTextFormat(Qt.TextFormat.PlainText)
             cl.addWidget(h)
 
         if details:
@@ -135,6 +139,7 @@ class TracebackDialog(_BaseDialog):
         cl.setContentsMargins(10, 10, 10, 10)
         head = QLabel("TRACEBACK")
         head.setObjectName("PanelTitle")
+        head.setTextFormat(Qt.TextFormat.PlainText)
         cl.addWidget(head)
         self._tb = QTextEdit()
         self._tb.setReadOnly(True)

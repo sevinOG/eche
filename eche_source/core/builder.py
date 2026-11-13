@@ -22,7 +22,7 @@ async def load_user_context(bot, user_id, username):
     except Exception as exc:
         from core.debuglog import dprint
 
-        dprint(f"[builder] user context fetch failed: {exc}")
+        dprint(f"[builder] user context fetch failed: {exc!r}")
         return "none", []
     if pinned is None:
         return "none", []
@@ -50,7 +50,7 @@ async def load_bot_context(bot, user_id, username=None):
     except Exception as exc:
         from core.debuglog import dprint
 
-        dprint(f"[builder] bot context fetch failed: {exc}")
+        dprint(f"[builder] bot context fetch failed: {exc!r}")
         return "none", []
     if pinned is None:
         return "none", []

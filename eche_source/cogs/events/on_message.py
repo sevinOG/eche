@@ -101,7 +101,7 @@ async def _send_reply(message, content: str):
                 missing = getattr(exc, "code", None) == 50035 or "unknown message" in str(exc).lower()
                 if not missing:
                     raise
-                dprint(f"[on_message] reply had no message to reference: {exc}")
+                dprint(f"[on_message] reply had no message to reference: {exc!r}")
                 sent = await send_visible(message.channel, chunk)
         else:
             sent = await send_visible(message.channel, chunk)
@@ -147,7 +147,7 @@ class OnMessage(commands.Cog):
                 job="lookup",
             )
         except Exception as exc:
-            dprint(f"[on_message] lookup reply failed: {exc}")
+            dprint(f"[on_message] lookup reply failed: {exc!r}")
             if lookup_failed(notes):
                 return (notes or "").strip(), False
             return "I found the notes, but I couldn't answer from them.", False
@@ -220,7 +220,7 @@ class OnMessage(commands.Cog):
                 try:
                     await _send_reply(message, BYPASS_REFUSAL)
                 except Exception as e:
-                    dprint(f"[on_message] refusal send failed: {e}")
+                    dprint(f"[on_message] refusal send failed: {e!r}")
                     continue
                 said.append(BYPASS_REFUSAL)
                 ran_any = True
@@ -231,7 +231,7 @@ class OnMessage(commands.Cog):
                 try:
                     await _send_reply(message, BLOCK_REFUSAL)
                 except Exception as e:
-                    dprint(f"[on_message] refusal send failed: {e}")
+                    dprint(f"[on_message] refusal send failed: {e!r}")
                     continue
                 said.append(BLOCK_REFUSAL)
                 ran_any = True
@@ -271,7 +271,7 @@ class OnMessage(commands.Cog):
                             await send_visible(message.channel, chunk)
                         sent = True
                     except Exception as e:
-                        dprint(f"[on_message] tool message failed: {e}")
+                        dprint(f"[on_message] tool message failed: {e!r}")
                         break
             if not sent:
                 continue
@@ -350,7 +350,7 @@ class OnMessage(commands.Cog):
         try:
             media = await collect_discord_media(message)
         except Exception as e:
-            dprint(f"[on_message] media read failed: {e}")
+            dprint(f"[on_message] media read failed: {e!r}")
             from core.message_media import DiscordMedia
             media = DiscordMedia(message=message)
         if media.message is not None:
@@ -401,14 +401,14 @@ class OnMessage(commands.Cog):
             try:
                 await _send_reply(message, BYPASS_REFUSAL)
             except Exception as e:
-                dprint(f"[on_message] refusal send failed: {e}")
+                dprint(f"[on_message] refusal send failed: {e!r}")
             return
         if is_blocked(cleaned, getattr(media, "text", ""), user_id=user_id, channel_id=channel_id):
             block_note("chat message")
             try:
                 await _send_reply(message, BLOCK_REFUSAL)
             except Exception as e:
-                dprint(f"[on_message] refusal send failed: {e}")
+                dprint(f"[on_message] refusal send failed: {e!r}")
             return
 
         # Build from older memory first, so this turn appears only once,
@@ -488,7 +488,7 @@ class OnMessage(commands.Cog):
                 if lookup_quota:
                     quota_reply = True
             except Exception as e:
-                dprint(f"[on_message] tool delivery failed: {e}")
+                dprint(f"[on_message] tool delivery failed: {e!r}")
                 ran_tools = False
 
         if not ran_tools and reply.strip() and is_blocked(reply, user_id=user_id, channel_id=channel_id):
@@ -543,7 +543,7 @@ class OnMessage(commands.Cog):
                     user_text,
                 )
             except Exception as e:
-                dprint(f"[on_message] user memory store failed: {e}")
+                dprint(f"[on_message] user memory store failed: {e!r}")
             if tools_used or (not ran_tools and reply.strip()):
                 # Eche's own record of this turn: what it did and what it
                 # posted. A tool turn keeps both the action and the words.
@@ -563,7 +563,7 @@ class OnMessage(commands.Cog):
                         said,
                     )
                 except Exception as e:
-                    dprint(f"[on_message] bot memory store failed: {e}")
+                    dprint(f"[on_message] bot memory store failed: {e!r}")
         if not refused_turn:
             await self._record_server_line(message, asked, episode_lines)
 
@@ -591,7 +591,7 @@ class OnMessage(commands.Cog):
                     lines,
                 )
         except Exception as e:
-            print(f"[episodic] update failed: {e}", flush=True)
+            print(f"[episodic] update failed: {e!r}", flush=True)
 
 
 async def setup(bot):

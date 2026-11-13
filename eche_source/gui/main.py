@@ -193,6 +193,7 @@ class MainWindow(QMainWindow):
 
         self.bot_process: subprocess.Popen | None = None
         self.reader_thread: BotReaderThread | None = None
+        self._bridge_sentinel = ""
         self._loading_depth = 0
         self._status_state = "offline"
         self._status_text = None
@@ -923,6 +924,9 @@ class MainWindow(QMainWindow):
         env["ECHE_GUI_BRIDGE"] = "1"
         env["PYTHONUNBUFFERED"] = "1"
         env["PYTHONIOENCODING"] = "utf-8"
+        from core.gui_bridge import SENTINEL_ENV, make_sentinel
+        self._bridge_sentinel = make_sentinel()
+        env[SENTINEL_ENV] = self._bridge_sentinel
         env["ECHE_USER_ROOT"] = PROJECT_ROOT
         if not is_frozen():
             env["PYTHONPATH"] = os.pathsep.join(
@@ -1121,7 +1125,15 @@ class MainWindow(QMainWindow):
                 return
 
             from core.gui_bridge import parse_bridge_line
-            event, data = parse_bridge_line(raw)
+            token = getattr(self, "_bridge_sentinel", "") or ""
+            if token and raw.startswith(token):
+                event, data = parse_bridge_line(raw, sentinel=token)
+                if event is None:
+                    # Do not log the nonce on a malformed event line.
+                    self.append_log("[WARN] Dropped a malformed bot event line.")
+                    return
+            else:
+                event, data = None, {}
 
             if event is None:
                 self._handle_plain_line(raw)
@@ -1172,10 +1184,11 @@ class MainWindow(QMainWindow):
                 # The chat pane is the conversation. The prompt stays out of it.
                 pass
             else:
-                self.append_log(raw)
+                # Unknown event type. Do not log the raw line (it carries the nonce).
+                self.append_log(f"[WARN] Unrecognized bot event: {event}")
         except Exception as e:
             try:
-                self.append_log(f"[WARN] Error handling bot output: {e}")
+                self.append_log(f"[WARN] Error handling bot output: {e!r}")
             except Exception:
                 pass
 
@@ -1257,7 +1270,7 @@ class MainWindow(QMainWindow):
                 prefix = "" if (not current or current.endswith("\n")) else "\n"
                 widget.insertPlainText(prefix + line + "\n")
             else:
-                widget.append(line)
+                return
             sb = widget.verticalScrollBar()
             if sb is not None:
                 sb.setValue(sb.maximum())

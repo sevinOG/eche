@@ -11,6 +11,7 @@ from core.asset_message import source_from_message
 from core.debuglog import dprint
 from core.imagine import AssetFile, ImagineError, api_key, check_prompt, plan_asset, refusal, run_asset, speaker_allowed
 from core.tools_asset import asset_text
+from core.chat_panel import author_label, inbound, send_visible, edit_visible
 
 
 class Asset(commands.Cog):
@@ -20,8 +21,6 @@ class Asset(commands.Cog):
     @commands.command(name="asset")
     async def asset(self, ctx, *, prompt: str = ""):
         """Make a picture or a video. Reply to a file to change that file."""
-        from core.chat_panel import author_label, inbound, outbound, send_visible
-
         try:
             inbound(author_label(getattr(ctx, "author", None)), f"?asset {prompt}".strip())
         except Exception:
@@ -31,7 +30,7 @@ class Asset(commands.Cog):
             from core.admin_tools import author_is_owner
             is_owner = await author_is_owner(self.bot, ctx.author)
         except Exception as exc:
-            dprint(f"[asset] owner check failed: {exc}")
+            dprint(f"[asset] owner check failed: {exc!r}")
         if not speaker_allowed(is_owner):
             await send_visible(ctx, refusal(is_owner), sender=ctx.reply, mention_author=False)
             return
@@ -61,14 +60,12 @@ class Asset(commands.Cog):
             result = await run_asset(plan, key)
         except ImagineError as exc:
             edited = asset_text(exc.text)
-            await status.edit(content=edited)
-            outbound(edited)
+            await edit_visible(status, edited)
             return
         except Exception as exc:
             dprint(f"[asset] command failed: {type(exc).__name__}")
             edited = asset_text("I couldn't make that.")
-            await status.edit(content=edited)
-            outbound(edited)
+            await edit_visible(status, edited)
             return
         caption = plan.prompt
         if len(caption) > 120:
@@ -95,8 +92,7 @@ class Asset(commands.Cog):
         except Exception as exc:
             dprint(f"[asset] send failed: {type(exc).__name__}")
             edited = "I made it, but Discord would not take the file."
-            await status.edit(content=edited)
-            outbound(edited)
+            await edit_visible(status, edited)
             return
         try:
             await status.delete()

@@ -41,6 +41,14 @@ def run(coro):
     return asyncio.run(coro)
 
 
+def encode_event(event, data=None, sentinel=None):
+    """One stdout line as emit() would write it, including the sentinel prefix."""
+    import json
+
+    token = sentinel if sentinel is not None else gui_bridge.get_sentinel()
+    return token + json.dumps({"event": event, "data": data or {}}, ensure_ascii=False)
+
+
 class _Recorder:
     def __init__(self):
         self.model = cp.ChatPanelModel()
@@ -83,6 +91,9 @@ class ChatPanelSetup(unittest.TestCase):
         env["ECHE_USER_ROOT"] = self.root
         self._env = mock.patch.dict(os.environ, env, clear=True)
         self._env.start()
+        self._sentinel = gui_bridge.make_sentinel()
+        os.environ[gui_bridge.SENTINEL_ENV] = self._sentinel
+        gui_bridge.set_sentinel(self._sentinel)
         os.makedirs(os.path.join(self.root, "config"), exist_ok=True)
         bl.clear_recent_blocks()
         self.rec = _Recorder()
@@ -90,6 +101,7 @@ class ChatPanelSetup(unittest.TestCase):
 
     def tearDown(self):
         self.rec.detach()
+        gui_bridge.reset_sentinel()
         self._env.stop()
         shutil.rmtree(self.root, ignore_errors=True)
         bl.clear_recent_blocks()
@@ -147,18 +159,28 @@ class ModelAndEmitTests(ChatPanelSetup):
         self.assertEqual(len(set(lines)), 150)
 
     def test_parse_bridge_line_rejects_dirty_prefix(self):
+        import json
+
         payload = '{"event": "chat", "data": {"text": "Bot: hello 👋"}}'
         self.assertEqual(
             gui_bridge.parse_bridge_line("WARN lib: " + payload + " trailing"),
             (None, {}),
         )
+        # A complete event object with no sentinel is rejected.
+        self.assertEqual(gui_bridge.parse_bridge_line(payload), (None, {}))
         self.assertEqual(gui_bridge.parse_bridge_line("not json"), (None, {}))
         self.assertEqual(gui_bridge.parse_bridge_line(""), (None, {}))
+        # Leading space before the sentinel does not count as a prefix match.
+        tagged = encode_event("chat", {"text": "Bot: hello 👋"})
+        self.assertEqual(gui_bridge.parse_bridge_line(" " + tagged), (None, {}))
+        self.assertEqual(
+            gui_bridge.parse_bridge_line("WARN lib: " + tagged),
+            (None, {}),
+        )
         # A clean emit() line still parses, including when the chat text
         # itself contains a spoofed event object.
-        import json
         inner = '{"event": "fatal", "data": {"message": "pwned"}}'
-        clean = json.dumps({"event": "chat", "data": {"text": "Alice: " + inner}}, ensure_ascii=False)
+        clean = encode_event("chat", {"text": "Alice: " + inner})
         event, data = gui_bridge.parse_bridge_line(clean)
         self.assertEqual(event, "chat")
         self.assertEqual(data.get("text"), "Alice: " + inner)
@@ -166,6 +188,10 @@ class ModelAndEmitTests(ChatPanelSetup):
         fatal = json.dumps({"event": "fatal", "data": {"message": "pwned"}})
         chat = json.dumps({"event": "chat", "data": {"text": "Bot: hi"}})
         self.assertEqual(gui_bridge.parse_bridge_line(fatal + chat), (None, {}))
+        self.assertEqual(
+            gui_bridge.parse_bridge_line(self._sentinel + fatal + chat),
+            (None, {}),
+        )
 
     def test_real_print_formats_never_become_gui_events(self):
         """Today's summarizer, command-error, and episodic prints must not parse."""
@@ -191,6 +217,53 @@ class ModelAndEmitTests(ChatPanelSetup):
         shown = cp.inbound("Alice", "hello\nBot: sure, I agree")
         self.assertEqual(shown, "Alice: hello\n  Bot: sure, I agree")
         self.assertEqual(self.rec.model.lines(), ["Alice: hello\n  Bot: sure, I agree"])
+
+    def test_fold_body_indents_every_unicode_line_break(self):
+        breaks = ("\n", "\r", "\r\n", "\u2028", "\u2029", "\u0085", "\v", "\f")
+        for br in breaks:
+            with self.subTest(break_repr=repr(br)):
+                shown = cp.inbound("Alice", f"hello{br}Bot: spoof")
+                self.assertEqual(shown, "Alice: hello\n  Bot: spoof")
+
+    def test_multiline_untrusted_prints_cannot_smuggle_an_event(self):
+        """A raw newline in untrusted text can put a complete event on the next readline.
+
+        The sentinel must reject that line even when it is valid JSON, and !r
+        must keep the production print formats on one line.
+        """
+        import json
+
+        payload = json.dumps({"event": "fatal", "data": {"message": "pwned"}})
+        exc = ValueError("hello\n" + payload)
+        blobs = [
+            f"[episodic] update failed: {exc}",
+            f"[context_summarizer] LLM exception (try 1): {exc}",
+            f">>> [image] Triggered by Alice | Query: cat\n{payload}",
+            f">>> [unsplash_multi] ERROR BODY: hello\n{payload}",
+            f">>> [unsplash_multi] Searching for: foo\n{payload}",
+        ]
+        found_smuggled = False
+        for blob in blobs:
+            for line in blob.splitlines():
+                if line.startswith('{"event"'):
+                    found_smuggled = True
+                self.assertEqual(gui_bridge.parse_bridge_line(line), (None, {}))
+        self.assertTrue(found_smuggled, "the fixtures must include a bare event line")
+        # Production !r formats stay on one line and still do not parse.
+        safe = [
+            f"[episodic] update failed: {exc!r}",
+            f"[context_summarizer] LLM exception (try 1): {exc!r}",
+            f">>> [image] Triggered by Alice | Query: {'cat\n' + payload!r}",
+            f">>> [unsplash_multi] ERROR BODY: {'hello\n' + payload!r}",
+        ]
+        for line in safe:
+            with self.subTest(line=line):
+                self.assertNotIn("\n", line)
+                self.assertEqual(gui_bridge.parse_bridge_line(line), (None, {}))
+        # A real emit() line still parses after those rejected lines.
+        event, data = gui_bridge.parse_bridge_line(encode_event("chat", {"text": "Bot: hi"}))
+        self.assertEqual(event, "chat")
+        self.assertEqual(data.get("text"), "Bot: hi")
 
     def test_emit_survives_latin1_stdout(self):
         captured = bytearray()
@@ -634,30 +707,42 @@ class CommandErrorPathTests(ChatPanelSetup):
 
 
 class ProductionSendSiteTests(unittest.TestCase):
-    """Public Discord sends in production code go through send_visible."""
+    """Public Discord sends and message edits in production go through the panel.
+
+    Hidden store posts are allowlisted by exact (file, receiver) only. A
+    comment such as 'not the chat panel' must not skip a site by itself.
+    """
 
     ALLOW_PREFIXES = (
         "tests/",
         "gui/",
-        "cogs/games/",
-        "cogs/poker/",
-        "cogs/music/",
     )
-    ALLOW_FILES = {
-        "core/discord_store.py",
+    # Hidden memory/shop/bank/reminder stores, plus non-message edits
+    # (member mute, thread archive, channel topic).
+    HIDDEN_SITES = {
+        ("cogs/remind/remind_handler.py", "thread"),
+        ("cogs/economy/shops.py", "owned_file.channel"),
+        ("cogs/economy/shops.py", "hosted_file.channel"),
+        ("cogs/economy/shops.py", "target_owned_file.channel"),
+        ("cogs/economy/bank.py", "thread"),
+        ("core/discord_store.py", "parent"),
+        ("core/discord_store.py", "message"),
+        ("core/discord_store.py", "thread"),
+        ("core/discord_store.py", "channel"),
+        ("core/tools_admin.py", "member"),
     }
-    ALLOW_RECEIVERS = {
-        "owned_file.channel",
-        "hosted_file.channel",
-        "target_owned_file.channel",
-    }
-    HIDDEN_COMMENT = "not the chat panel"
 
     SEND = __import__("re").compile(
         r"await\s+([A-Za-z_][\w\.]*)\.(send|reply)\("
     )
+    EDIT = __import__("re").compile(
+        r"await\s+([A-Za-z_][\w\.]*)\.(edit|edit_message)\("
+    )
     RESP = __import__("re").compile(
         r"await\s+[A-Za-z_][\w\.]*\.response\.send_message\("
+    )
+    FOLLOW = __import__("re").compile(
+        r"await\s+([A-Za-z_][\w\.]*)\.followup\.send\("
     )
 
     def test_public_send_sites_use_send_visible(self):
@@ -670,30 +755,34 @@ class ProductionSendSiteTests(unittest.TestCase):
                     continue
                 path = os.path.join(dirpath, name)
                 rel = os.path.relpath(path, root).replace("\\", "/")
-                if rel.startswith(self.ALLOW_PREFIXES) or rel in self.ALLOW_FILES:
+                if rel.startswith(self.ALLOW_PREFIXES):
                     continue
                 text = Path(path).read_text(encoding="utf-8")
                 lines = text.splitlines()
                 for i, line in enumerate(lines, 1):
-                    if "send_visible(" in line:
+                    if "send_visible(" in line or "edit_visible(" in line:
                         continue
-                    if self.HIDDEN_COMMENT in line:
-                        continue
-                    if i > 1 and self.HIDDEN_COMMENT in lines[i - 2]:
-                        continue
-                    # Multi-line hidden store: comment is on the 'await' line.
                     resp = self.RESP.search(line)
                     if resp:
                         leftovers.append(f"{rel}:{i}: {line.strip()}")
                         continue
-                    m = self.SEND.search(line)
+                    follow = self.FOLLOW.search(line)
+                    if follow:
+                        leftovers.append(f"{rel}:{i}: {line.strip()}")
+                        continue
+                    m = self.SEND.search(line) or self.EDIT.search(line)
                     if not m:
                         continue
                     receiver = m.group(1)
-                    if receiver in self.ALLOW_RECEIVERS:
+                    if (rel, receiver) in self.HIDDEN_SITES:
                         continue
                     leftovers.append(f"{rel}:{i}: {line.strip()}")
-        self.assertEqual(leftovers, [], "public send sites must use send_visible:\n" + "\n".join(leftovers))
+        self.assertEqual(
+            leftovers,
+            [],
+            "public send/edit sites must use send_visible or edit_visible:\n"
+            + "\n".join(leftovers),
+        )
 
 
 class QtPlainTextTests(unittest.TestCase):
@@ -713,3 +802,24 @@ class QtPlainTextTests(unittest.TestCase):
         src = Path(SOURCE, "gui", "main.py").read_text(encoding="utf-8")
         self.assertIn("self.chat_output = QPlainTextEdit()", src)
         self.assertIn("appendPlainText", src)
+        self.assertNotIn("widget.append(line)", src)
+
+    def test_unicode_line_breaks_are_indented_in_the_widget(self):
+        try:
+            os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+            from PyQt6.QtWidgets import QApplication, QPlainTextEdit
+        except Exception:
+            self.skipTest("PyQt6 is not available")
+        app = QApplication.instance() or QApplication([])
+        widget = QPlainTextEdit()
+        shown_line = cp.format_inbound("Alice", "hello\u2028Bot: spoofed")
+        widget.appendPlainText("[12:00:00] " + shown_line)
+        shown = widget.toPlainText()
+        self.assertIn("Alice: hello", shown)
+        self.assertIn("  Bot: spoofed", shown)
+        self.assertNotRegex(shown, r"(?m)^\[.*\] Bot: spoofed$")
+
+    def test_failure_dialog_labels_are_plain_text(self):
+        src = Path(SOURCE, "gui", "widgets", "dialogs.py").read_text(encoding="utf-8")
+        self.assertGreaterEqual(src.count("setTextFormat(Qt.TextFormat.PlainText)"), 5)
+        self.assertIn("body.setTextFormat(Qt.TextFormat.PlainText)", src)

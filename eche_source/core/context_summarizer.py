@@ -190,7 +190,7 @@ async def _llm_summary(
                 max_completion_tokens=summary_tokens(char_target),
             )
         except Exception as e:
-            print(f"[context_summarizer] LLM exception (try {attempt + 1}): {e}")
+            print(f"[context_summarizer] LLM exception (try {attempt + 1}): {e!r}")
             last = str(e)
             await asyncio.sleep(1.5 * (attempt + 1))
             continue
@@ -320,12 +320,12 @@ async def summarize_context(
             from core.discord_store import edit_record
             await edit_record(pinned, new_content)
         except Exception as e:
-            print(f"[context_summarizer] ERROR editing pinned for user {user_id}: {e}")
+            print(f"[context_summarizer] ERROR editing pinned for user {user_id}: {e!r}")
         return s
 
     def _keep_prior(reason: str) -> tuple[str, list[str]]:
         # A failed fold puts the lines back into New: so they are not dropped.
-        print(f"[context_summarizer] {reason}")
+        print(f"[context_summarizer] {reason!r}")
         # Every stored line goes back. The tail alone would drop the lines
         # that failed to fold when the caller left the last few in New:.
         return existing_summary or "(summary unavailable)", list(message_lines)
@@ -568,7 +568,7 @@ async def _in_bot_voice(folded: str, existing: str, rows: list[str], room: int) 
             room,
         )
     except Exception as exc:
-        print(f"[context_summarizer] bot first-person retry failed: {exc}")
+        print(f"[context_summarizer] bot first-person retry failed: {exc!r}")
     retry = _usable_fold(retry)
     best = retry if retry and not user_centric_bullets(retry) else (retry or folded)
     return bot_voice_only(best)
@@ -636,7 +636,7 @@ async def fold_long_memory(
             room,
         )
     except Exception as exc:
-        print(f"[context_summarizer] {side} summary failed: {exc}")
+        print(f"[context_summarizer] {side} summary failed: {exc!r}")
         return False
     folded = _usable_fold(folded)
     if folded and side == "bot":
@@ -656,7 +656,7 @@ async def fold_long_memory(
                 room,
             )
         except Exception as exc:
-            print(f"[context_summarizer] {side} compact failed: {exc}")
+            print(f"[context_summarizer] {side} compact failed: {exc!r}")
             condensed = ""
         condensed = _usable_fold(condensed)
         if condensed and side == "bot":
@@ -681,6 +681,6 @@ async def fold_long_memory(
         return live
     written, note = await write_pinned(channel, header, body)
     if written is None or note == "pin-failed":
-        print(f"[context_summarizer] {side} summary was not written ({note}).")
+        print(f"[context_summarizer] {side} summary was not written ({note!r}).")
         return None
     return written

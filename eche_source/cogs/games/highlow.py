@@ -3,6 +3,7 @@ import random
 import asyncio
 from discord.ui import View
 from cogs.games._core import register_game, release_view
+from core.chat_panel import send_visible, edit_visible
 
 ODDS_TABLE = {
     1: {"win": 1.5, "lose": 1},
@@ -35,12 +36,12 @@ class HighLowGame:
             ),
             color=discord.Color.blue()
         )
-        await ctx.send(embed=embed)
+        await send_visible(ctx, embed=embed, sender=ctx.send)
 
     @staticmethod
     async def start(ctx, odds, betvalue, starting_balance, load_callback, save_callback, message):
         if odds not in ODDS_TABLE:
-            return await ctx.send("❌ Odds must be **1**, **2**, or **3**.")
+            return await send_visible(ctx, "❌ Odds must be **1**, **2**, or **3**.", sender=ctx.send)
 
         first_number = random.randint(1, 100)
 
@@ -68,7 +69,7 @@ class HighLowGame:
             save_callback=save_callback
         )
 
-        await message.edit(embed=embed, view=view)
+        await edit_visible(message, embed=embed, view=view)
         view.message = message
 
 
@@ -95,7 +96,7 @@ class HighLowButtons(View):
             try:
                 await self.save_callback(self.ctx.author, final_balance)
             except Exception as e:
-                print(f"[highlow] save failed: {e}")
+                print(f"[highlow] save failed: {e!r}")
 
     async def interaction_check(self, interaction):
         self.timeout = 30
@@ -161,7 +162,7 @@ class HighLowButtons(View):
         )
 
         release_view(self)
-        await self.message.edit(embed=embed, view=end_view)
+        await edit_visible(self.message, embed=embed, view=end_view)
 
     async def on_timeout(self):
         # FIXED: Now saves on timeout, and only once
@@ -178,7 +179,7 @@ class HighLowButtons(View):
             color=discord.Color.gold()
         )
         try:
-            await self.message.edit(embed=embed, view=None)
+            await edit_visible(self.message, embed=embed, view=None)
         except:
             pass
 
@@ -204,7 +205,7 @@ class HighLowEndButtons(View):
             try:
                 await self.save_callback(self.ctx.author, final_balance)
             except Exception as e:
-                print(f"[highlow] save failed: {e}")
+                print(f"[highlow] save failed: {e!r}")
 
     async def interaction_check(self, interaction):
         self.timeout = 60
@@ -249,7 +250,7 @@ class HighLowEndButtons(View):
             ),
             color=discord.Color.gold()
         )
-        await self.message.edit(embed=embed, view=None)
+        await edit_visible(self.message, embed=embed, view=None)
 
     async def on_timeout(self):
         # FIXED: Was missing - now saves if user AFKs on this screen
@@ -266,7 +267,7 @@ class HighLowEndButtons(View):
             color=discord.Color.gold()
         )
         try:
-            await self.message.edit(embed=embed, view=None)
+            await edit_visible(self.message, embed=embed, view=None)
         except:
             pass
 

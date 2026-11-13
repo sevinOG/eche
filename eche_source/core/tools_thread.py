@@ -540,7 +540,7 @@ async def recent_user_lines(message, limit: int = 12, author_id: int | None = No
             name = getattr(author, "name", None) or "user"
             found.append((name, text))
     except Exception as exc:
-        dprint(f"[tools] thread history failed: {exc}")
+        dprint(f"[tools] thread history failed: {exc!r}")
         return []
     found.reverse()
     return found
@@ -563,7 +563,7 @@ async def previous_topic(message) -> str:
             if text:
                 return text
     except Exception as exc:
-        dprint(f"[tools] thread previous failed: {exc}")
+        dprint(f"[tools] thread previous failed: {exc!r}")
         return ""
     return ""
 
@@ -835,7 +835,7 @@ async def _name_and_plan(brief: str, source: str) -> tuple[str, str, list[str]]:
                 job="plan",
             )
         except Exception as exc:
-            dprint(f"[tools] thread name failed: {exc}")
+            dprint(f"[tools] thread name failed: {exc!r}")
             return title, plan, []
         if turn.quota or backend_error_text(turn.reply):
             return title, plan, []
@@ -857,7 +857,7 @@ async def _run_planned_lookup(ctx: ToolContext, query: str) -> str:
     try:
         result = await execute("duckduckgo", {"query": query}, ctx)
     except Exception as exc:
-        dprint(f"[tools] thread lookup failed: {exc}")
+        dprint(f"[tools] thread lookup failed: {exc!r}")
         return ""
     return _lookup_note(query, getattr(result, "text", "") or "")
 
@@ -906,7 +906,7 @@ async def _execute(
                 job="search",
             )
         except Exception as exc:
-            dprint(f"[tools] thread search round failed: {exc}")
+            dprint(f"[tools] thread search round failed: {exc!r}")
             turn = None
         if turn is not None and (turn.quota or backend_error_text(turn.reply)):
             dprint(f"[tools] thread search stopped: {(turn.reply or '')[:160]!r}")
@@ -934,7 +934,7 @@ async def _execute(
                 job="execute",
             )
         except Exception as exc:
-            dprint(f"[tools] thread fill failed: {exc}")
+            dprint(f"[tools] thread fill failed: {exc!r}")
             break
         if turn.quota or backend_error_text(turn.reply):
             dprint(f"[tools] thread fill stopped: {(turn.reply or '')[:160]!r}")
@@ -959,7 +959,7 @@ async def _execute(
                 await send_visible(thread, REFUSAL)
                 posted.append(REFUSAL)
             except Exception as exc:
-                dprint(f"[tools] thread refusal failed: {exc}")
+                dprint(f"[tools] thread refusal failed: {exc!r}")
             break
         stopped = False
         for chunk in discord_chunks(body):
@@ -967,7 +967,7 @@ async def _execute(
                 from core.chat_panel import send_visible
                 await send_visible(thread, chunk)
             except Exception as exc:
-                dprint(f"[tools] thread send failed: {exc}")
+                dprint(f"[tools] thread send failed: {exc!r}")
                 stopped = True
                 break
             posted.append(chunk)
@@ -1132,7 +1132,7 @@ async def open_thread(ctx: ToolContext, arguments: dict) -> ToolResult:
         from core.chat_panel import send_visible
         await send_visible(thread, announcement("thread"))
     except Exception as exc:
-        dprint(f"[tools] thread announcement failed: {exc}")
+        dprint(f"[tools] thread announcement failed: {exc!r}")
         return ToolResult(
             text="I opened the thread, but I couldn't post in it.",
             fence=False,
@@ -1149,7 +1149,7 @@ async def open_thread(ctx: ToolContext, arguments: dict) -> ToolResult:
             from core.chat_panel import send_visible
             await send_visible(thread, note)
         except Exception as exc:
-            dprint(f"[tools] thread empty note failed: {exc}")
+            dprint(f"[tools] thread empty note failed: {exc!r}")
         return ToolResult(text=note, fence=False, quiet=True, detail=detail)
     return ToolResult(text=body, fence=False, quiet=True, detail=detail)
 

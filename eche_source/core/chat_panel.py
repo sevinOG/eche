@@ -22,13 +22,20 @@ def set_handler(handler: Optional[Callable[[str], None]]) -> None:
 
 
 def fold_body(text: str) -> str:
-    """Indent continuation lines so a user newline plus 'Bot:' cannot
-    look like a separate bot reply in the panel."""
-    raw = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
-    raw = raw.rstrip("\n")
-    if "\n" not in raw:
+    """Indent every continuation line so a user newline cannot spoof 'Bot:'.
+
+    str.splitlines() covers CR, LF, CRLF, and the Unicode line breaks
+    U+2028, U+2029, and NEL (U+0085), plus VT/FF.
+    """
+    raw = str(text or "")
+    if not raw:
         return raw
-    first, *rest = raw.split("\n")
+    lines = raw.splitlines()
+    if not lines:
+        return ""
+    first, *rest = lines
+    if not rest:
+        return first
     return first + "\n" + "\n".join("  " + line for line in rest)
 
 

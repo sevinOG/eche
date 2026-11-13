@@ -134,7 +134,7 @@ Now issue your verdict.
             from core.client import tokens_for
             agent_response = await self.groq(prompt, max_completion_tokens=tokens_for(1000))
         except Exception as e:
-            print(f"[LawManager] Groq error: {e}")
+            print(f"[LawManager] Groq error: {e!r}")
             return
 
         # -----------------------------------------------------

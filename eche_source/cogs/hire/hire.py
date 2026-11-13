@@ -79,7 +79,7 @@ class TargetSelect(Select):
                 else:
                     await self.ctx.invoke(cmd, target=target, amount=self.amount)
             except Exception as e:
-                print(f"[hire] invoke failed {self.job_type}: {e}")
+                print(f"[hire] invoke failed {self.job_type}: {e!r}")
 
         try:
             await interaction.response.defer()
