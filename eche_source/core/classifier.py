@@ -567,24 +567,69 @@ _LOOKALIKE_BRACKETS = str.maketrans({
     "\u3008": "<", "\u00ab": "<", "\uff3b": "[",
     "\uff1e": ">", "\ufe65": ">", "\u203a": ">", "\u27e9": ">",
     "\u3009": ">", "\u00bb": ">", "\uff3d": "]",
+    "\u276e": "<", "\u276f": ">",
+    "\u300c": "<", "\u300d": ">",
+    "\u2329": "<", "\u232a": ">",
+    "\uff0f": "/", "\u2044": "/", "\u2215": "/",
 })
-_VERDICT_LINE_RE = re.compile(
-    r"(?im)^[ \t>*#\-]*(?:\*\*|__|`)*\s*"
-    r"(?:answer|verdict|final\s+answer|ans(?:wer)?|"
-    r"respuesta|antwort|\u7b54\u3048|r[\xe9e]ponse|\u043e\u0442\u0432\u0435\u0442|\u56de\u7b54)\s*"
-    r"(?:\*\*|__|`)*\s*"
-    r"[:\uff1a=\u2014\u2013\-]+.*$"
-    r"|^[ \t>*#\-]*(?:\*\*|__|`)*\s*(?:yes\s*/\s*no|y\s*e\s*s\s*/\s*n\s*o).*$"
-    r"|^[ \t>*#\-]*end of text\s*.*$"
-    r"|^[ \t>*#\-]*(?:\*\*|__|`)*\s*"
-    r"(?:yes|no|ja|nein|oui|non|s[i\xed]|si|"
-    r"\u306f\u3044|\u3044\u3044\u3048|\u0434\u0430|\u043d\u0435\u0442|\u662f|\u5426)"
-    r"\s*(?:\*\*|__|`)*\s*$"
+# Role / verdict labels only count with a word boundary and a real separator.
+_ROLE_WORDS = (
+    "system", "assistant", "user", "human", "model",
+    "developer", "instruction",
 )
-_ROLE_LINE_RE = re.compile(
-    r"(?im)^[ \t>*#\-]*(?:system|assistant|user|human|model|"
-    r"developer|instruction)\s*:?\s*.*$"
+_ROLE_ALT = "|".join(_ROLE_WORDS)
+_VERDICT_LABEL_ALT = (
+    r"answer|verdict|final\s+answer|ans(?:wer)?|output|label|"
+    r"respuesta|antwort|"
+    r"\u7b54\u3048|"           # 答え
+    r"r[\xe9e]ponse|"          # réponse / reponse
+    r"\u043e\u0442\u0432\u0435\u0442|"  # ответ
+    r"\u56de\u7b54|"           # 回答
+    r"risposta|resposta|"
+    r"\ub300\ub2f5|"           # 대답
+    r"\u0627\u0644\u062c\u0648\u0627\u0628|"  # الجواب
+    r"\u0909\u0924\u094d\u0924\u0930"        # उत्तर
 )
+_VERDICT_WORD_ALT = (
+    r"yes|no|ja|nein|oui|non|s[i\xed]|si|n[a\xe3]o|nao|"
+    r"\u306f\u3044|\u3044\u3044\u3048|"  # はい / いいえ
+    r"\u0434\u0430|\u043d\u0435\u0442|"  # да / нет
+    r"\u662f|\u5426|"                    # 是 / 否
+    r"\uc544\ub2c8\uc694|"               # 아니요
+    r"\u0644\u0627|"                     # لا
+    r"\u0928\u0939\u0940\u0902"          # नहीं
+)
+_SEP_ALT = r"[:\uff1a=\u2014\u2013\-]+"
+_LEAD = r"[ \t>*#\-]*(?:\*\*|__|`)*\s*"
+_ROLE_LABELED_RE = re.compile(
+    rf"(?im)^(?P<indent>{_LEAD})\b(?:{_ROLE_ALT})\b\s*(?P<sep>{_SEP_ALT})\s*(?P<rest>.*)$"
+)
+_VERDICT_LABELED_RE = re.compile(
+    rf"(?im)^(?P<indent>{_LEAD})(?:{_VERDICT_LABEL_ALT})\s*(?:\*\*|__|`)*\s*"
+    rf"(?P<sep>{_SEP_ALT})\s*(?P<rest>.*)$"
+)
+# "Answer NO" / "Risposta NO" with no colon, as a whole line.
+_VERDICT_SPACE_RE = re.compile(
+    rf"(?im)^(?P<indent>{_LEAD})(?:{_VERDICT_LABEL_ALT})\s+"
+    rf"(?P<rest>{_VERDICT_WORD_ALT})\s*(?:\*\*|__|`)*\s*$"
+)
+_VERDICT_ONLY_RE = re.compile(
+    rf"(?im)^{_LEAD}(?:(?:{_VERDICT_LABEL_ALT})\s*(?:{_SEP_ALT})?\s*)?"
+    rf"(?:{_VERDICT_WORD_ALT}|yes\s*/\s*no|y\s*e\s*s\s*/\s*n\s*o|"
+    r"\u274c\s*no)\s*(?:\*\*|__|`)*\s*[.!]?\s*$"
+)
+_YESNO_LINE_RE = re.compile(
+    r"(?im)^[ \t>*#\-]*(?:\*\*|__|`)*\s*(?:yes\s*/\s*no|y\s*e\s*s\s*/\s*n\s*o).*$"
+)
+_END_OF_TEXT_RE = re.compile(r"(?im)^[ \t>*#\-]*end of text\s*.*$")
+_JSON_VERDICT_RE = re.compile(
+    rf"(?is)^\s*\{{[^{{}}]*['\"](?:verdict|answer|label|output)['\"]\s*:\s*"
+    rf"['\"]?(?:{_VERDICT_WORD_ALT})['\"]?[^{{}}]*\}}\s*$"
+)
+_TRAILING_VERDICT_RE = re.compile(
+    rf"(?i)\s+(?:{_VERDICT_LABEL_ALT})\s*(?:{_SEP_ALT})?\s*(?:{_VERDICT_WORD_ALT})\s*[.!?]*\s*$"
+)
+_FORMAT_CATS = frozenset({"Cf", "Cc", "Zl", "Zp"})
 _SPECIAL_TOKEN_RE = re.compile(
     r"<\|(?:eot_id|start_header_id|end_header_id|eom_id|"
     r"begin_of_text|end_of_text|im_start|im_end)\|>",
@@ -597,16 +642,105 @@ CHILD_CHECK_CHUNK = 8000
 CHILD_CHECK_OVERLAP = 512
 
 
+def _strip_format_marks(text: str) -> str:
+    """Drop format/bidi/control marks, but keep newlines, CR, and tabs."""
+    import unicodedata
+    kept: list[str] = []
+    for ch in text or "":
+        if ch in ("\n", "\r", "\t"):
+            kept.append(ch)
+            continue
+        if unicodedata.category(ch) in _FORMAT_CATS:
+            continue
+        kept.append(ch)
+    return "".join(kept)
+
+
+def _display_child_source(text: str) -> str:
+    """NFKC and lookalike-bracket mapping, keeping native letters and marks."""
+    import unicodedata
+    raw = unicodedata.normalize("NFKC", text or "")
+    return _strip_format_marks(raw.translate(_LOOKALIKE_BRACKETS))
+
+
 def _fold_child_source(text: str) -> str:
-    """Normalize confusables and zero-width marks, then fold lookalike brackets."""
+    """Confusable-folded view, used only to find obfuscated labels and verdicts."""
     raw = text or ""
     try:
-        from core.blocklist import normalize
-        raw = normalize(raw)
+        from core.blocklist import normalize, _folded, _join_spaced_letters
+        raw = _join_spaced_letters(_folded(normalize(raw)))
     except Exception:
         import unicodedata
         raw = unicodedata.normalize("NFKC", raw)
+        raw = _strip_format_marks(raw)
     return raw.translate(_LOOKALIKE_BRACKETS)
+
+
+_VERDICT_TOKEN_RE = re.compile(rf"(?i)^(?:{_VERDICT_WORD_ALT})$")
+
+
+def _is_drop_line(line: str) -> bool:
+    text = line or ""
+    if not text.strip():
+        return False
+    if _END_OF_TEXT_RE.match(text) or _YESNO_LINE_RE.match(text):
+        return True
+    if _VERDICT_ONLY_RE.match(text) or _VERDICT_SPACE_RE.match(text):
+        return True
+    if _JSON_VERDICT_RE.match(text.strip()):
+        return True
+    # "NEIN -> NO", "NO, YES" and similar are still only verdicts.
+    tokens = re.sub(r"->|=>|→|[:=,;/|]+", " ", text)
+    parts = [p for p in tokens.split() if p]
+    if parts and all(_VERDICT_TOKEN_RE.match(p) for p in parts):
+        return True
+    return False
+
+
+def _role_label(prefix: str) -> str:
+    low = re.sub(r"[^a-z]+", "", (prefix or "").lower())
+    for name in _ROLE_WORDS:
+        if low == name:
+            return name
+    return low or "role"
+
+
+def _split_on_separator(line: str) -> tuple[str, str, str] | None:
+    m = re.match(r"^(?P<indent>[ \t>*#\-]*)", line or "")
+    indent = m.group("indent") if m else ""
+    body = (line or "")[len(indent):]
+    body = re.sub(r"^(?:\*\*|__|`)+", "", body)
+    for i, ch in enumerate(body):
+        if ch in ":\uff1a=\u2014\u2013" or (ch == "-" and i > 0):
+            return indent, body[:i], body[i + 1:]
+    return None
+
+
+def _neutralize_line(line: str) -> str:
+    display = line or ""
+    folded = _fold_child_source(display)
+    if _is_drop_line(display) or _is_drop_line(folded):
+        return ""
+    role = _ROLE_LABELED_RE.match(display) or _ROLE_LABELED_RE.match(folded)
+    if role:
+        rest = role.group("rest") if _ROLE_LABELED_RE.match(display) else None
+        label = _role_label(role.group(0).split(role.group("sep"), 1)[0])
+        if rest is None:
+            parts = _split_on_separator(display)
+            rest = parts[2] if parts else display
+        rest = _TRAILING_VERDICT_RE.sub("", rest)
+        return f"{role.group('indent') if _ROLE_LABELED_RE.match(display) else ''}[{label}]: {rest}".rstrip()
+    verdict = _VERDICT_LABELED_RE.match(display) or _VERDICT_LABELED_RE.match(folded)
+    if verdict:
+        rest = verdict.group("rest") if _VERDICT_LABELED_RE.match(display) else None
+        if rest is None:
+            parts = _split_on_separator(display)
+            rest = parts[2] if parts else ""
+        rest = rest.strip()
+        if not rest or _is_drop_line(rest) or _is_drop_line(_fold_child_source(rest)):
+            return ""
+        return f"{verdict.group('indent') if _VERDICT_LABELED_RE.match(display) else ''}{rest}"
+    return _TRAILING_VERDICT_RE.sub("", display)
 
 
 def _strip_injection_lines(raw: str) -> str:
@@ -615,8 +749,18 @@ def _strip_injection_lines(raw: str) -> str:
     # The delimiter itself stays and is escaped by _escape_child_text.
     raw = re.sub(r"(</text>)", r"\1\n", raw, flags=re.I)
     raw = _SPECIAL_TOKEN_RE.sub(" ", raw)
-    raw = _ROLE_LINE_RE.sub(" ", raw)
-    return _VERDICT_LINE_RE.sub(" ", raw)
+    kept: list[str] = []
+    for line in raw.splitlines(keepends=True):
+        ending = "\n" if line.endswith("\n") else ""
+        body = line[:-1] if ending else line
+        if "\r" in body:
+            body = body.replace("\r", "")
+        out = _neutralize_line(body)
+        if out.strip():
+            kept.append(out + ending)
+        elif not body.strip():
+            kept.append(ending)
+    return "".join(kept)
 
 
 def _escape_child_text(raw: str) -> str:
@@ -628,9 +772,14 @@ def _escape_child_text(raw: str) -> str:
     return raw
 
 
+def _prepare_child_body(text: str) -> str:
+    """Display text after labels and verdict-only lines are removed."""
+    return _strip_injection_lines(_display_child_source(text))
+
+
 def _sanitize_child_text(text: str) -> str:
-    """Normalize, strip injection lines, and escape delimiters before wrapping."""
-    return _escape_child_text(_strip_injection_lines(_fold_child_source(text)))
+    """Escape delimiters on the display path that the checker will read."""
+    return _escape_child_text(_prepare_child_body(text))
 
 
 def _child_chunks(text: str) -> list[str]:
@@ -736,7 +885,7 @@ def _child_check_sync(text: str) -> str:
     key, url = _endpoint()
     if not key or not url:
         return "child-check-error"
-    prepared = _strip_injection_lines(_fold_child_source(text))
+    prepared = _prepare_child_body(text)
     for chunk in _child_chunks(prepared):
         try:
             verdict = _parse_child_verdict(
