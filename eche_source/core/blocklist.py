@@ -147,6 +147,23 @@ BLOCKED_WORDS = (
     # Swahili / Indonesian (Latin script, whole words)
     "mtoto", "watoto", "msichana", "msichana mdogo",
     "anak kecil", "bocil",
+    "anak perempuan", "binti mdogo",
+    "be gai",
+    "batang babae", "batang lalaki",
+    "kislany", "kislány",
+    "holcicka", "holčička",
+    "tytto", "tyttö",
+    "flicka", "flickor",
+    "fetita", "fetiță",
+    "pippi longstocking",
+    "christopher robin",
+    "tiny tim",
+    "anne of green gables",
+    "sweet sixteen", "sweet 16",
+    "quinceanera", "quinceañera",
+    "bat mitzvah", "bar mitzvah",
+    "too young to drive",
+    "first year at hogwarts", "first-year at hogwarts",
 )
 
 # "baby" is only blocked when the same message is sexual.
@@ -183,6 +200,8 @@ CONTEXT_PHRASES = (
     "just started high school", "started high school",
     "gcse", "gcses",
     "too young for prom", "young for prom",
+    "too young to drive", "too young to vote",
+    "years away from voting", "years from voting",
     "youthful", "youthful features",
     "pigtails and braces", "pigtails",
     "school uniform", "sailor fuku", "sailor uniform",
@@ -514,9 +533,11 @@ _LOOKS_AGE_RE = re.compile(
 _INTL_AGE_RE = re.compile(
     r"(?<![\w])(?:ist|hat|hatte|a|tem|tiene|ей|їй|ей)\s+"
     r"(?:1[0-7]|[0-9]|" + "|".join(_NUMBER_WORDS) + r")"
-    r"\s*(?:jahre|ans|anos|años|лет|jaar|let|tahun|tuổi|років|ετών|χρόνια)(?:\s*alt)?"
+    r"\s*(?:jahre|ans|anos|años|лет|jaar|let|tahun|tuổi|roków|років|ετών|χρόνια|år)(?:\s*alt)?"
     r"|(?<![\w])(?:1[0-7]|[0-9]|" + "|".join(_NUMBER_WORDS) + r")"
-    r"\s*(?:jahre|ans|anos|años|лет|jaar|let|tahun|tuổi|років|ετών|χρόνια)(?:\s*alt)?(?![\w])"
+    r"\s*(?:jahre|ans|anos|años|лет|jaar|let|tahun|tuổi|roków|років|ετών|χρόνια|år)(?:\s*alt)?(?![\w])"
+    r"|(?<![\w])(?:1[0-7]|[0-9])\s*-?\s*vuotias"
+    r"|(?:อายุ)\s*(?:1[0-7]|[0-9])(?!\d)"
     r"|(?<![\w])(?:בת|בן)\s*(?:1[0-7]|[0-9])(?!\d)",
     re.IGNORECASE,
 )
@@ -541,10 +562,31 @@ _ORDINAL_NUM = (
     r"fifteenth|sixteenth|seventeenth)"
 )
 _ORDINAL_BIRTHDAY_RE = re.compile(
-    r"(?<![\w])(?:1[0-7]|[0-9])(?:st|nd|rd|th)\s+birthday"
+    r"(?<![\w])(?:1[0-7]|[0-9])(?:st|nd|rd|th)\s+(?:birthday|bday)"
     r"|(?<![\w])(?:first|second|third|fourth|fifth|sixth|seventh|"
     r"eighth|ninth|tenth|eleventh|twelfth|thirteenth|fourteenth|"
-    r"fifteenth|sixteenth|seventeenth)\s+birthday",
+    r"fifteenth|sixteenth|seventeenth)\s+(?:birthday|bday)",
+    re.IGNORECASE,
+)
+_YEARS_FROM_VOTING_RE = re.compile(
+    r"(?<![\w])(?:\d+|" + "|".join(_NUMBER_WORDS) + r")\s+years?\s+"
+    r"(?:away\s+from|from|until|before)\s+(?:voting|being\s+able\s+to\s+vote|the\s+vote)",
+    re.IGNORECASE,
+)
+_BORN_YEAR_WORDS = {
+    "nine": 2009, "ten": 2010, "eleven": 2011, "twelve": 2012,
+    "thirteen": 2013, "fourteen": 2014, "fifteen": 2015,
+    "sixteen": 2016, "seventeen": 2017, "eighteen": 2018,
+    "nineteen": 2019, "twenty": 2020, "twenty one": 2021,
+    "twenty-one": 2021, "twenty two": 2022, "twenty-two": 2022,
+    "twenty three": 2023, "twenty-three": 2023, "twenty four": 2024,
+    "twenty-four": 2024, "twenty five": 2025, "twenty-five": 2025,
+    "twenty six": 2026, "twenty-six": 2026,
+}
+_BORN_YEAR_WORDS_RE = re.compile(
+    r"(?<![\w])(?:born(?:\s+in)?)\s+two\s+thousand\s+(?:and\s+)?("
+    + "|".join(sorted((_BORN_YEAR_WORDS), key=len, reverse=True))
+    + r")(?![\w])",
     re.IGNORECASE,
 )
 _TURNS_LEGAL_IN_RE = re.compile(
@@ -572,19 +614,28 @@ _STORYBOOK_RE = re.compile(
     r"gretel|goldilocks|"
     r"little\s+red\s+riding\s+hood|red\s+riding\s+hood|"
     r"wendy\s+darling|peter\s+pan|"
-    r"matilda\s+wormwood|"
-    r"hansel\s+and\s+gretel|"
-    r"heidi(?:\s+the\s+alpine(?:\s+girl)?)?"
+    r"matilda(?:\s+wormwood)?"
+    r"|hansel(?:\s+and\s+gretel)?"
+    r"|heidi(?:\s+the\s+alpine(?:\s+girl)?)?"
+    r"|pippi(?:\s+longstocking)?"
+    r"|christopher\s+robin"
+    r"|tiny\s+tim"
+    r"|lilo(?:\s+(?:and|&)\s+stitch|\s+from\s+lilo)?"
+    r"|anne\s+of\s+green\s+gables"
+    r"|dorothy(?:\s+from)?(?:\s+the)?\s+(?:wizard\s+of\s+)?oz"
     r")(?![\w])",
     re.IGNORECASE,
 )
-_MATILDA_RE = re.compile(r"(?<![\w])matilda(?![\w])", re.IGNORECASE)
-_ALICE_STORY_RE = re.compile(
-    r"(?<![\w])alice(?:['’]s)?\s+(?:in\s+wonderland|from\s+alice|"
-    r"liddell|through\s+the\s+looking[- ]glass)"
-    r"|(?<![\w])alice\s+in\s+wonderland"
-    r"|wonderland.{0,80}alice|alice.{0,80}wonderland",
-    re.IGNORECASE,
+_HOGWARTS_FIRST_YEAR_RE = re.compile(
+    r"(?i)first[\s-]+year\s+at\s+hogwarts|hogwarts\s+first[\s-]+year"
+)
+_ALICE_NAME_RE = re.compile(r"(?i)(?<![\w])(?:alice|alicia)(?![\w])")
+_ALICE_CUES_RE = re.compile(
+    r"(?is)(?:wonder[\s-]*land|wundirland|wunderland|"
+    r"pa[ií]s\s+de\s+las\s+maravillas|maravillas|"
+    r"carroll|liddell|"
+    r"rabbit\s*hole|looking[\s-]*glass|"
+    r"mad\s+hatter|cheshire)"
 )
 
 _HEX_TOKEN_RE = re.compile(r"(?<![\w])(?:0x)?([0-9a-f]{6,})(?![\w])", re.IGNORECASE)
@@ -933,6 +984,15 @@ def _underage_age_hit(candidates) -> str:
         hit = _FROM_LEGAL_RE.search(item)
         if hit:
             return hit.group(0)
+        hit = _YEARS_FROM_VOTING_RE.search(item)
+        if hit:
+            return hit.group(0)
+        hit = _BORN_YEAR_WORDS_RE.search(item)
+        if hit:
+            word = " ".join((hit.group(1) or "").lower().split())
+            year = _BORN_YEAR_WORDS.get(word, 0)
+            if year >= cutoff:
+                return hit.group(0)
         hit = _BIRTH_DATE_RE.search(item)
         if hit:
             year_s = hit.group("y") or hit.group("y2")
@@ -1039,13 +1099,17 @@ _NATIVE_TERMS = (
     "trẻ em", "bé gái", "nữ sinh cấp 2", "học sinh cấp 2", "nữ sinh cấp 1",
     "học sinh cấp 1",
     # Thai
-    "เด็ก", "เด็กผู้หญิง", "นักเรียนหญิง",
+    "เด็ก", "เด็กผู้หญิง", "นักเรียนหญิง", "สาวน้อย",
     # Hebrew
     "ילדה", "קטינה", "ילד", "קטין",
     # Greek
     "παιδί", "κοριτσάκι", "ανήλικη", "ανήλικος", "παιδι",
     # Ukrainian
     "дитина", "дівчинка", "школярка", "дітей",
+    # Farsi, Bengali, Urdu
+    "کودک", "کودکان", "دختر بچه",
+    "শিশু", "বাচ্চা",
+    "بچی", "بچہ", "بچے",
 )
 
 def _native_term_hit(text: str) -> str:
@@ -1118,18 +1182,20 @@ def match_info(text: str, *, force_context: bool = False) -> tuple[str, str]:
                 hit = _CONTEXT_RE.search(candidate)
                 if hit:
                     return hit.group(0), "context"
-    # Storybook children: distinctive names always; Alice only in story
-    # context; bare Matilda only when the turn is sexual or RP.
+    # Alice in a story context (Wonderland, Carroll, rabbit hole, …),
+    # including cues that span lines. "Alice from accounting" is left alone.
+    alice_blob = "\n".join([text or "", *candidates])
+    if _ALICE_NAME_RE.search(alice_blob) and _ALICE_CUES_RE.search(alice_blob):
+        return "alice-story", "always"
     for candidate in list(candidates) + [text or ""]:
-        hit = _STORYBOOK_RE.search(candidate)
+        hit = _HOGWARTS_FIRST_YEAR_RE.search(candidate)
         if hit:
             return hit.group(0), "always"
-        hit = _ALICE_STORY_RE.search(candidate)
-        if hit:
-            return hit.group(0), "always"
+    # Other storybook / character names are sexual or RP only, so
+    # "Peter Pan collar", "Heidi Klum", and "Goldilocks economy" pass.
     if force_context or _context_applies(candidates) or _has_media_rp(candidates):
-        for candidate in candidates:
-            hit = _MATILDA_RE.search(candidate)
+        for candidate in list(candidates) + [text or ""]:
+            hit = _STORYBOOK_RE.search(candidate)
             if hit:
                 return hit.group(0), "context"
     extra = _extra_re()

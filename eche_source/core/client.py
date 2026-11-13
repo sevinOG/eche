@@ -874,13 +874,11 @@ async def _classify_outgoing(prepared: list) -> list:
 
     stale_entries = history_entries[:-HISTORY_WINDOW] if len(history_entries) > HISTORY_WINDOW else []
     window_entries = history_entries[-HISTORY_WINDOW:]
-    if stale_entries:
-        # Drop history that was never classified so nothing unclassified goes out.
-        prepared = _drop_or_rebuild_history(
-            prepared,
-            {i for i, _hist, _combined in stale_entries},
-        )
-        _output_context.set(_request_output_context(prepared))
+    # Compute both drop sets against the ORIGINAL list, then apply once.
+    # Rebuilding first would shift later indices and drop the wrong
+    # messages (including the trailing footer and user guard).
+    drop_stale = {i for i, _hist, _combined in stale_entries}
+    drop_window: set[int] = set()
     window = [hist for _i, hist, _combined in window_entries]
     hard_text = "\n".join(p for p in hard_parts if p and str(p).strip())
     history_text = "\n".join(window)
@@ -897,11 +895,14 @@ async def _classify_outgoing(prepared: list) -> list:
             raise MinorsBlocked(check)
         if window_entries:
             note("llm-history-quarantine")
-            prepared = _drop_or_rebuild_history(
-                prepared,
-                {i for i, _hist, _combined in window_entries},
-            )
-            _output_context.set(_request_output_context(prepared))
+            drop_window = {i for i, _hist, _combined in window_entries}
+
+    drop = drop_stale | drop_window
+    if drop:
+        prepared = _drop_or_rebuild_history(prepared, drop)
+    from core.safety import prepare_llm_messages
+    prepared = prepare_llm_messages(prepared)
+    _output_context.set(_request_output_context(prepared))
     return prepared
 
 
