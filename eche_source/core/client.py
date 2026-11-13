@@ -763,20 +763,58 @@ def _sanitize_outgoing(messages: list) -> list:
     return prepared
 
 
+
+def _drop_or_rebuild_history(prepared: list, drop_indices: set[int]) -> list:
+    """Drop pure history messages; rebuild combined turns so the latest stays.
+
+    History and the latest user line often share one message, split by
+    === MOST RECENT MESSAGE ===. Flagged or unclassified history must not
+    take that latest turn with it. An empty turn is never sent.
+    """
+    from core.blocklist import split_transcript
+    from core.safety import message_text
+
+    rebuilt: list = []
+    for i, message in enumerate(prepared):
+        if i not in drop_indices:
+            rebuilt.append(message)
+            continue
+        text = message_text(message) if isinstance(message, dict) else str(message or "")
+        _hist, latest = split_transcript(text)
+        if latest is None:
+            continue
+        kept = (latest or "").strip()
+        if not kept:
+            # Never send an empty user turn; skip this message instead.
+            continue
+        if isinstance(message, dict):
+            rebuilt.append({
+                **message,
+                "content": "=== MOST RECENT MESSAGE ===\n" + kept,
+            })
+        else:
+            rebuilt.append(kept)
+    return rebuilt
+
+
 def _outgoing_messages(messages: list) -> list:
     """Apply the hardcoded safety footer and the minors input check.
 
-    Sync callers get history quarantine immediately and, when no event
-    loop is running, the fail-closed classifier. On a running loop this
-    returns after the word-list check so the loop is not blocked; the
-    async provider path uses _outgoing_messages_async.
+    Sync callers get history quarantine and the fail-closed classifier
+    when no event loop is running. On a running loop this refuses
+    rather than skip the classifier; production uses
+    _outgoing_messages_async so the loop is never blocked.
     """
     prepared = _sanitize_outgoing(messages)
     try:
         asyncio.get_running_loop()
     except RuntimeError:
         return asyncio.run(_classify_outgoing(prepared))
-    return prepared
+    from core.blocklist import note
+    from core.safety import MinorsBlocked
+
+    note("llm-input-classifier-error")
+    raise MinorsBlocked("llm-input-classifier-error")
 
 
 async def _outgoing_messages_async(messages: list) -> list:
@@ -813,6 +851,8 @@ async def _classify_outgoing(prepared: list) -> list:
             or (role.lower() == "system" and "persona" in (text or "").lower())
         )
 
+    # (index, history text, combined-with-latest?)
+    history_entries: list[tuple[int, str, bool]] = []
     history_indices: list[int] = []
     for scan_i, (i, role, text) in enumerate(scan_rows):
         if not str(text).strip():
@@ -822,15 +862,26 @@ async def _classify_outgoing(prepared: list) -> list:
             hard_parts.append(latest)
             if hist.strip():
                 history_parts.append(hist)
+                history_entries.append((i, hist, True))
                 history_indices.append(i)
             continue
         if _hard(role, text, scan_i):
             hard_parts.append(text)
         else:
             history_parts.append(text)
+            history_entries.append((i, text, False))
             history_indices.append(i)
 
-    window = history_parts[-HISTORY_WINDOW:]
+    stale_entries = history_entries[:-HISTORY_WINDOW] if len(history_entries) > HISTORY_WINDOW else []
+    window_entries = history_entries[-HISTORY_WINDOW:]
+    if stale_entries:
+        # Drop history that was never classified so nothing unclassified goes out.
+        prepared = _drop_or_rebuild_history(
+            prepared,
+            {i for i, _hist, _combined in stale_entries},
+        )
+        _output_context.set(_request_output_context(prepared))
+    window = [hist for _i, hist, _combined in window_entries]
     hard_text = "\n".join(p for p in hard_parts if p and str(p).strip())
     history_text = "\n".join(window)
     combined = hard_text
@@ -844,10 +895,12 @@ async def _classify_outgoing(prepared: list) -> list:
             check = f"llm-input-{hard_verdict}"
             note(check)
             raise MinorsBlocked(check)
-        if history_indices:
+        if window_entries:
             note("llm-history-quarantine")
-            drop = set(history_indices)
-            prepared = [m for i, m in enumerate(prepared) if i not in drop]
+            prepared = _drop_or_rebuild_history(
+                prepared,
+                {i for i, _hist, _combined in window_entries},
+            )
             _output_context.set(_request_output_context(prepared))
     return prepared
 

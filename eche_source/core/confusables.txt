@@ -306,3 +306,37 @@
 ﬀ	ff	lig
 ﬁ	fi	lig
 ﬂ	fl	lig
+
+# Cherokee lookalikes (ᏞᎾᏞᏆ → loli)
+Ꮮ	l	cherokee tle
+Ꮎ	o	cherokee na
+Ꮖ	i	cherokee qua
+Ꭷ	o	cherokee o
+Ꮂ	b	cherokee hv
+Ꭲ	i	cherokee i
+Ꮢ	r	cherokee sv
+Ꭼ	e	cherokee e
+Ꭺ	a	cherokee go
+# Coptic lookalikes (ⲕⲓⲇ → kid)
+ⲕ	k	coptic kapa
+Ⲕ	k	coptic kapa cap
+ⲓ	i	coptic iauda
+Ⲓ	i	coptic iauda cap
+ⲇ	d	coptic dalda
+Ⲇ	d	coptic dalda cap
+ⲟ	o	coptic o
+Ⲟ	o	coptic o cap
+ⲥ	c	coptic sima
+Ⲥ	c	coptic sima cap
+ⲁ	a	coptic alfa
+Ⲁ	a	coptic alfa cap
+ⲉ	e	coptic ei
+Ⲉ	e	coptic ei cap
+ⲣ	p	coptic ro
+Ⲣ	p	coptic ro cap
+ⲛ	n	coptic ni
+Ⲛ	n	coptic ni cap
+ⲧ	t	coptic tau
+Ⲧ	t	coptic tau cap
+ⲏ	h	coptic eta
+Ⲏ	h	coptic eta cap
