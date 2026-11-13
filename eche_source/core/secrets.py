@@ -76,6 +76,7 @@ PUBLIC_KEYS = (
     "asset_enabled",                # "1" turns ?asset on. Blank or missing stays OFF.
     "asset_owner_only",             # "1" limits ?asset to the owner once it is enabled.
     "tool_asset",                   # "0" leaves the asset tool out of the prompt. Blank stays on.
+    "child_check_model",            # second-check instruction model; blank uses the default
 )
 
 # Map settings key -> environment variable used by the bot

@@ -20,12 +20,25 @@ import urllib.request
 CLASSIFIER_MODEL = "meta-llama/llama-guard-4-12b"
 CLASSIFIER_TIMEOUT = 15
 CLASSIFIER_DEADLINE = 20
-CLASSIFIER_PROMPT = (
-    "Cover every safety-footer category. Also cover named fictional "
-    "child characters, including storybook, fairytale, and canon minors "
-    "identified by name or an age tag. A named fictional child is a "
-    "child or minor under these rules."
+# Kept as an alias of the second-check prompt so tests and docs can
+# still find this name. It is NOT sent to Llama Guard 4 (LG4 rejects
+# system messages). Named fictional children are covered by the word
+# list, the footer, and CHILD_CHECK_PROMPT.
+CHILD_CHECK_PROMPT = (
+    "You are a safety classifier. Answer with only YES or NO, on the "
+    "first line, with no punctuation or explanation.\n"
+    "Does the following text reference a minor, a child, a named "
+    "fictional child character, or anything that is or could be "
+    "construed as a child or minor? named fictional child characters "
+    "are included: storybook, fairytale, and canon minors identified "
+    "by name or an age tag.\n\n"
+    "TEXT:\n"
 )
+CLASSIFIER_PROMPT = CHILD_CHECK_PROMPT
+CHILD_CHECK_DEFAULT_GROQ = "llama-3.1-8b-instant"
+CHILD_CHECK_DEFAULT_OPENROUTER = "meta-llama/llama-3.1-8b-instruct"
+CHILD_CHECK_TIMEOUT = 15
+CHILD_CHECK_DEADLINE = 20
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 HISTORY_WINDOW = 8
@@ -314,14 +327,14 @@ def _classify_sync(text: str, *, images: list | None = None) -> str:
     cache_key = _cache_key(messages, images)
     cached = _cache_get(cache_key)
     if cached is not None:
-        return cached
+        return _with_child_check(cached, text, images=images)
     try:
         result = _verdict_to_check(_post(messages))
     except Exception:
         result = "classifier-error"
     if result and result != "classifier-error":
         _cache_put(cache_key, result)
-    return result
+    return _with_child_check(result, text, images=images)
 
 
 def classify(text: str, *, images: list | None = None) -> str:
@@ -351,7 +364,8 @@ async def classify_async(text: str, *, images: list | None = None) -> str:
     )
     if check:
         return check
-    return await _classify_messages(messages, images=images)
+    result = await _classify_messages(messages, images=images)
+    return await _with_child_check_async(result, text, images=images)
 
 
 def _prepare_messages(turns: list, *, images: list | None = None) -> tuple[list, str]:
@@ -376,8 +390,11 @@ def _prepare_messages(turns: list, *, images: list | None = None) -> tuple[list,
         if attach and content is None and role == "user":
             return [], "classifier-image-unsupported"
         prepared.append({"role": role, "content": content})
-    if prepared:
-        prepared = [{"role": "system", "content": CLASSIFIER_PROMPT}, *prepared]
+    # Llama Guard 4 accepts only alternating user/assistant turns that
+    # start with user. Never send a system message.
+    prepared = [m for m in prepared if m.get("role") in {"user", "assistant"}]
+    while prepared and prepared[0].get("role") != "user":
+        prepared.pop(0)
     return prepared, ""
 
 
@@ -413,7 +430,12 @@ async def classify_turns_async(turns: list, *, images: list | None = None) -> st
     messages, check = _prepare_messages(turns, images=images)
     if check:
         return check
-    return await _classify_messages(messages, images=images)
+    result = await _classify_messages(messages, images=images)
+    blob = "\n".join(
+        str(turn.get("content") or "") if isinstance(turn, dict) else str(turn or "")
+        for turn in turns
+    )
+    return await _with_child_check_async(result, blob, images=images)
 
 
 def classify_request(text: str, *, images: list | None = None) -> str:
@@ -448,6 +470,143 @@ async def classify_response_async(
     else:
         check = await classify_async(text, images=images)
     return f"llm-output-{check}" if check else ""
+
+
+
+def child_check_model() -> str:
+    """Instruction-following model for the second, fail-closed child check.
+
+    Same Groq / OpenRouter endpoint as Llama Guard 4. Never xAI. A
+    configured child_check_model or CHILD_CHECK_MODEL env value wins;
+    otherwise llama-3.1-8b-instant on Groq and
+    meta-llama/llama-3.1-8b-instruct on OpenRouter.
+    """
+    override = (os.getenv("CHILD_CHECK_MODEL") or "").strip()
+    if not override:
+        try:
+            from core.secrets import load_all
+
+            override = str((load_all() or {}).get("child_check_model") or "").strip()
+        except Exception:
+            override = ""
+    if override:
+        return override
+    _key, url = _endpoint()
+    if url and "openrouter" in (url or "").lower():
+        return CHILD_CHECK_DEFAULT_OPENROUTER
+    return CHILD_CHECK_DEFAULT_GROQ
+
+
+_last_child_check_ms: float | None = None
+
+
+def child_check_latency_ms() -> float | None:
+    """Duration of the most recent second-check HTTP call, if any."""
+    return _last_child_check_ms
+
+
+def _parse_child_verdict(text: str) -> bool | None:
+    """True = references a child (block), False = no, None = unreadable."""
+    if not text or not str(text).strip():
+        return None
+    first = str(text).replace("\r", "\n").strip().split("\n", 1)[0].strip().strip(".!,").lower()
+    first = first.split()[0] if first.split() else first
+    if first in {"yes", "y", "true", "unsafe"}:
+        return True
+    if first in {"no", "n", "false", "safe"}:
+        return False
+    return None
+
+
+def _child_post(messages: list) -> str:
+    key, url = _endpoint()
+    if not key or not url:
+        raise RuntimeError("child-check key missing")
+    body = json.dumps(
+        {
+            "model": child_check_model(),
+            "messages": messages,
+            "temperature": 0,
+            "max_tokens": 8,
+        }
+    ).encode("utf-8")
+    headers = {
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    if url.startswith(OPENROUTER_URL):
+        headers["HTTP-Referer"] = "https://github.com/sevinOG/eche"
+        headers["X-Title"] = "Eche"
+    req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    started = time.perf_counter()
+    try:
+        with urllib.request.urlopen(req, timeout=CHILD_CHECK_TIMEOUT) as resp:
+            raw = resp.read()
+    except Exception as exc:
+        raise RuntimeError(f"child-check request failed: {type(exc).__name__}") from exc
+    finally:
+        global _last_child_check_ms
+        _last_child_check_ms = (time.perf_counter() - started) * 1000.0
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+        return str(payload["choices"][0]["message"]["content"] or "")
+    except Exception as exc:
+        raise RuntimeError("child-check response unreadable") from exc
+
+
+def _child_check_sync(text: str) -> str:
+    """Fail-closed second check. Any error, timeout, or unparseable answer blocks."""
+    if tests_are_allowing():
+        return ""
+    key, url = _endpoint()
+    if not key or not url:
+        return "child-check-error"
+    messages = [
+        {"role": "user", "content": CHILD_CHECK_PROMPT + escape_template_text(text or "")}
+    ]
+    try:
+        verdict = _parse_child_verdict(_child_post(messages))
+    except Exception:
+        return "child-check-error"
+    if verdict is None:
+        return "child-check-error"
+    if verdict:
+        return "child-check-unsafe"
+    return ""
+
+
+async def _child_check_async(text: str) -> str:
+    if tests_are_allowing():
+        return ""
+    key, url = _endpoint()
+    if not key or not url:
+        return "child-check-error"
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(_child_check_sync, text),
+            timeout=CHILD_CHECK_DEADLINE,
+        )
+    except Exception:
+        return "child-check-error"
+
+
+def _with_child_check(lg4: str, text: str, *, images: list | None = None) -> str:
+    """Run the second check after a clean LG4 text verdict. Vision stays LG4-only."""
+    if lg4:
+        return lg4
+    if images:
+        return ""
+    return _child_check_sync(text)
+
+
+async def _with_child_check_async(lg4: str, text: str, *, images: list | None = None) -> str:
+    if lg4:
+        return lg4
+    if images:
+        return ""
+    return await _child_check_async(text)
+
 
 
 def extract_images(messages) -> list[dict]:
