@@ -113,6 +113,16 @@ def normalize_cog_module(module: str) -> str:
     return "cogs." + module
 
 
+def _deny_if_media(module: str) -> str:
+    """Return a log line if this module must never load; otherwise empty."""
+    from core.denied_modules import is_denied_module, normalize_module
+
+    name = normalize_cog_module(module)
+    if is_denied_module(name) or is_denied_module(normalize_module(module)):
+        return f"Refused to load denied media module: {name}"
+    return ""
+
+
 def _music_busy(bot) -> bool:
     """True if the music cog is actively playing audio."""
     music = bot.get_cog("Music")
@@ -279,11 +289,21 @@ async def _handle_line(bot, line: str) -> None:
 
     if upper.startswith("TOGGLE_COG "):
         module = line[len("TOGGLE_COG "):].strip()
+        denied = _deny_if_media(module)
+        if denied:
+            log(denied, channel="cogs")
+            await _emit_cog_list(bot)
+            return
         await _toggle_cog(bot, module)
         return
 
     if upper.startswith("LOAD_COG "):
         module = normalize_cog_module(line[len("LOAD_COG "):].strip())
+        denied = _deny_if_media(module)
+        if denied:
+            log(denied, channel="cogs")
+            await _emit_cog_list(bot)
+            return
         try:
             if module in bot.extensions:
                 await bot.reload_extension(module)

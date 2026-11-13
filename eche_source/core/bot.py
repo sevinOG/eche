@@ -307,7 +307,6 @@ class Eche(commands.Bot):
             "cogs.charoverride",
             "cogs.image_search",
             "cogs.convert",
-            "cogs.flash",
             "cogs.hire.lawyer.lawyer",
             "cogs.economy.bank",
             "cogs.economy.bet",
@@ -321,7 +320,12 @@ class Eche(commands.Bot):
 
         loaded = 0
         failed: list[str] = []
+        from core.denied_modules import is_denied_module
         for ext in extensions:
+            if is_denied_module(ext):
+                failed.append(f"{ext}: denied media module")
+                print(f">>> refused to load denied media module: {ext}")
+                continue
             try:
                 await self.load_extension(ext)
                 loaded += 1
