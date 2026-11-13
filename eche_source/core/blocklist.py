@@ -182,6 +182,8 @@ SEXUAL_WORDS = (
     "18+", "18 plus", "eighteen+",
     "kiss", "kissing", "kissed", "kisses",
     "passionate", "passionately",
+    "sultry", "wearing nothing", "make it hot", "cuddle up",
+    "nibble her neck",
 )
 
 # Phrases that are only blocked in a sexual or RP-character context, or
@@ -384,6 +386,9 @@ _MEDIA_RP_RE = re.compile(
     r"character\s+(?:card|sheet|description)|"
     r"stay\s+in\s+character|in\s+character|"
     r"play\s+as|you\s+are\s+playing|"
+    r"act\s+(?:like|as)|"
+    r"be\s+\w[\w'\-]*(?:\s+\w[\w'\-]*){0,3}\s+for\s+me|"
+    r"as\s+\w[\w'\-]*(?:\s+\w[\w'\-]*){0,2}\s*,|"
     r"pretend\s+you(?:'re|\s+are)|"
     r"you\s+are\s+\w+\s+now|"
     r"write\s+a\s+scene|scene\s+where|"
@@ -489,6 +494,15 @@ def _join_spaced_letters(text: str) -> str:
         lambda m: re.sub(r"[^a-z0-9]+", "", m.group(0), flags=re.IGNORECASE),
         text,
         flags=re.IGNORECASE,
+    )
+
+
+def _join_hyphenated(text: str) -> str:
+    """Join hyphenated or split syllables: Ali-ce, Won-der-land."""
+    return re.sub(
+        r"(?<![A-Za-z])(?:[A-Za-z]{1,8}[-])+[A-Za-z]{1,8}(?![A-Za-z])",
+        lambda m: m.group(0).replace("-", ""),
+        text,
     )
 
 
@@ -632,18 +646,51 @@ _STORYBOOK_RE = re.compile(
     r")(?![\w])",
     re.IGNORECASE,
 )
+
+# Reviewed benign uses of a storybook name. These skip the name-only
+# block; other minor / sexual / RP hits still apply.
+_STORYBOOK_ALLOW_RE = re.compile(
+    r"(?i)peter\s+pan\s+(?:collar|complex|syndrome)|"
+    r"heidi\s+klum|"
+    r"goldilocks\s+(?:economy|zone|principle)|"
+    r"christopher\s+robin\s+milne|dorothy\s+parker|"
+    r"tiny\s+tim(?:\s+the)?\s+ukulele|"
+    r"tiny\s+tim\s+from\s+a\s+christmas\s+carol|"
+    r"alice\s+from\s+accounting"
+)
+
+# Wonderland / Carroll cues that, with sexual or RP wording, block even
+# when the name Alice is absent.
+_WONDERLAND_RE = re.compile(
+    r"(?is)(?:wonder[\s-]*land|wundirland|wunderland|"
+    r"land\s+of\s+wonders|"
+    r"pa[ií]s\s+de\s+las\s+maravillas|"
+    r"pays\s+des\s+merveilles|"
+    r"paese\s+delle\s+meraviglie|"
+    r"pa[ií]s\s+das\s+maravilhas|"
+    r"стран[аеыу]\s+чудес|이상한\s*나라|"
+    r"不思議の[国國]|梦游仙境|"
+    r"krainie\s+czar[oó]w|underlandet|"
+    r"χώρα\s+των\s+θαυμάτων|"
+    r"carroll['’]?s\s+heroine|dodgson['’]?s\s+muse|"
+    r"dodgson['’]?s\s+heroine)"
+)
+
 _HOGWARTS_FIRST_YEAR_RE = re.compile(
     r"(?i)first[\s-]+year\s+at\s+hogwarts|hogwarts\s+first[\s-]+year"
 )
 _ALICE_NAME_RE = re.compile(
-    r"(?i)(?<![\w])(?:alice|alicia|alyce|ally)(?![\w])"
-    r"|алиса|アリス"
+    r"(?i)(?<![\w])(?:alice|alicia|alyce|ally|alicja)(?![\w])"
+    r"|алиса|アリス|爱丽丝|앨리스|αλίκη"
 )
 # Bare Alice/Alicia/Алиса/アリス, like Matilda: sexual or RP only. Ally/Alyce
 # are story-cue names and are not blocked bare.
 _ALICE_BARE_RE = re.compile(
-    r"(?i)(?<![\w])(?:alice|alicia)(?![\w])"
-    r"|алиса|アリス"
+    r"(?i)(?<![\w])(?:alice|alicia|alicja)(?![\w])"
+    r"|алиса|アリス|爱丽丝|앨리스|αλίκη"
+)
+_WENDY_BARE_RE = re.compile(
+    r"(?i)(?<![\w])wendy(?![\w])"
 )
 _ALICE_CUES_RE = re.compile(
     r"(?is)(?:wonder[\s-]*land|wundirland|wunderland|"
@@ -652,9 +699,14 @@ _ALICE_CUES_RE = re.compile(
     r"pays\s+des\s+merveilles|merveilles|"
     r"paese\s+delle\s+meraviglie|meraviglie|"
     r"pa[ií]s\s+das\s+maravilhas|maravilhas|"
-    r"стране\s+чудес|"
+    r"стран[аеыу]\s+чудес|"
     r"不思議の国|"
-    r"carroll|liddell|"
+    r"carroll['’]?s\s+heroine|carroll|liddell|dodgson|"
+    r"이상한\s*나라|"
+    r"不思議の[国國]|梦游仙境|"
+    r"krainie\s+czar[oó]w|underlandet|"
+    r"χώρα\s+των\s+θαυμάτων|"
+    r"blue\s+dress|white\s+apron|"
     r"rabbit\s*hole|white\s+rabbit|"
     r"looking[\s-]*glass|"
     r"mad\s+hatter|march\s+hare|tea\s+party|"
@@ -662,7 +714,7 @@ _ALICE_CUES_RE = re.compile(
     r"pinafore|dinah|tenniel|mcgee|"
     r"disney|kingdom\s+hearts)"
 )
-_SEXUAL_EMOJI_RE = re.compile(r"[😏🍆💦🍑👅🥵]")
+_SEXUAL_EMOJI_RE = re.compile(r"[😏🍆💦🍑👅🥵🔥😈]")
 
 _HEX_TOKEN_RE = re.compile(r"(?<![\w])(?:0x)?([0-9a-f]{6,})(?![\w])", re.IGNORECASE)
 _B64_TOKEN_RE = re.compile(r"(?<![\w])([A-Za-z0-9+/]{8,}={0,2})(?![\w])")
@@ -807,9 +859,11 @@ def _variants(text: str) -> list[str]:
             continue
         folded = _folded(base)
         squeezed = _join_spaced_letters(folded)
-        collapsed = _collapse_repeats(squeezed)
+        joined = _join_hyphenated(squeezed)
+        collapsed = _collapse_repeats(joined)
         leet_l = _folded(_leet_alt(base))
-        for item in (base, folded, squeezed, collapsed, leet_l, _join_spaced_letters(leet_l)):
+        leet_joined = _join_hyphenated(_join_spaced_letters(leet_l))
+        for item in (base, folded, squeezed, joined, collapsed, leet_l, leet_joined):
             if item and item not in out:
                 out.append(item)
     return out
@@ -909,10 +963,29 @@ _LATEST_MARKER_RE = re.compile(
     re.IGNORECASE,
 )
 
+_SEXUAL_NATIVE = (
+    "エロ",
+    "エッチ",
+    "色情",
+    "야한",
+    "секси",
+    "секс",
+    "seksowna",
+    "sexig",
+    "σέξι",
+)
+
+
 def _has_sexual(candidates) -> bool:
     if any(_SEXUAL_RE.search(item) for item in candidates):
         return True
-    return any(_SEXUAL_EMOJI_RE.search(item) for item in candidates)
+    if any(_SEXUAL_EMOJI_RE.search(item) for item in candidates):
+        return True
+    for item in candidates:
+        for term in _SEXUAL_NATIVE:
+            if term and term in item:
+                return True
+    return False
 
 
 def _has_character(candidates) -> bool:
@@ -1148,6 +1221,43 @@ def _native_term_hit(text: str) -> str:
     return ""
 
 
+def _edit_distance_at_most(a: str, b: str, limit: int = 1) -> bool:
+    if a == b:
+        return True
+    if abs(len(a) - len(b)) > limit:
+        return False
+    # Wagner-Fischer, abort when the row exceeds limit.
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, start=1):
+        cur = [i]
+        min_row = i
+        for j, cb in enumerate(b, start=1):
+            ins = cur[j - 1] + 1
+            delete = prev[j] + 1
+            sub = prev[j - 1] + (ca != cb)
+            val = min(ins, delete, sub)
+            cur.append(val)
+            if val < min_row:
+                min_row = val
+        if min_row > limit:
+            return False
+        prev = cur
+    return prev[-1] <= limit
+
+
+_ALICE_FUZZY_BASES = ("alice", "alicia")
+_ALICE_TOKEN_RE = re.compile(r"(?<![a-z0-9])[a-z][a-z0-9]{3,7}(?![a-z0-9])", re.I)
+
+
+def _fuzzy_alice_name(blob: str) -> bool:
+    """True when a token is Alice/Alicia or edit-distance 1 from those names."""
+    for token in _ALICE_TOKEN_RE.findall(blob or ""):
+        word = token.lower()
+        if any(_edit_distance_at_most(word, base, 1) for base in _ALICE_FUZZY_BASES):
+            return True
+    return False
+
+
 def match_info(text: str, *, force_context: bool = False) -> tuple[str, str]:
     """(term, check) for the first hit, or ("", "") when the text is fine.
 
@@ -1215,22 +1325,38 @@ def match_info(text: str, *, force_context: bool = False) -> tuple[str, str]:
     # In sexual or RP context, bare Alice/Alicia/Алиса/アリス is blocked
     # the same way Matilda is. A stated 18+ never exempts that.
     alice_blob = "\n".join([text or "", *candidates])
-    if _ALICE_NAME_RE.search(alice_blob) and _ALICE_CUES_RE.search(alice_blob):
+    if (
+        (_ALICE_NAME_RE.search(alice_blob) or _fuzzy_alice_name(alice_blob))
+        and _ALICE_CUES_RE.search(alice_blob)
+    ):
         return "alice-story", "always"
     if force_context or _context_applies(candidates) or _has_media_rp(candidates):
-        if _ALICE_BARE_RE.search(alice_blob) or any(_ALICE_BARE_RE.search(c) for c in candidates):
+        if (
+            _ALICE_BARE_RE.search(alice_blob)
+            or any(_ALICE_BARE_RE.search(c) for c in candidates)
+            or _fuzzy_alice_name(alice_blob)
+        ):
             return "alice", "context"
+        if _WENDY_BARE_RE.search(alice_blob) or any(_WENDY_BARE_RE.search(c) for c in candidates):
+            return "wendy", "context"
     for candidate in list(candidates) + [text or ""]:
         hit = _HOGWARTS_FIRST_YEAR_RE.search(candidate)
         if hit:
             return hit.group(0), "always"
-    # Other storybook / character names are sexual or RP only, so
-    # "Peter Pan collar", "Heidi Klum", and "Goldilocks economy" pass.
-    if force_context or _context_applies(candidates) or _has_media_rp(candidates):
-        for candidate in list(candidates) + [text or ""]:
+    # Named fictional minors are blocked by default. A short reviewed
+    # allow-list covers benign uses (Peter Pan collar, Heidi Klum, ...).
+    story_blob = list(candidates) + [text or ""]
+    if not any(_STORYBOOK_ALLOW_RE.search(c) for c in story_blob):
+        for candidate in story_blob:
             hit = _STORYBOOK_RE.search(candidate)
             if hit:
-                return hit.group(0), "context"
+                return hit.group(0), "always"
+    # Wonderland / Carroll's heroine plus sexual or RP wording, even
+    # when the name Alice is absent.
+    if force_context or _context_applies(candidates) or _has_media_rp(candidates):
+        wonder_blob = "\n".join([text or "", *candidates])
+        if _WONDERLAND_RE.search(wonder_blob):
+            return "wonderland", "context"
     extra = _extra_re()
     if extra is not None:
         for candidate in candidates:

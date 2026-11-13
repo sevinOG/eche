@@ -5,8 +5,12 @@
 
 from __future__ import annotations
 
+import logging
+import re
 import unicodedata
 from pathlib import Path
+
+_log = logging.getLogger("eche.media_scan")
 
 # Hosts, paths, SDKs, and response shapes used by image/video generators.
 GENERATION_NEEDLES = (
@@ -75,6 +79,11 @@ IMAGE_MODEL_MARKERS = (
     "txt2img",
     "image-gen",
     "imagen",
+    "gemini-nano-banana",
+    "nano-banana",
+    "gemini-omni",
+    "midjourney",
+    "seedream",
 )
 
 
@@ -113,6 +122,7 @@ VIDEO_MODEL_MARKERS = (
     "wan-2",
     "wan2",
     "mochi",
+    "hunyuanvideo",
 )
 
 # Lookalike letters that show up in evasive model ids (Cyrillic ѕora, etc.).
@@ -126,6 +136,13 @@ _MODEL_CONFUSABLES = str.maketrans({
 _MODEL_LEET = str.maketrans({
     "0": "o", "1": "i", "3": "e", "4": "a", "5": "s", "7": "t",
 })
+
+
+# Short markers must match a whole token, not a substring of a compact id
+# ("deepseek-chat-v3-0324" must not become veo via leet on version digits;
+# "inkling" must not match kling).
+_SHORT_MODEL_MARKERS = frozenset({"veo", "sora", "ray", "pika", "t2v", "i2v"})
+_TOKEN_SPLIT = re.compile(r"[-_/.]+")
 
 
 def normalize_model_id(model: str) -> str:
@@ -143,16 +160,56 @@ def normalize_model_id(model: str) -> str:
     return "".join(kept)
 
 
-def _model_id_forms(model: str) -> list[str]:
-    compact = normalize_model_id(model)
-    forms = []
-    raw = (model or "").strip().lower()
-    if raw:
-        forms.append(raw)
-    if compact and compact not in forms:
-        forms.append(compact)
-    leet = compact.translate(_MODEL_LEET)
-    if leet and leet not in forms:
+def _folded_for_tokens(model: str) -> str:
+    text = unicodedata.normalize("NFKC", model or "")
+    text = text.translate(_MODEL_CONFUSABLES).lower()
+    text = unicodedata.normalize("NFD", text)
+    kept: list[str] = []
+    for ch in text:
+        cat = unicodedata.category(ch)
+        if cat in {"Mn", "Cf", "Cc"}:
+            continue
+        if ch.isalnum() or ch in "-_/.":
+            kept.append(ch)
+        elif cat in {"Zs", "Pd", "Po", "Ps", "Pe", "Sk"}:
+            kept.append("-")
+    return "".join(kept)
+
+
+def _tokens(model: str) -> list[str]:
+    text = _folded_for_tokens(model)
+    return [tok for tok in _TOKEN_SPLIT.split(text) if tok]
+
+
+def _leet_token(token: str) -> str:
+    """Leet-fold a token only when it already contains letters, never a version number."""
+    if not token or not any(ch.isalpha() for ch in token):
+        return token
+    return token.translate(_MODEL_LEET)
+
+
+def _join_singleton_runs(tokens: list[str]) -> list[str]:
+    """v, e, o, 3 -> veo, 3. Catches v-e-o-3 and s.o.r.a."""
+    out: list[str] = []
+    run: list[str] = []
+    def flush() -> None:
+        if run:
+            out.append("".join(run))
+            run.clear()
+    for tok in tokens:
+        if len(tok) == 1 and tok.isalpha():
+            run.append(tok)
+        else:
+            flush()
+            out.append(tok)
+    flush()
+    return out
+
+
+def _token_forms(token: str) -> list[str]:
+    forms = [token]
+    leet = _leet_token(token)
+    if leet != token:
         forms.append(leet)
     return forms
 
@@ -165,19 +222,73 @@ def _marker_forms(marker: str) -> list[str]:
     return forms
 
 
-def is_image_model_id(model: str) -> bool:
-    """True for known image/video generators and ids containing those markers."""
-    forms = _model_id_forms(model)
-    if not forms:
-        return False
-    markers = []
+def _short_markers() -> set[str]:
+    names = set(_SHORT_MODEL_MARKERS)
     for marker in IMAGE_MODEL_MARKERS + VIDEO_MODEL_MARKERS:
-        markers.extend(_marker_forms(marker))
-    for text in forms:
-        if "image" in text:
-            return True
-        if any(marker in text for marker in markers):
-            return True
+        for form in _marker_forms(marker):
+            if form in _SHORT_MODEL_MARKERS:
+                names.add(form)
+    return names
+
+
+def _long_markers() -> list[str]:
+    short = _short_markers()
+    out: list[str] = []
+    for marker in IMAGE_MODEL_MARKERS + VIDEO_MODEL_MARKERS:
+        for form in _marker_forms(marker):
+            if form and form not in short and form not in out:
+                out.append(form)
+    return out
+
+
+def _short_token_match(token: str, marker: str) -> bool:
+    """Whole-token match, or the marker plus a trailing version number (veo3)."""
+    if token == marker:
+        return True
+    return token.startswith(marker) and token[len(marker):].isdigit()
+
+
+def _long_token_match(token: str, marker: str) -> bool:
+    return token == marker or token.startswith(marker)
+
+
+def _adjacent_spans(tokens: list[str]) -> list[str]:
+    """Concatenations of adjacent tokens. Digit-only tokens are not leet-folded."""
+    n = len(tokens)
+    out: list[str] = []
+    for i in range(n):
+        parts: list[str] = []
+        for j in range(i, n):
+            parts.append(_leet_token(tokens[j]))
+            span = "".join(parts)
+            if span and span not in out:
+                out.append(span)
+    return out
+
+
+def is_image_model_id(model: str) -> bool:
+    """True for known image/video generators, matched at the start of a token."""
+    raw_tokens = _tokens(model)
+    if not raw_tokens and not (model or "").strip():
+        return False
+    if "image" in normalize_model_id(model):
+        return True
+    tokens = _join_singleton_runs(raw_tokens)
+    short = _short_markers()
+    long = _long_markers()
+    spans = _adjacent_spans(tokens)
+    # Also consider each raw token and its leet form as a span of one.
+    for tok in tokens:
+        for form in _token_forms(tok):
+            if form not in spans:
+                spans.append(form)
+    for span in spans:
+        for marker in short:
+            if _short_token_match(span, marker):
+                return True
+        for marker in long:
+            if _long_token_match(span, marker):
+                return True
     return False
 
 
@@ -227,8 +338,29 @@ def module_is_blocked(module: str, source_root: str | Path | None = None) -> str
 
 
 def reject_image_model(model: str, default: str = "") -> str:
-    """Return default when model is an image/video generator id."""
+    """Return default only when the id is blank.
+
+    A saved image/video generator id is kept and a warning is logged.
+    Callers that need a chat model at use time should use usable_chat_model().
+    """
+    value = (model or "").strip()
+    if not value:
+        return default
+    if is_image_model_id(value):
+        _log.warning(
+            "Rejected an image/video generator model id; keeping the saved setting."
+        )
+        return value
+    return value
+
+
+def usable_chat_model(model: str, default: str = "") -> str:
+    """For a live chat/completions call only. Does not rewrite saved settings."""
     value = (model or "").strip()
     if not value or is_image_model_id(value):
+        if value:
+            _log.warning(
+                "Not sending a saved image/video generator model id; using a fallback at call time."
+            )
         return default
     return value

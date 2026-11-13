@@ -213,7 +213,7 @@ class NoMediaGenerationTests(unittest.TestCase):
 
     def test_image_model_ids_are_rejected(self):
         from core import secrets
-        from core.media_scan import is_image_model_id, reject_image_model
+        from core.media_scan import is_image_model_id, reject_image_model, usable_chat_model
 
         for model in (
             "google/gemini-2.5-flash-image",
@@ -245,36 +245,117 @@ class NoMediaGenerationTests(unittest.TestCase):
             "wan-2.5",
             "mochi-1",
             "hunyuanvideo",
+            "gemini-nano-banana",
+            "nano-banana",
+            "gemini-omni",
+            "midjourney",
+            "seedream-4",
         ):
             self.assertTrue(is_image_model_id(model), model)
-            self.assertEqual(reject_image_model(model, "llama3"), "llama3")
-        self.assertFalse(is_image_model_id("llama3"))
-        self.assertFalse(is_image_model_id("qwen/qwen3.8-27b"))
-        self.assertFalse(is_image_model_id("gpt-4o"))
-        self.assertFalse(is_image_model_id("llama-3.2-11b-vision-preview"))
-        self.assertFalse(is_image_model_id("llama-4-scout"))
-        self.assertFalse(is_image_model_id("qwen2.5-vl"))
-        self.assertFalse(is_image_model_id("qwen2.5-vl-72b"))
-        self.assertFalse(is_image_model_id("meta-llama/llama-4-maverick"))
-        self.assertFalse(is_image_model_id("openai/gpt-oss-120b"))
-        self.assertFalse(is_image_model_id("deepseek/deepseek-v3"))
-        self.assertFalse(is_image_model_id("kimi-k2"))
+            # Saved settings are kept; only usable_chat_model swaps in a fallback.
+            self.assertEqual(reject_image_model(model, "llama3"), model)
+            self.assertEqual(usable_chat_model(model, "llama3"), "llama3")
+        allowed = [
+            "llama3",
+            "qwen/qwen3.8-27b",
+            "gpt-4o",
+            "llama-3.2-11b-vision-preview",
+            "llama-4-scout",
+            "qwen2.5-vl",
+            "qwen2.5-vl-72b",
+            "meta-llama/llama-4-maverick",
+            "openai/gpt-oss-120b",
+            "deepseek/deepseek-v3",
+            "deepseek/deepseek-chat-v3-0324",
+            "thinkingmachines/inkling",
+            "thinkingmachines/inkling-preview",
+            "thinkingmachines/inkling-2",
+            "thinkingmachines/inkling-2-small",
+            "inkling-2-small",
+            "thinkingmachines/inkling-small",
+            "deepseek/deepseek-v3.1",
+            "qwen2.5vl",
+            "kimi-k2",
+        ]
+        for model in allowed:
+            self.assertFalse(is_image_model_id(model), model)
 
         with tempfile.TemporaryDirectory(prefix="eche-model-") as raw:
             root = Path(raw)
             (root / "config").mkdir()
-            secrets.save_all(
-                {
-                    "provider_backend": "cloud",
-                    "cloud_model": "black-forest-labs/flux-dev",
-                    "groq_model": "black-forest-labs/flux-dev",
-                },
-                root=str(root),
-            )
+            with self.assertLogs("eche.media_scan", level="WARNING") as captured:
+                secrets.save_all(
+                    {
+                        "provider_backend": "cloud",
+                        "cloud_model": "black-forest-labs/flux-dev",
+                        "groq_model": "black-forest-labs/flux-dev",
+                    },
+                    root=str(root),
+                )
+            self.assertTrue(any("keeping the saved setting" in line for line in captured.output))
             loaded = secrets.load_all(str(root))
-            self.assertFalse(is_image_model_id(loaded.get("cloud_model") or ""))
-            self.assertFalse(is_image_model_id(loaded.get("groq_model") or ""))
-            self.assertNotIn("flux", (loaded.get("cloud_model") or "").lower())
+            self.assertEqual(loaded.get("cloud_model"), "black-forest-labs/flux-dev")
+            self.assertEqual(loaded.get("groq_model"), "black-forest-labs/flux-dev")
+            self.assertTrue(is_image_model_id(loaded.get("cloud_model") or ""))
+            self.assertTrue(is_image_model_id(loaded.get("groq_model") or ""))
+
+        self._assert_openrouter_chat_models_allowed()
+
+    def _assert_openrouter_chat_models_allowed(self):
+        from core.media_scan import is_image_model_id
+
+        roots = [
+            Path("/workspace/eche-review-pr10-12"),
+            Path("/workspace/eche-review-pr10-12/repro"),
+            Path(__file__).resolve().parent,
+        ]
+        paths = []
+        for root in roots:
+            if root.is_dir():
+                paths.extend(root.rglob("or_models.json"))
+            elif root.name == "or_models.json" and root.is_file():
+                paths.append(root)
+        if not paths:
+            return
+        import json
+        blocked = []
+        for path in paths:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            models = raw.get("data", raw) if isinstance(raw, dict) else raw
+            if isinstance(models, dict) and "models" in models:
+                models = models["models"]
+            if not isinstance(models, list):
+                continue
+            for item in models:
+                if isinstance(item, str):
+                    model_id = item
+                    modality = ""
+                elif isinstance(item, dict):
+                    model_id = item.get("id") or item.get("name") or ""
+                    arch = item.get("architecture") or {}
+                    modality = " ".join([
+                        str(item.get("modality") or ""),
+                        str(arch.get("modality") or ""),
+                        " ".join(arch.get("output_modalities") or []),
+                        " ".join(item.get("output_modalities") or []),
+                    ]).lower()
+                else:
+                    continue
+                if not model_id:
+                    continue
+                if any(tag in modality for tag in ("image", "video")) and "text" not in modality:
+                    continue
+                # Skip known image/video generators in the catalog; chat models must pass.
+                if is_image_model_id(model_id) and any(
+                    tag in (modality or model_id).lower()
+                    for tag in ("image", "video")
+                ):
+                    continue
+                if is_image_model_id(model_id):
+                    # If the catalog entry is a chat/text model, this is a regression.
+                    if not modality or "text" in modality or "chat" in str(item).lower():
+                        blocked.append(model_id)
+        self.assertEqual(blocked, [], "chat models wrongly rejected: " + repr(blocked[:20]))
 
     def test_runtime_urls_do_not_build_generation_paths(self):
         fragments = (
