@@ -91,12 +91,26 @@ def source_has_generation(text: str) -> str:
     return ""
 
 
+# Video generators. Matched as substrings of a model id, same as 'image'.
+VIDEO_MODEL_MARKERS = (
+    "video",
+    "veo",
+    "sora",
+    "t2v",
+    "i2v",
+    "kling",
+    "hailuo",
+)
+
+
 def is_image_model_id(model: str) -> bool:
-    """True for known generators and any model id that contains 'image'."""
+    """True for known image/video generators and ids containing those markers."""
     text = (model or "").strip().lower()
     if not text:
         return False
     if "image" in text:
+        return True
+    if any(marker in text for marker in VIDEO_MODEL_MARKERS):
         return True
     return any(marker in text for marker in IMAGE_MODEL_MARKERS)
 
