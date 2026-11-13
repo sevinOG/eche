@@ -454,6 +454,26 @@ def load_all(root: str | None = None) -> dict[str, str]:
         else:
             out["groq_model"] = _CLOUD_DEFAULT
 
+    try:
+        from core.media_scan import reject_image_model
+    except Exception:
+        reject_image_model = lambda value, default="": value or default
+    out["cloud_model"] = reject_image_model(out.get("cloud_model"), _CLOUD_DEFAULT)
+    out["ollama_model"] = reject_image_model(out.get("ollama_model"), _OLLAMA_DEFAULT)
+    out["openrouter_model"] = reject_image_model(out.get("openrouter_model"), _OPENROUTER_DEFAULT)
+    if backend == "ollama":
+        out["groq_model"] = out["ollama_model"]
+    elif backend == "openrouter":
+        out["groq_model"] = out["openrouter_model"]
+    else:
+        out["groq_model"] = out["cloud_model"]
+    if not (out.get("groq_model") or "").strip():
+        out["groq_model"] = (
+            _OLLAMA_DEFAULT if backend == "ollama"
+            else _OPENROUTER_DEFAULT if backend == "openrouter"
+            else _CLOUD_DEFAULT
+        )
+
     return out
 
 
@@ -462,6 +482,26 @@ def save_all(data: dict[str, Any], root: str | None = None) -> None:
     os.makedirs(os.path.join(root, "config"), exist_ok=True)
 
     public = {k: str(data.get(k) or "").strip() for k in PUBLIC_KEYS}
+    try:
+        from core.media_scan import reject_image_model
+        for key, default in (
+            ("cloud_model", "qwen/qwen3.8-27b"),
+            ("ollama_model", "llama3"),
+            ("openrouter_model", "openrouter/free"),
+            ("groq_model", ""),
+        ):
+            if key in public:
+                public[key] = reject_image_model(public[key], default)
+        backend = (public.get("provider_backend") or data.get("provider_backend") or "").strip().lower()
+        if not public.get("groq_model"):
+            if backend == "ollama":
+                public["groq_model"] = public.get("ollama_model") or "llama3"
+            elif backend == "openrouter":
+                public["groq_model"] = public.get("openrouter_model") or "openrouter/free"
+            else:
+                public["groq_model"] = public.get("cloud_model") or "qwen/qwen3.8-27b"
+    except Exception:
+        pass
     from core.home_id import parse_home_server_id
     saved_home = parse_home_server_id(public.get("home_server_id"))
     if saved_home:

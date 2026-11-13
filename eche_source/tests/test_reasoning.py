@@ -115,10 +115,10 @@ class ReasoningTestBase(unittest.TestCase):
             json.dump(values, fh)
 
     def run_post(self, fake: FakeOllama, *, reasoning=None, max_tokens=64, temperature=0.7):
-        payload = client._build_payload(
+        payload = asyncio.run(client._build_payload(
             [{"role": "user", "content": "hi"}], self.model,
             max_tokens=max_tokens, temperature=temperature, reasoning=reasoning,
-        )
+        ))
         with mock.patch("requests.post", fake.post):
             data = client._sync_post(client._api_url(), payload, client._headers())
         return payload, data
@@ -216,7 +216,7 @@ class CapableModelTests(ReasoningTestBase):
             async def __aexit__(self, *a):
                 return False
 
-        payload = client._build_payload([{"role": "user", "content": "hi"}], self.model, 64, 0.7)
+        payload = asyncio.run(client._build_payload([{"role": "user", "content": "hi"}], self.model, 64, 0.7))
         with mock.patch("requests.post", fake.post), \
                 mock.patch.object(client.aiohttp, "ClientSession", _Session):
             data = asyncio.run(client._async_post(client._api_url(), payload, client._headers()))
@@ -337,7 +337,7 @@ class V1FallbackTests(ReasoningTestBase):
             fake.calls.append((url, json))
             return FakeResponse(200, reply)
 
-        payload = client._build_payload([{"role": "user", "content": "hi"}], self.model, 64, 0.7)
+        payload = asyncio.run(client._build_payload([{"role": "user", "content": "hi"}], self.model, 64, 0.7))
         with mock.patch("requests.post", post):
             data = client._sync_post(client._api_url(), payload, client._headers())
         url, body = fake.calls[-1]

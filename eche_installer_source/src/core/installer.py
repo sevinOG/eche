@@ -256,6 +256,64 @@ class Installer:
                     self.progress(min(10 + count // 30, 60), f"Copying {rel}...")
             except Exception as exc:
                 self.log(f"Copy warning {rel}: {exc}")
+        self._purge_removed_program_files(src, dst)
+
+    def _code_roots(self, tree: Path) -> list[Path]:
+        roots: list[Path] = []
+        for cand in (tree, tree / "eche_source", tree / "_internal"):
+            if (cand / "core").is_dir() or (cand / "cogs").is_dir():
+                roots.append(cand)
+        return roots
+
+    def _purge_removed_program_files(self, stage: Path, target: Path) -> None:
+        """On reinstall, delete only files Eche itself shipped and later removed."""
+        stage_roots = self._code_roots(Path(stage))
+        target_roots = self._code_roots(Path(target))
+        if not target_roots:
+            return
+        purged: list[str] = []
+        for dest in target_roots:
+            src = next((s for s in stage_roots if s.name == dest.name or s == Path(stage)), None)
+            if src is None and stage_roots:
+                src = stage_roots[0]
+            if src is None:
+                src = dest
+            try:
+                import sys
+                inserted = str(src)
+                sys.path.insert(0, inserted)
+                try:
+                    from core.app_update import purge_removed_program_files
+                    removed = purge_removed_program_files(src, dest)
+                finally:
+                    try:
+                        sys.path.remove(inserted)
+                    except ValueError:
+                        pass
+                    # Drop a cached import so a later install of a different
+                    # tree does not reuse this module.
+                    sys.modules.pop("core.app_update", None)
+                    sys.modules.pop("core", None)
+                purged.extend(removed)
+            except Exception as exc:
+                # Fallback: unlink only the known tombstone names.
+                self.log(f"Purge via app_update failed ({exc}); using built-in list")
+                for rel in (
+                    "cogs/asset.py",
+                    "cogs/flash.py",
+                    "core/imagine.py",
+                    "core/tools_asset.py",
+                    "core/asset_message.py",
+                ):
+                    path = dest / rel
+                    try:
+                        if path.is_file() and not path.is_symlink():
+                            path.unlink()
+                            purged.append(rel)
+                    except OSError as unlink_exc:
+                        self.log(f"Could not remove {rel}: {unlink_exc}")
+        for rel in purged:
+            self.log(f"Removed stale program file: {rel}")
 
     def _run_logged(self, args: list, cwd: Path, env: dict | None = None) -> int:
         """Run a command and forward each output line. Progress stays indeterminate."""

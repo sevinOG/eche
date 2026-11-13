@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import ast
 import importlib
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -25,20 +26,35 @@ _ENDPOINT_NEEDLES = (
     "XAI_API_KEY",
     "generativelanguage.googleapis.com",
     "responseModalities",
+    "response_modalities",
     "flash-image",
     "gemini-2.5-flash-image",
     "dall-e",
     "dall.e",
     "openai.images",
     "images.generate",
+    "generate_images",
     "api.stability.ai",
     "stability.sd",
     "replicate.com",
     "fal.ai",
     "api.fal.ai",
+    "b64_json",
+    "text-to-image",
+    "sdapi/v1/txt2img",
+    "google-genai",
+    "google.genai",
+    "pollinations",
+    "ideogram.ai",
+    "leonardo.ai",
+    "runwayml",
+    "luma.ai",
+    "klingai",
+    "midjourney",
+    "comfyui",
 )
 
-# Module names may appear in core/denied_modules.py so leftover files cannot load.
+# Module names may appear in the denylist and the load-time scanner.
 _MODULE_NEEDLES = (
     "core.imagine",
     "tools_asset",
@@ -51,6 +67,11 @@ _MODULE_NEEDLES = (
 )
 _MODULE_NAME_OK = {
     ROOT / "core" / "denied_modules.py",
+    ROOT / "core" / "media_scan.py",
+    ROOT / "core" / "app_update.py",
+}
+_ENDPOINT_OK = {
+    ROOT / "core" / "media_scan.py",
 }
 # The minors matcher still recognizes a leftover "?asset …" prompt. That is
 # not a generation client.
@@ -126,9 +147,10 @@ class NoMediaGenerationTests(unittest.TestCase):
         hits = []
         for path in _iter_source_files():
             text = path.read_text(encoding="utf-8", errors="replace")
-            for needle in _ENDPOINT_NEEDLES:
-                if needle in text:
-                    hits.append(f"{path.relative_to(ROOT)}: {needle}")
+            if path not in _ENDPOINT_OK:
+                for needle in _ENDPOINT_NEEDLES:
+                    if needle in text:
+                        hits.append(f"{path.relative_to(ROOT)}: {needle}")
             if path in _MODULE_NAME_OK:
                 continue
             allowed = _MODULE_NEEDLE_OK.get(path, set())
@@ -160,6 +182,107 @@ class NoMediaGenerationTests(unittest.TestCase):
                         if mod in {"core", "cogs", ""}:
                             found.append(f"{path.relative_to(ROOT)} from {mod} import {names}")
         self.assertEqual(found, [], "generation imports found in production source")
+
+    def test_client_never_sends_modalities_and_ignores_message_images(self):
+        from core.client import _extract_message, _request_body
+
+        body = _request_body({
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "hi"}],
+            "modalities": ["image", "text"],
+            "response_modalities": ["IMAGE"],
+            "responseModalities": ["IMAGE"],
+        })
+        self.assertNotIn("modalities", body)
+        self.assertNotIn("response_modalities", body)
+        self.assertNotIn("responseModalities", body)
+        self.assertEqual(body["model"], "test-model")
+
+        msg = _extract_message({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "here you go",
+                    "images": [{"url": "https://example.invalid/gen.png"}],
+                }
+            }]
+        })
+        self.assertIsNotNone(msg)
+        self.assertNotIn("images", msg)
+        self.assertEqual(msg["content"], "here you go")
+
+    def test_image_model_ids_are_rejected(self):
+        from core import secrets
+        from core.media_scan import is_image_model_id, reject_image_model
+
+        for model in (
+            "google/gemini-2.5-flash-image",
+            "black-forest-labs/flux-schnell",
+            "stabilityai/sdxl",
+            "grok-imagine",
+            "openai/dall-e-3",
+            "ollama/llava-imagen",
+        ):
+            self.assertTrue(is_image_model_id(model), model)
+            self.assertEqual(reject_image_model(model, "llama3"), "llama3")
+        self.assertFalse(is_image_model_id("llama3"))
+        self.assertFalse(is_image_model_id("qwen/qwen3.8-27b"))
+
+        with tempfile.TemporaryDirectory(prefix="eche-model-") as raw:
+            root = Path(raw)
+            (root / "config").mkdir()
+            secrets.save_all(
+                {
+                    "provider_backend": "cloud",
+                    "cloud_model": "black-forest-labs/flux-dev",
+                    "groq_model": "black-forest-labs/flux-dev",
+                },
+                root=str(root),
+            )
+            loaded = secrets.load_all(str(root))
+            self.assertFalse(is_image_model_id(loaded.get("cloud_model") or ""))
+            self.assertFalse(is_image_model_id(loaded.get("groq_model") or ""))
+            self.assertNotIn("flux", (loaded.get("cloud_model") or "").lower())
+
+    def test_runtime_urls_do_not_build_generation_paths(self):
+        fragments = (
+            "images/generations",
+            "videos/generations",
+            "images/edits",
+            "videos/edits",
+            "sdapi/v1/txt2img",
+        )
+        hits = []
+        for path in _iter_source_files():
+            if path.suffix != ".py" or path in _ENDPOINT_OK:
+                continue
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            except SyntaxError:
+                continue
+            for node in ast.walk(tree):
+                if isinstance(node, ast.JoinedStr):
+                    text = "".join(
+                        part.value
+                        for part in node.values
+                        if isinstance(part, ast.Constant) and isinstance(part.value, str)
+                    )
+                elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+                    parts = []
+                    cur = node
+                    while isinstance(cur, ast.BinOp) and isinstance(cur.op, ast.Add):
+                        if isinstance(cur.right, ast.Constant) and isinstance(cur.right.value, str):
+                            parts.append(cur.right.value)
+                        cur = cur.left
+                    if isinstance(cur, ast.Constant) and isinstance(cur.value, str):
+                        parts.append(cur.value)
+                    text = "".join(reversed(parts))
+                else:
+                    continue
+                for needle in fragments:
+                    if needle in text:
+                        hits.append(f"{path.relative_to(ROOT)}: {needle}")
+        self.assertEqual(hits, [], "runtime-built generation URLs found")
 
 
 if __name__ == "__main__":

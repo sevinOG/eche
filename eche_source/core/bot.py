@@ -306,6 +306,11 @@ class Eche(commands.Bot):
     # ---------------------------------------------------------
     async def setup_hook(self):
         print(">>> setup_hook: loading extensions")
+        try:
+            from core.classifier import warn_if_unconfigured
+            warn_if_unconfigured()
+        except Exception as e:
+            print(f">>> classifier startup check skipped: {e}")
 
         # Attach GUI bridge once the asyncio loop is running
         try:
@@ -340,11 +345,12 @@ class Eche(commands.Bot):
 
         loaded = 0
         failed: list[str] = []
-        from core.denied_modules import is_denied_module
+        from core.media_scan import module_is_blocked
         for ext in extensions:
-            if is_denied_module(ext):
-                failed.append(f"{ext}: denied media module")
-                print(f">>> refused to load denied media module: {ext}")
+            blocked = module_is_blocked(ext)
+            if blocked:
+                failed.append(f"{ext}: {blocked}")
+                print(f">>> refused to load {ext}: {blocked}")
                 continue
             try:
                 await self.load_extension(ext)

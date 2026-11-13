@@ -354,12 +354,19 @@ def _model_is_unset(raw: str) -> bool:
 def _model() -> str:
     raw = (os.getenv("GROQ_MODEL") or "").strip()
     backend = _provider_backend()
+    if backend == "ollama":
+        fallback = DEFAULT_OLLAMA_MODEL
+    elif backend == "openrouter":
+        fallback = DEFAULT_OPENROUTER_MODEL
+    else:
+        fallback = DEFAULT_MODEL
+    try:
+        from core.media_scan import reject_image_model
+        raw = reject_image_model(raw, "")
+    except Exception:
+        pass
     if _model_is_unset(raw):
-        if backend == "ollama":
-            return DEFAULT_OLLAMA_MODEL
-        if backend == "openrouter":
-            return DEFAULT_OPENROUTER_MODEL
-        return DEFAULT_MODEL
+        return fallback
     return raw
 
 
@@ -742,37 +749,118 @@ def _request_output_context(messages: list) -> str:
     return "\n".join(p for p in parts if p and p.strip())
 
 
-def _outgoing_messages(messages: list) -> list:
-    """Apply the hardcoded safety footer and the minors input check.
-
-    This is the single choke point shared by every provider path.
-    """
-    from core.blocklist import note, scan_messages
-    from core.classifier import classify_request, extract_images
-    from core.safety import MinorsBlocked, prepare_llm_messages, request_texts
+def _sanitize_outgoing(messages: list) -> list:
+    """Word-list input check and history quarantine. Sync, no classifier."""
+    from core.blocklist import note, sanitize_messages
+    from core.safety import MinorsBlocked, prepare_llm_messages
 
     prepared = prepare_llm_messages(messages)
+    prepared, check = sanitize_messages(prepared)
+    if check:
+        note(check)
+        raise MinorsBlocked(check)
     _output_context.set(_request_output_context(prepared))
-    check = scan_messages(prepared)
-    if check:
-        note(check)
-        raise MinorsBlocked(check)
-    images = extract_images(prepared)
-    check = classify_request("\n".join(request_texts(prepared)), images=images or None)
-    if check:
-        note(check)
-        raise MinorsBlocked(check)
     return prepared
 
 
-def _output_blocked(*texts, tool_calls=None) -> bool:
+def _outgoing_messages(messages: list) -> list:
+    """Apply the hardcoded safety footer and the minors input check.
+
+    Sync callers get history quarantine immediately and, when no event
+    loop is running, the fail-closed classifier. On a running loop this
+    returns after the word-list check so the loop is not blocked; the
+    async provider path uses _outgoing_messages_async.
+    """
+    prepared = _sanitize_outgoing(messages)
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(_classify_outgoing(prepared))
+    return prepared
+
+
+async def _outgoing_messages_async(messages: list) -> list:
+    prepared = _sanitize_outgoing(messages)
+    return await _classify_outgoing(prepared)
+
+
+async def _classify_outgoing(prepared: list) -> list:
+    from core.blocklist import note, split_transcript
+    from core.classifier import classify_async, extract_images, HISTORY_WINDOW
+    from core.safety import MinorsBlocked, is_footer_message, is_user_guard, message_text
+
+    _output_context.set(_request_output_context(prepared))
+    images = extract_images(prepared)
+
+    hard_parts: list[str] = []
+    history_parts: list[str] = []
+    last_user = -1
+    scan_rows: list[tuple[int, str, str]] = []
+    for i, message in enumerate(prepared):
+        if is_footer_message(message) or is_user_guard(message):
+            continue
+        role = (message.get("role") if isinstance(message, dict) else "") or ""
+        text = message_text(message) if isinstance(message, dict) else str(message or "")
+        scan_rows.append((i, role, text))
+        if role.lower() == "user":
+            last_user = len(scan_rows) - 1
+
+    def _hard(role: str, text: str, index: int) -> bool:
+        from core.blocklist import _looks_like_persona_or_card
+        return (
+            index == last_user
+            or _looks_like_persona_or_card(text, role)
+            or (role.lower() == "system" and "persona" in (text or "").lower())
+        )
+
+    history_indices: list[int] = []
+    for scan_i, (i, role, text) in enumerate(scan_rows):
+        if not str(text).strip():
+            continue
+        hist, latest = split_transcript(text)
+        if latest is not None:
+            hard_parts.append(latest)
+            if hist.strip():
+                history_parts.append(hist)
+                history_indices.append(i)
+            continue
+        if _hard(role, text, scan_i):
+            hard_parts.append(text)
+        else:
+            history_parts.append(text)
+            history_indices.append(i)
+
+    window = history_parts[-HISTORY_WINDOW:]
+    hard_text = "\n".join(p for p in hard_parts if p and str(p).strip())
+    history_text = "\n".join(window)
+    combined = hard_text
+    if history_text.strip():
+        combined = (hard_text + "\n\nHISTORY:\n" + history_text).strip()
+
+    verdict = await classify_async(combined or hard_text or " ", images=images or None)
+    if verdict:
+        hard_verdict = await classify_async(hard_text or " ", images=images or None)
+        if hard_verdict:
+            check = f"llm-input-{hard_verdict}"
+            note(check)
+            raise MinorsBlocked(check)
+        if history_indices:
+            note("llm-history-quarantine")
+            drop = set(history_indices)
+            prepared = [m for i, m in enumerate(prepared) if i not in drop]
+            _output_context.set(_request_output_context(prepared))
+    return prepared
+
+
+async def _output_blocked(*texts, tool_calls=None) -> bool:
     """True when a model reply or tool call depicts or sexualizes a minor.
 
     The reply is checked on its own and together with recent RP / card
     context so school or young cues in the scene are not missed.
+    Replies are classified as an assistant turn against the latest user text.
     """
-    from core.blocklist import is_blocked, match_info, note
-    from core.classifier import classify_response
+    from core.blocklist import is_blocked, match_info, note, split_transcript
+    from core.classifier import classify_response_async
     import json as _json
 
     parts = [str(t) for t in texts if t]
@@ -795,14 +883,19 @@ def _output_blocked(*texts, tool_calls=None) -> bool:
     if is_blocked(*parts) or (combined and match_info(combined, force_context=True)[1]):
         note("llm-output")
         return True
-    check = classify_response(combined or reply)
+    # Latest user line from the stored request context, if present.
+    prompt = ""
+    if context:
+        _hist, latest = split_transcript(context)
+        prompt = (latest or context).strip()
+    check = await classify_response_async(reply, prompt=prompt)
     if check:
         note(check)
         return True
     return False
 
 
-def _build_payload(
+async def _build_payload(
     messages: list,
     model: str,
     max_tokens: int,
@@ -810,7 +903,7 @@ def _build_payload(
     *,
     reasoning: bool | None = None,
 ) -> dict:
-    messages = _outgoing_messages(messages)
+    messages = await _outgoing_messages_async(messages)
     payload = {
         "model": model,
         "messages": messages,
@@ -1004,7 +1097,18 @@ def _after_http_ok(payload: dict, visible: int, stage: int, data: dict) -> int |
 
 
 def _request_body(payload: dict) -> dict:
-    return {key: value for key, value in payload.items() if not str(key).startswith("_")}
+    # Never request image/video modalities. Providers that accept a
+    # modalities field would otherwise generate pictures.
+    return {
+        key: value
+        for key, value in payload.items()
+        if not str(key).startswith("_")
+        and str(key) not in {
+            "modal" + "ities",
+            "response_" + "modalities",
+            "response" + "Modalities",
+        }
+    }
 
 
 def _ollama_native_url(url: str) -> str | None:
@@ -1725,7 +1829,12 @@ def _extract_message(data: dict) -> dict | None:
         msg = data["choices"][0]["message"]
     except (KeyError, IndexError, TypeError):
         return None
-    return msg if isinstance(msg, dict) else None
+    if not isinstance(msg, dict):
+        return None
+    # Ignore provider image-generation payloads (OpenRouter message.images).
+    if "images" in msg:
+        msg = {key: value for key, value in msg.items() if key != "images"}
+    return msg
 
 
 def _parse_tool_arguments(arguments) -> dict:
@@ -1976,7 +2085,7 @@ async def _groq_sdk_call(
     {"error": "..."}. reasoning_effort defaults to "none" so native
     chain-of-thought stays out of the reply.
     """
-    messages = _outgoing_messages(messages)
+    messages = await _outgoing_messages_async(messages)
     try:
         from groq import AsyncGroq
     except ImportError:
@@ -2025,7 +2134,7 @@ async def _groq_sdk_call(
                     parts.append(delta)
             text = "".join(parts)
             from core.blocklist import REFUSAL
-            return REFUSAL if _output_blocked(text) else text
+            return REFUSAL if await _output_blocked(text) else text
         choice = completion.choices[0]
         msg = choice.message
         content = getattr(msg, "content", None) or ""
@@ -2042,7 +2151,7 @@ async def _groq_sdk_call(
         if kw.get("tools"):
             out["tool_calls"] = _tool_calls_from_message(msg)
         from core.blocklist import REFUSAL
-        if _output_blocked(out.get("content"), tool_calls=out.get("tool_calls")):
+        if await _output_blocked(out.get("content"), tool_calls=out.get("tool_calls")):
             out["content"] = REFUSAL
             out["tool_calls"] = []
         return out
@@ -2209,7 +2318,7 @@ async def call_groq_turn(
 
         url = _api_url()
         try:
-            payload = _build_payload(
+            payload = await _build_payload(
                 messages, model, max_tokens=max_completion_tokens, temperature=0.7
             )
         except MinorsBlocked:
@@ -2284,7 +2393,7 @@ async def call_groq_turn(
     if quota:
         calls = []
     cut = reply_was_cut(reason) and not calls and not quota
-    if _output_blocked(reply, thoughts, tool_calls=calls):
+    if await _output_blocked(reply, thoughts, tool_calls=calls):
         return ModelTurn(REFUSAL, "", [], False)
     return ModelTurn(reply, thoughts, calls, quota, cut)
 
@@ -2395,14 +2504,14 @@ async def call_groq_simple(prompt: str, max_chars: int = 2000):
         if "<reply>" in text.lower():
             r, _ = parse_sections(text)
             text = r or text
-        return REFUSAL if _output_blocked(text) else text
+        return REFUSAL if await _output_blocked(text) else text
 
     if not _api_key() and backend != "ollama":
         return ("error", _missing_key_error())
 
     url = _api_url()
     try:
-        payload = _build_payload(
+        payload = await _build_payload(
             messages, model, max_tokens=max_tokens, temperature=0.9, reasoning=False
         )
     except MinorsBlocked:
@@ -2419,7 +2528,7 @@ async def call_groq_simple(prompt: str, max_chars: int = 2000):
             f"{_provider_label()} bad response shape (no content). [{_config_snapshot()}]",
         )
     text = _visible_reply(_message_text(msg))
-    return REFUSAL if _output_blocked(text) else text
+    return REFUSAL if await _output_blocked(text) else text
 
 
 # ---------------------------------------------------------------------------
@@ -2463,14 +2572,14 @@ async def call_groq_raw(
             text = drop_safety_preamble(_strip_think(result.get("content") or ""))
         else:
             text = drop_safety_preamble(_strip_think(result or ""))
-        return REFUSAL if _output_blocked(text) else text
+        return REFUSAL if await _output_blocked(text) else text
 
     if not _api_key() and backend != "ollama":
         return f"ERROR: {_missing_key_error()}"
 
     url = _api_url()
     try:
-        payload = _build_payload(
+        payload = await _build_payload(
             messages,
             use_model,
             max_tokens=max_completion_tokens,
@@ -2493,4 +2602,4 @@ async def call_groq_raw(
     # Empty when the model spent the reply on a trace. The caller retries
     # the fold later instead of storing the trace.
     text = drop_safety_preamble(_strip_think(_message_text(msg)))
-    return REFUSAL if _output_blocked(text) else text
+    return REFUSAL if await _output_blocked(text) else text
