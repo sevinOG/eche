@@ -75,6 +75,7 @@ PUBLIC_KEYS = (
     "local_history_turns",          # desktop chat turns sent; blank uses 20
     "blocked_words",                # extra hard-blocked words, one per line or comma (core/blocklist.py)
     "memory_mask_slurs",            # "0" stops masking slurs in memory pins. Blank stays on.
+    "child_check_model",            # second-check instruction model; blank uses the default
 )
 
 # Map settings key -> environment variable used by the bot
