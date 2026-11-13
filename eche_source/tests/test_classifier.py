@@ -136,3 +136,25 @@ class HistoryQuarantineDropsLines(unittest.TestCase):
         out = client._outgoing_messages(msgs)
         blob = "\n".join(str(m.get("content")) for m in out)
         self.assertNotIn("14 btw", blob)
+
+
+class ClassifierPromptCoversFictionalChildren(unittest.TestCase):
+    def test_prompt_covers_named_fictional_child_characters(self):
+        from core import safety as sf
+        from core.classifier import CLASSIFIER_PROMPT, _prepare_messages
+
+        phrase = "named fictional child characters"
+        self.assertIn(phrase, CLASSIFIER_PROMPT)
+        footer = sf.SAFETY_FOOTER
+        self.assertEqual(
+            sf.footer_sha256(),
+            "66e2062573080eb6f55015acabf38fc33848fbfa8d450a2821918196b464d7f1",
+        )
+        self.assertTrue(
+            phrase in CLASSIFIER_PROMPT or phrase in footer,
+            "classifier prompt or footer must explicitly cover named fictional child characters",
+        )
+        messages, err = _prepare_messages([{"role": "user", "content": "hello"}])
+        self.assertEqual(err, "")
+        self.assertEqual(messages[0]["role"], "system")
+        self.assertIn(phrase, messages[0]["content"])

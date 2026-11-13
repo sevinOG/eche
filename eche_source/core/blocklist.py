@@ -631,32 +631,52 @@ _BIRTH_DATE_RE = re.compile(
 )
 _STORYBOOK_RE = re.compile(
     r"(?<![\w])(?:"
-    r"gretel|goldilocks|goldi(?:lox)?|"
-    r"little\s+red\s+riding\s+hood|red\s+riding\s+hood|"
+    r"gretel|goldilocks|goldl[oö]ckchen|goldi(?:lox|l[oö]ckchen)?|"
+    r"little\s+red\s+riding\s+hood|red\s+riding\s+hood|riding\s+hood|"
     r"rotk[aä]ppchen|"
     r"caperucita\s+roja|"
     r"(?:le\s+)?petit\s+chaperon\s+rouge|"
-    r"boucle\s+d['’]?or|"
+    r"boucles?\s+d['’]?or|"
     r"ricitos\s+de\s+oro|"
-    r"赤ずきん|"
+    r"cappuccetto\s+rosso|"
+    r"chapeuzinho\s+vermelho|"
+    r"roodkapje|"
+    r"czerwony\s+kapturek|"
+    r"riccioli\s+d['’]?oro|"
+    r"cachinhos\s+dourados|"
+    r"z[łl]otow[łl]osa|"
+    r"赤ずきん|小红帽|빨간\s*망토|"
     r"красная\s+шапочка|"
     r"wendy\s+darling|wendy\s+moira(?:\s+angela)?\s+darling|"
-    r"peter\s+pan|"
-    r"matilda(?:\s+w(?:ormwood|\.)?)?|mathilda|"
-    r"h[aä]nsel(?:\s+and\s+gretel|\s+und\s+gretel)?"
+    r"peter\s+pan|питер\s+пэн|ピーター[・･]?\s*パン|彼得潘|"
+    r"matilda(?:\s+w(?:ormwood|\.)?)?|mathilda|matilde|matylda|tilly\s+wormwood|"
+    r"h[aä]nsel(?:\s+and\s+gretel|\s+und\s+gretel|\s+en\s+grietje)?"
+    r"|hans\s+en\s+grietje"
     r"|heidi(?:\s+the\s+alpine(?:\s+girl)?|\s+from\s+the\s+alps)?"
-    r"|pippi(?:\s+l(?:ongstocking|ångstrump|angstrump))?|пеппи"
-    r"|christopher\s+robin|christopher\s+r\."
+    r"|ハイジ|хайди"
+    r"|pippi(?:\s+l(?:ongstocking|ångstrump|angstrump|calzaslargas|calzelunghe))?"
+    r"|pipi\s+calzaslargas|pippi\s+calzelunghe|пеппи"
+    r"|christopher\s+robin|christopher\s+r\.|chris\s+robin|c\.\s*robin"
     r"|tiny\s+tim|tim\s+cratchit|(?<![\w])cratchit"
     r"|lilo(?:\s+(?:and|&)\s+stitch|\s+from\s+lilo|\s+pelekai)?|(?<![\w])pelekai"
     r"|anne\s+of\s+green\s+gables|anne\s+shirley"
     r"|dorothy(?:\s+from)?(?:\s+the)?\s+(?:wizard\s+of\s+)?oz|dorothy\s+gale|"
-    r"dot\s+from\s+kansas|"
+    r"dot(?:tie)?\s+from\s+kansas|"
+    r"(?:dorothy|dottie|dot)\s+(?:\w+\s+){0,4}(?:of\s+)?kansas|"
+    r"kansas\s+with\s+toto|"
     r"neverland|lost\s+boys|"
     r"boy\s+who\s+never\s+grows\s+up|"
     r"darling\s+girl|"
     r"girl\s+with\s+the\s+red\s+hood|"
     r"girl\s+who\s+ate\s+the\s+three\s+bears(?:['’]s?\s+porridge)?"
+    r"|wolf['’]?s\s+girl"
+    r"|hundred\s+acre\s+wood"
+    r"|lucy\s+pevensie|(?<![\w])pevensie"
+    r"|coraline"
+    r"|scout\s+finch"
+    r"|laura\s+ingalls"
+    r"|violet\s+beauregarde"
+    r"|madeline(?:\s+from\s+the\s+paris(?:\s+school)?)?"
     r")(?![\w])",
     re.IGNORECASE,
 )
@@ -667,16 +687,21 @@ _STORYBOOK_CONTEXT_RE = re.compile(
     r"(?i)(?<![\w])(?:little\s+red|lrrh)(?![\w])",
 )
 
-# Reviewed benign uses of a storybook name. These skip the name-only
-# block; other minor / sexual / RP hits still apply.
+# Reviewed benign uses of a storybook name. Word-bounded on both sides so
+# "Peter Pan collar" does not eat "Peter Pan collarbone". Applied only
+# when the message has no sexual or RP wording; with such wording the
+# original text is always checked.
 _STORYBOOK_ALLOW_RE = re.compile(
-    r"(?i)peter\s+pan\s+(?:collar|complex|syndrome)|"
+    r"(?i)(?<![\w])(?:"
+    r"peter\s+pan\s+(?:collar|complex|syndrome)|"
     r"heidi\s+klum|"
+    r"heidi\s+from\s+hr|"
     r"goldilocks\s+(?:economy|zone|principle)|"
     r"christopher\s+robin\s+milne|dorothy\s+parker|"
     r"tiny\s+tim(?:\s+the)?\s+ukulele|"
     r"gretel\s+killeen|"
     r"alice\s+from\s+accounting"
+    r")(?![\w])"
 )
 
 # Wonderland / Carroll cues that, with sexual or RP wording, block even
@@ -688,14 +713,28 @@ _WONDERLAND_RE = re.compile(
     r"pays\s+des\s+merveilles|"
     r"paese\s+delle\s+meraviglie|"
     r"pa[ií]s\s+das\s+maravilhas|"
-    r"стран[аеыу]\s+чудес|이상한\s*나라|"
-    r"不思議の[国國]|梦游仙境|"
+    r"стран[аеыу]\s+чудес|strane\s+chudes|"
+    r"이상한\s*나라|"
+    r"不思議の[国國]|梦游仙境|fushigi\s+no\s+kuni|"
     r"krainie\s+czar[oó]w|underlandet|"
     r"χώρα\s+των\s+θαυμάτων|"
+    r"spiegelland|"
     r"carroll['’]?s\s+heroine|dodgson['’]?s\s+muse|"
-    r"dodgson['’]?s\s+(?:heroine|child\s+friend)|dodgson|"
+    r"dodgson['’]?s\s+(?:heroine|child\s+friend)|dodgson|dodgsonian|"
     r"liddell|"
     r"looking[\s-]*glass|"
+    r"through\s+the\s+mirror|behind\s+the\s+looking[\s-]*glass|"
+    r"looking\s+glass\s+land|"
+    r"carrollian|carollian|"
+    r"l\.\s*carroll|"
+    r"lewis\s+c(?:['’.]s|\s*carroll)|"
+    r"alice\s+im\s+wunderland|"
+    r"tweedle|"
+    r"pinafore|dinah|tenniel|white\s+apron|"
+    r"curiouser\s+and\s+curiouser|"
+    r"jabberwocky|"
+    r"(?:girl|heroine|child).{0,40}['’\"]?eat\s+me['’\"]?"
+    r"|['’\"]?eat\s+me['’\"]?.{0,40}(?:girl|heroine|child)|"
     r"rabbit[\s-]*hole|white\s+rabbit|"
     r"mad\s+hatter|march\s+hare|tea\s+party|"
     r"queen\s+of\s+hearts|cheshire|"
@@ -704,29 +743,43 @@ _WONDERLAND_RE = re.compile(
 
 _HOGWARTS_FIRST_YEAR_RE = re.compile(
     r"(?i)first[\s-]+year\s+at\s+hogwarts|hogwarts\s+first[\s-]+year|"
-    r"hermione(?:\s+\w+){0,4}?\s+first[\s-]+year|"
+    r"hermione(?:\s+granger)?(?:\s+\w+){0,4}?\s+first[\s-]+year|"
     r"first[\s-]+year\s+hermione"
 )
+_AGE_TAGGED_CANON_RE = re.compile(
+    r"(?i)(?<![\w])(?:hermione(?:\s+granger)?|harry\s+potter|"
+    r"lucy\s+pevensie|coraline|scout\s+finch|wendy(?:\s+darling)?|"
+    r"matilda|pippi|heidi|alice)"
+    r"(?:\s+\w+){0,4}?\s+at\s+"
+    r"(?:1[0-7]|[1-9]|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen)"
+    r"(?![\w])"
+)
 _ALICE_NAME_RE = re.compile(
-    r"(?i)(?<![\w])(?:alice|alicia|alyce|ally|alicja)(?![\w])"
+    r"(?i)(?<![\w])(?:alice|alicia|alyce|ally|alicja|alisa|arisu)(?![\w])"
     r"|алиса|アリス|爱丽丝|앨리스|αλίκη"
 )
 # Bare Alice/Alicia/Алиса/アリス, like Matilda: sexual or RP only. Ally/Alyce
 # are story-cue names and are not blocked bare.
 _ALICE_BARE_RE = re.compile(
-    r"(?i)(?<![\w])(?:alice|alicia|alicja)(?![\w])"
+    r"(?i)(?<![\w])(?:alice|alicia|alicja|alisa)(?![\w])"
     r"|алиса|アリス|爱丽丝|앨리스|αλίκη"
 )
 _WENDY_BARE_RE = re.compile(
     r"(?i)(?<![\w])wendy(?!['’]s)(?!\s+williams)(?![\w])"
 )
+_WENDY_SEXUAL_RE = re.compile(
+    r"(?i)(?<![\w])wendy(?![\w])"
+)
 _ALICE_ALLOW_RE = re.compile(
-    r"(?i)alice\s+from\s+accounting|"
+    r"(?i)(?<![\w])(?:"
+    r"alice\s+from\s+accounting|"
     r"alicia\s+keys|alice\s+cooper|alice\s+in\s+chains|"
     r"alice\s+walker|alice\s+and\s+bob"
+    r")(?![\w])"
 )
 _ALICE_CUED_NAMES_RE = re.compile(
-    r"(?i)(?<![\w])(?:allie|ali|alicent|aliss|alysse?|allisse|alys)(?![\w])"
+    r"(?i)(?<![\w])(?:allie|ali|alicent|aliss|alysse?|allisse|alys|"
+    r"alisa|arisu|alis|elise|aleece|allyce)(?![\w])"
 )
 _ALICE_CUES_RE = re.compile(
     r"(?is)(?:wonder[\s-]*land|wundirland|wunderland|"
@@ -735,22 +788,28 @@ _ALICE_CUES_RE = re.compile(
     r"pays\s+des\s+merveilles|merveilles|"
     r"paese\s+delle\s+meraviglie|meraviglie|"
     r"pa[ií]s\s+das\s+maravilhas|maravilhas|"
-    r"стран[аеыу]\s+чудес|"
+    r"стран[аеыу]\s+чудес|strane\s+chudes|"
     r"不思議の国|"
-    r"carroll['’]?s\s+heroine|carroll|liddell|dodgson|"
+    r"carroll['’]?s\s+heroine|carroll|liddell|dodgson|dodgsonian|"
     r"이상한\s*나라|"
-    r"不思議の[国國]|梦游仙境|"
+    r"不思議の[国國]|梦游仙境|fushigi\s+no\s+kuni|"
     r"krainie\s+czar[oó]w|underlandet|"
     r"χώρα\s+των\s+θαυμάτων|"
+    r"spiegelland|"
     r"blue\s+dress|white\s+apron|"
     r"rabbit\s*hole|white\s+rabbit|"
     r"looking[\s-]*glass|"
+    r"through\s+the\s+mirror|behind\s+the\s+looking[\s-]*glass|"
+    r"looking\s+glass\s+land|"
+    r"carrollian|carollian|l\.\s*carroll|tweedle|"
+    r"curiouser\s+and\s+curiouser|jabberwocky|"
     r"mad\s+hatter|march\s+hare|tea\s+party|"
     r"queen\s+of\s+hearts|cheshire|"
     r"pinafore|dinah|tenniel|mcgee|"
     r"disney|kingdom\s+hearts|"
     r"wndrlnd|dodgson['’]?s\s+child\s+friend)"
 )
+
 _SEXUAL_EMOJI_RE = re.compile(r"[😏🍆💦🍑👅🥵🔥😈]")
 
 _HEX_TOKEN_RE = re.compile(r"(?<![\w])(?:0x)?([0-9a-f]{6,})(?![\w])", re.IGNORECASE)
@@ -1011,6 +1070,8 @@ _SEXUAL_NATIVE = (
     "sexig",
     "σέξι",
     "nackt",
+    "naakt",
+    "ecchi",
 )
 
 
@@ -1309,6 +1370,83 @@ def _strip_allow(pattern: re.Pattern, text: str) -> str:
     return pattern.sub(" ", text or "")
 
 
+_SPICY_FOOD_RE = re.compile(
+    r"(?i)spicy\s+(?:chai|nuggets|pizza|wings|chicken|taco|sauce|soup|"
+    r"ramen|curry|pepper|fries|food|dish|beans|sausage)"
+)
+
+
+def _sexual_or_rp(candidates, force_context: bool = False) -> bool:
+    """Sexual or RP intent, ignoring food uses of 'spicy'."""
+    if force_context:
+        return True
+    cleaned = [_SPICY_FOOD_RE.sub(" ", item or "") for item in candidates]
+    return _has_sexual(cleaned) or _has_character(cleaned) or _has_media_rp(candidates)
+
+
+def _flex_re(pattern: re.Pattern) -> re.Pattern:
+    """Same pattern, but spaces in the text may have been removed."""
+    flexed = re.sub(r"\\s\+", r"\\s*", pattern.pattern)
+    return re.compile(flexed, pattern.flags)
+
+
+_STORYBOOK_FLEX_RE = _flex_re(_STORYBOOK_RE)
+_STORYBOOK_CONTEXT_FLEX_RE = _flex_re(_STORYBOOK_CONTEXT_RE)
+_WONDERLAND_FLEX_RE = _flex_re(_WONDERLAND_RE)
+_ALICE_CUES_FLEX_RE = _flex_re(_ALICE_CUES_RE)
+_ALICE_NAME_FLEX_RE = _flex_re(_ALICE_NAME_RE)
+_ALICE_BARE_FLEX_RE = _flex_re(_ALICE_BARE_RE)
+_ALICE_CUED_FLEX_RE = _flex_re(_ALICE_CUED_NAMES_RE)
+
+
+def _search_flex(regex: re.Pattern, flex: re.Pattern, text: str):
+    if not text:
+        return None
+    hit = regex.search(text)
+    if hit:
+        return hit
+    compact = re.sub(r"\s+", "", text)
+    if compact and compact != text:
+        return flex.search(compact)
+    return None
+
+
+def _story_texts(candidate: str, *, sexual: bool) -> list[str]:
+    """Texts to run the storybook / cue check on.
+
+    With sexual or RP wording the original text is always checked, and
+    allow-lists are never used to skip a hit. Remainder and
+    whitespace-collapsed remainder are still searched so an allowed
+    phrase cannot split a name ('Gre Heidi Klum tel').
+    Without sexual wording, only the word-bounded remainder is used.
+    """
+    remainder = _strip_allow(_STORYBOOK_ALLOW_RE, candidate)
+    compact = re.sub(r"\s+", "", remainder)
+    if sexual:
+        out = [candidate, remainder]
+        if compact and compact not in out:
+            out.append(compact)
+        return out
+    out = [remainder]
+    if compact and compact not in out:
+        out.append(compact)
+    return out
+
+
+def _alice_texts(candidate: str, *, sexual: bool) -> list[str]:
+    remainder = _strip_allow(_ALICE_ALLOW_RE, candidate)
+    compact = re.sub(r"\s+", "", remainder)
+    if sexual:
+        out = [candidate, remainder]
+        if compact and compact not in out:
+            out.append(compact)
+        return out
+    out = [remainder]
+    if compact and compact not in out:
+        out.append(compact)
+    return out
+
+
 def match_info(text: str, *, force_context: bool = False) -> tuple[str, str]:
     """(term, check) for the first hit, or ("", "") when the text is fine.
 
@@ -1330,6 +1468,11 @@ def match_info(text: str, *, force_context: bool = False) -> tuple[str, str]:
                 return term, "always"
         hit = _BLOCKED_RE.search(_masked_for_always(candidate))
         if hit:
+            # "a white rabbit for my kids' pet? no, my wife's" is a denial.
+            if hit.group(0).lower() in {"kid", "kids"} and re.search(
+                r"kids['’]?\s+pet\s*\?\s*no\b", candidate, re.I
+            ):
+                continue
             return hit.group(0), "always"
     age = _underage_age_hit(candidates)
     if age:
@@ -1375,56 +1518,64 @@ def match_info(text: str, *, force_context: bool = False) -> tuple[str, str]:
                 if hit:
                     return hit.group(0), "context"
     # Alice in a story context (Wonderland, Carroll, tea party, …),
-    # including cues that span lines. "Alice from accounting" is left alone.
-    # In sexual or RP context, bare Alice/Alicia/Алиса/アリス is blocked
-    # the same way Matilda is. A stated 18+ never exempts that.
-    alice_blob = "\n".join([text or "", *candidates])
-    alice_remainder = _strip_allow(_ALICE_ALLOW_RE, alice_blob)
-    if (
-        (
-            _ALICE_NAME_RE.search(alice_remainder)
-            or _ALICE_CUED_NAMES_RE.search(alice_remainder)
-            or _fuzzy_alice_name(alice_remainder)
+    # including cues that span lines. Allow-lists are not applied when
+    # the message has sexual or RP wording; the original text is checked.
+    sexual = _sexual_or_rp(candidates, force_context)
+    alice_sources = list(candidates) + [text or ""]
+    alice_checked: list[str] = []
+    for candidate in alice_sources:
+        alice_checked.extend(_alice_texts(candidate, sexual=sexual))
+    def _alice_name_hit(blob: str) -> bool:
+        return bool(
+            _search_flex(_ALICE_NAME_RE, _ALICE_NAME_FLEX_RE, blob)
+            or _search_flex(_ALICE_CUED_NAMES_RE, _ALICE_CUED_FLEX_RE, blob)
+            or _fuzzy_alice_name(blob)
         )
-        and _ALICE_CUES_RE.search(alice_remainder)
-    ):
+    def _alice_cue_hit(blob: str) -> bool:
+        return bool(
+            _search_flex(_ALICE_CUES_RE, _ALICE_CUES_FLEX_RE, blob)
+            or _search_flex(_WONDERLAND_RE, _WONDERLAND_FLEX_RE, blob)
+        )
+    if any(_alice_name_hit(blob) and _alice_cue_hit(blob) for blob in alice_checked):
         return "alice-story", "always"
-    if force_context or _context_applies(candidates) or _has_media_rp(candidates):
+    if sexual:
         # Fuzzy matching is cue-gated only (above). Bare sexual context
-        # uses the exact name list, after allow-listed adult uses are cut out.
-        if _ALICE_BARE_RE.search(alice_remainder) or any(
-            _ALICE_BARE_RE.search(_strip_allow(_ALICE_ALLOW_RE, c)) for c in candidates
+        # uses the exact name list on the original text, never an allow-list.
+        if any(
+            _search_flex(_ALICE_BARE_RE, _ALICE_BARE_FLEX_RE, blob)
+            for blob in alice_checked
         ):
             return "alice", "context"
-        if _WENDY_BARE_RE.search(alice_blob) or any(_WENDY_BARE_RE.search(c) for c in candidates):
+        if any(_WENDY_SEXUAL_RE.search(c) for c in alice_sources):
             return "wendy", "context"
     for candidate in list(candidates) + [text or ""]:
-        hit = _HOGWARTS_FIRST_YEAR_RE.search(candidate)
+        hit = _HOGWARTS_FIRST_YEAR_RE.search(candidate) or _AGE_TAGGED_CANON_RE.search(candidate)
         if hit:
             return hit.group(0), "always"
-    # Named fictional minors are blocked by default. Cut reviewed benign
-    # phrases out, then run the storybook check on what remains. Never skip
-    # the check because an allow-listed phrase is also present.
+    # Named fictional minors are blocked by default. Allow-list phrases
+    # are word-bounded and applied only when there is no sexual or RP
+    # wording. Remainder is also checked with spaces removed.
     story_blob = list(candidates) + [text or ""]
     for candidate in story_blob:
-        remainder = _strip_allow(_STORYBOOK_ALLOW_RE, candidate)
-        hit = _STORYBOOK_RE.search(remainder)
-        if hit:
-            return hit.group(0), "always"
-    # Short Red Riding Hood forms, and Wonderland / Looking-Glass /
-    # Carroll cues, plus sexual or RP wording — even without a name.
-    if force_context or _context_applies(candidates) or _has_media_rp(candidates):
-        for candidate in story_blob:
-            remainder = _strip_allow(_STORYBOOK_ALLOW_RE, candidate)
-            hit = _STORYBOOK_CONTEXT_RE.search(remainder)
+        for snippet in _story_texts(candidate, sexual=sexual):
+            hit = _search_flex(_STORYBOOK_RE, _STORYBOOK_FLEX_RE, snippet)
             if hit:
-                return hit.group(0), "context"
-        # Looking-Glass / Carroll / Wonderland cues plus sexual or RP,
-        # even without a name. Do not reuse the full Alice-cue list
-        # (it includes disney / kingdom hearts).
-        wonder_blob = "\n".join(_strip_allow(_ALICE_ALLOW_RE, c) for c in [text or "", *candidates])
-        if _WONDERLAND_RE.search(wonder_blob):
-            return "wonderland", "context"
+                return hit.group(0), "always"
+    # Short Red Riding Hood forms, and Wonderland / Looking-Glass /
+    # Carroll / Alice cues, plus sexual or RP wording — even without a name.
+    if sexual:
+        for candidate in story_blob:
+            for snippet in _story_texts(candidate, sexual=True):
+                hit = _search_flex(_STORYBOOK_CONTEXT_RE, _STORYBOOK_CONTEXT_FLEX_RE, snippet)
+                if hit:
+                    return hit.group(0), "context"
+        for candidate in alice_sources:
+            for snippet in _alice_texts(candidate, sexual=True):
+                if _search_flex(_WONDERLAND_RE, _WONDERLAND_FLEX_RE, snippet):
+                    # Standalone Wonderland / Carroll / listed Alice cues
+                    # plus sexual or RP. Do not use the full Alice-cue list
+                    # (disney / kingdom hearts are too broad without a name).
+                    return "wonderland", "context"
     extra = _extra_re()
     if extra is not None:
         for candidate in candidates:

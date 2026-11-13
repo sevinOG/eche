@@ -20,6 +20,12 @@ import urllib.request
 CLASSIFIER_MODEL = "meta-llama/llama-guard-4-12b"
 CLASSIFIER_TIMEOUT = 15
 CLASSIFIER_DEADLINE = 20
+CLASSIFIER_PROMPT = (
+    "Cover every safety-footer category. Also cover named fictional "
+    "child characters, including storybook, fairytale, and canon minors "
+    "identified by name or an age tag. A named fictional child is a "
+    "child or minor under these rules."
+)
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 HISTORY_WINDOW = 8
@@ -370,6 +376,8 @@ def _prepare_messages(turns: list, *, images: list | None = None) -> tuple[list,
         if attach and content is None and role == "user":
             return [], "classifier-image-unsupported"
         prepared.append({"role": role, "content": content})
+    if prepared:
+        prepared = [{"role": "system", "content": CLASSIFIER_PROMPT}, *prepared]
     return prepared, ""
 
 
