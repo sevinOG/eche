@@ -111,6 +111,45 @@ def _call_func_name(node: ast.AST) -> str:
     return ""
 
 
+
+def discover_asset_http_callers(root: Path = SOURCE) -> set[str]:
+    """Top-level functions and methods that call http_json or run_asset."""
+    names: set[str] = set()
+    skip = {"tests", "__pycache__"}
+
+    def _calls_target(node: ast.AST) -> bool:
+        for child in ast.walk(node):
+            if not isinstance(child, ast.Call):
+                continue
+            func = child.func
+            ident = None
+            if isinstance(func, ast.Name):
+                ident = func.id
+            elif isinstance(func, ast.Attribute):
+                ident = func.attr
+            if ident in {"http_json", "run_asset"}:
+                return True
+        return False
+
+    for path in root.rglob("*.py"):
+        if skip.intersection(path.parts) or path.name.endswith(".pyi"):
+            continue
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        except (OSError, SyntaxError):
+            continue
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if _calls_target(node):
+                    names.add(node.name)
+            elif isinstance(node, ast.ClassDef):
+                for item in node.body:
+                    if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and _calls_target(item):
+                        names.add(item.name)
+                        names.add(f"{node.name}.{item.name}")
+    return names
+
+
 def discover_background_tasks(root: Path = SOURCE) -> set[str]:
     """AST-discover create_task targets and @tasks.loop functions."""
     names: set[str] = set()
@@ -362,6 +401,9 @@ REVIEWED_ENTRYPOINTS = {
     "check_for_updates": "settings check-for-updates",
     "run_asset": "official Imagine generation",
     "prepare_generation": "asset choke-point prompt check",
+    "make_asset": "asset tool entry that calls run_asset",
+    "asset": " ?asset cog command that calls run_asset",
+    "Asset.asset": "?asset cog command that calls run_asset",
 }
 
 
@@ -1254,8 +1296,8 @@ class AuditCompletenessTests(AuditLogTests):
         discovered = discover_background_tasks()
         if extra_discovered:
             discovered = set(discovered) | set(extra_discovered)
-        # Asset choke-point entry points are not task loops; still require probes.
-        discovered = set(discovered) | {"run_asset", "prepare_generation"}
+        # Asset HTTP entry points are discovered from callers of http_json / run_asset.
+        discovered = set(discovered) | discover_asset_http_callers() | {"prepare_generation"}
         slots = discover_qt_slots()
         if extra_slots:
             slots = set(slots) | set(extra_slots)
@@ -1975,23 +2017,20 @@ class AuditCompletenessTests(AuditLogTests):
             before = len(_records(self.audit))
             import base64
             from core.imagine import AssetPlan, run_asset
-            from core.asset_safety import PreparedPrompt
             jpeg = b"\xff\xd8\xff" + b"\x00" * 32
-            prepared = PreparedPrompt(
-                user_prompt="a red paper boat",
-                sent_prompt="adult rule\n\na red paper boat\n\nfooter",
-                negative_prompt="child",
-                footer_hash="deadbeef",
-            )
             payload = {"data": [{"url": "b64:" + base64.b64encode(jpeg).decode("ascii")}]}
             with mock.patch("core.asset_safety.asset_enabled", return_value=True), \
+                 mock.patch("core.blocklist.is_blocked", return_value=False), \
+                 mock.patch("core.guardrails.asks_to_bypass_filter", return_value=False), \
+                 mock.patch("core.asset_filter.media_prompt_blocked", return_value=False), \
+                 mock.patch("core.classifier.classify_async", new=mock.AsyncMock(return_value="")), \
                  mock.patch("core.imagine.http_json", return_value=(200, payload)), \
-                 mock.patch("core.asset_safety.check_generated_media", new=mock.AsyncMock()):
+                 mock.patch("core.asset_safety.check_generated_media", new=mock.AsyncMock()), \
+                 mock.patch("core.asset_limits.record_use"):
                 try:
                     await run_asset(
                         AssetPlan(mode="image", prompt="a red paper boat"),
                         "sk-test-key",
-                        prepared=prepared,
                         user_id=11,
                         guild_id=22,
                         channel_id=33,

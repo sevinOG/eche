@@ -7,7 +7,8 @@ import io
 import discord
 from discord.ext import commands
 
-from core.asset_message import source_from_message
+from core.asset_review import require_owner_review
+from core.asset_safety import KILL_SWITCH_OFF, require_enabled
 from core.debuglog import dprint
 from core.imagine import AssetFile, ImagineError, api_key, plan_asset, refuse_speaker, run_asset
 from core.tools_asset import asset_text
@@ -19,7 +20,7 @@ class Asset(commands.Cog):
 
     @commands.command(name="asset")
     async def asset(self, ctx, *, prompt: str = ""):
-        """Make a picture or a video. Reply to a file to change that file."""
+        """Make a picture or a video."""
         is_owner = False
         try:
             from core.admin_tools import author_is_owner
@@ -39,9 +40,10 @@ class Asset(commands.Cog):
             await ctx.reply(blocked, mention_author=False)
             return
         try:
-            source = await source_from_message(ctx.message)
-            plan = plan_asset(prompt, source=source)
+            plan = plan_asset(prompt)
             result = await run_asset(plan, api_key(), **ids)
+            result = await require_owner_review(result, bot=self.bot, origin=ctx, **ids)
+            require_enabled()
         except ImagineError as exc:
             await ctx.reply(exc.text, mention_author=False)
             return
@@ -56,8 +58,12 @@ class Asset(commands.Cog):
         if len(caption) > 120:
             caption = caption[:119].rstrip() + "…"
         try:
+            require_enabled()
             file = discord.File(io.BytesIO(result.data), filename=result.filename)
             await ctx.reply(content=asset_text(caption), file=file, mention_author=False)
+        except ImagineError as exc:
+            await ctx.reply(exc.text, mention_author=False)
+            return
         except Exception as exc:
             dprint(f"[asset] send failed: {type(exc).__name__}")
             await ctx.reply("I made it, but Discord would not take the file.", mention_author=False)

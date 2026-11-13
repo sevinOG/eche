@@ -476,36 +476,100 @@ def module_source_path(module: str, source_root: str | Path | None = None) -> Pa
     return None
 
 
-# Official Imagine choke-point modules. Only this backend may live here.
-# Every other generator stays banned, including leftover or user-dropped files.
+# Official Imagine choke-point modules. Exact dotted names only — a file
+# named imagine.py under another package is not official and is scanned.
+# Hashes are pinned in official_imagine.sha256, shipped with the build.
 OFFICIAL_IMAGINE_MODULES = frozenset({
     "cogs.asset",
     "core.imagine",
     "core.tools_asset",
     "core.asset_message",
     "core.asset_safety",
+    "core.asset_filter",
+    "core.asset_backend",
+    "core.asset_review",
+    "core.asset_limits",
 })
+
+_OFFICIAL_MANIFEST_NAME = "official_imagine.sha256"
+_OFFICIAL_MODULE_FILES = {
+    "cogs.asset": "cogs/asset.py",
+    "core.imagine": "core/imagine.py",
+    "core.tools_asset": "core/tools_asset.py",
+    "core.asset_message": "core/asset_message.py",
+    "core.asset_safety": "core/asset_safety.py",
+    "core.asset_filter": "core/asset_filter.py",
+    "core.asset_backend": "core/asset_backend.py",
+    "core.asset_review": "core/asset_review.py",
+    "core.asset_limits": "core/asset_limits.py",
+}
 
 
 def is_official_imagine_module(module: str) -> bool:
     from core.denied_modules import normalize_module
 
-    text = normalize_module(module)
-    if text in OFFICIAL_IMAGINE_MODULES:
-        return True
-    leaf = text.rsplit(".", 1)[-1] if text else ""
-    return any(item.endswith("." + leaf) or item == leaf for item in OFFICIAL_IMAGINE_MODULES)
+    return normalize_module(module) in OFFICIAL_IMAGINE_MODULES
+
+
+def official_imagine_manifest_path(source_root: str | Path | None = None) -> Path:
+    root = Path(source_root) if source_root else Path(__file__).resolve().parent.parent
+    return root / "core" / _OFFICIAL_MANIFEST_NAME
+
+
+def load_official_imagine_hashes(source_root: str | Path | None = None) -> dict[str, str]:
+    path = official_imagine_manifest_path(source_root)
+    out: dict[str, str] = {}
+    try:
+        text = path.read_text(encoding="utf-8")
+    except Exception:
+        return out
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split()
+        if len(parts) >= 2:
+            digest, rel = parts[0], parts[1]
+            out[rel.replace("\\", "/")] = digest.lower()
+        elif len(parts) == 1:
+            continue
+    return out
+
+
+def file_sha256(path: Path) -> str:
+    import hashlib
+
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def official_hash_ok(module: str, path: Path | None, source_root: str | Path | None = None) -> bool:
+    from core.denied_modules import normalize_module
+
+    name = normalize_module(module)
+    rel = _OFFICIAL_MODULE_FILES.get(name)
+    if not rel:
+        return False
+    pinned = load_official_imagine_hashes(source_root).get(rel)
+    if not pinned or path is None or not path.is_file():
+        return False
+    return file_sha256(path) == pinned
 
 
 def module_is_blocked(module: str, source_root: str | Path | None = None) -> str:
     """Why this module must not load, or '' if it is fine."""
-    from core.denied_modules import is_denied_module
+    from core.denied_modules import is_denied_module, normalize_module
 
     if is_denied_module(module):
         return "denied media module"
-    if is_official_imagine_module(module):
-        return ""
     path = module_source_path(module, source_root)
+    if is_official_imagine_module(module):
+        if official_hash_ok(module, path, source_root):
+            return ""
+        return "official hash mismatch"
     if path is None:
         return ""
     hit = file_has_generation(path)

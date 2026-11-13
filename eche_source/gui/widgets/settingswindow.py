@@ -561,7 +561,7 @@ class SettingsWindow(QWidget):
         self.asset_owner_only_box = QCheckBox("Owner only")
         self.asset_owner_only_box.setObjectName("asset_owner_only")
         self.asset_owner_only_box.setToolTip(
-            "Once ?asset is on, only the owner may use it."
+            "On by default. Uncheck only if every member of the server should be able to use ?asset once it is enabled."
         )
         asset_body.addWidget(self.asset_enabled_box)
         asset_body.addWidget(self.asset_owner_only_box)
@@ -1599,7 +1599,7 @@ class SettingsWindow(QWidget):
                 prompt_choice(self.data.get("asset_enabled"), default=False)
             )
             self.asset_owner_only_box.setChecked(
-                prompt_choice(self.data.get("asset_owner_only"), default=False)
+                prompt_choice(self.data.get("asset_owner_only"), default=True)
             )
         if hasattr(self, "_prompt_tool_boxes"):
             from core.tools import prompt_choice

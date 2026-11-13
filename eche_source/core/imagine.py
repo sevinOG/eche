@@ -140,14 +140,16 @@ def _flag(stored) -> bool:
 
 
 def asset_audience() -> str:
-    """all, unless Owner only is on in config. No environment side channel."""
-    owner_only = False
+    """owner, unless Owner only is explicitly turned off in config."""
     try:
-        from core.secrets import load_all
-        owner_only = _flag(load_all().get("asset_owner_only"))
+        from core.secrets import public_value
+
+        raw = public_value("asset_owner_only")
     except Exception:
-        owner_only = False
-    return "owner" if owner_only else "all"
+        return "owner"
+    if raw is None or str(raw).strip() == "":
+        return "owner"
+    return "owner" if _flag(raw) else "all"
 
 
 def speaker_allowed(is_owner: bool) -> bool:
@@ -453,15 +455,19 @@ def plan_asset(text: str, *, kind: str = "", source: SourceMedia | None = None) 
         lead, rest = _leading_kind(raw)
         if lead == explicit:
             prompt = _words(rest)
-    if not prompt and source is None:
+    if source is not None:
+        raise ImagineError(
+            "Editing, image-to-video and video-edit are not available. "
+            "Describe a new picture or video instead."
+        )
+    if not prompt:
         raise ImagineError("Say what to make. `?asset a red paper boat`")
-    if not prompt and source is not None:
-        raise ImagineError("Say what to change.")
     if len(prompt) > MAX_PROMPT:
         prompt = prompt[:MAX_PROMPT].rstrip()
-    if source is None and _needs_source(raw):
+    if _needs_source(raw):
         raise ImagineError(
-            "Attach or reply to the picture that prompt uses (Image 1 / character lock), then ask again."
+            "Editing, image-to-video and video-edit are not available. "
+            "Describe a new picture or video instead."
         )
     visual = asked in ("image", "video") or _has_word(prompt, _VIDEO_WORDS + _IMAGE_WORDS)
     if source is None and not visual and _has_word(prompt, _AUDIO_WORDS):
@@ -469,31 +475,19 @@ def plan_asset(text: str, *, kind: str = "", source: SourceMedia | None = None) 
             "Imagine makes a picture or a video. Say which, and what it should show."
         )
     if not asked:
-        asked = "video" if source is not None and source.kind == "video" else "image"
+        asked = "image"
     if asked == "video":
-        if source is not None and source.kind == "video":
-            mode = "video_edit"
-        elif source is not None and source.kind == "image":
-            mode = "image_video"
-        else:
-            mode = "video"
+        mode = "video"
         aspects = _VIDEO_ASPECTS
     else:
-        if source is not None and source.kind == "video":
-            raise ImagineError(
-                "That file is a video. Ask for a video, or attach a picture."
-            )
-        if source is not None and source.kind == "image":
-            mode = "image_edit"
-        else:
-            mode = "image"
+        mode = "image"
         aspects = _IMAGE_ASPECTS
     return AssetPlan(
         mode=mode,
         prompt=prompt,
-        seconds=_seconds(raw) if mode in ("video", "image_video") else DEFAULT_SECONDS,
+        seconds=_seconds(raw) if mode == "video" else DEFAULT_SECONDS,
         aspect=_aspect(raw, aspects),
-        source=source if mode != "image" else None,
+        source=None,
     )
 
 
@@ -502,55 +496,18 @@ def _data_uri(source: SourceMedia) -> str:
     return f"data:{source.mime};base64,{encoded}"
 
 
-def request_for(plan: AssetPlan, prepared=None) -> tuple[str, dict]:
+def request_for(plan: AssetPlan, prepared) -> tuple[str, dict]:
     """POST path and JSON body. No network.
 
-    `prepared` is the choke-point result: the sent prompt already has the
-    adult rewrite and the safety footer last. The matcher must not run on
-    that sent text (the footer names blocked categories).
+    `prepared` is required: the choke-point result, with the adult rewrite
+    and the safety footer last. There is no fallback to plan.prompt, and
+    negative_prompt is not sent (it is not a documented xAI parameter).
     """
-    prompt = getattr(prepared, "sent_prompt", None) or getattr(plan, "prompt", "") or ""
-    negative = getattr(prepared, "negative_prompt", None) or ""
-    if plan.mode == "image":
-        body: dict = {"model": IMAGE_MODEL, "prompt": prompt}
-        if plan.aspect:
-            body["aspect_ratio"] = plan.aspect
-        if negative:
-            body["negative_prompt"] = negative
-        return "/images/generations", body
-    if plan.mode == "image_edit":
-        body = {
-            "model": IMAGE_MODEL,
-            "prompt": prompt,
-            "image": {"url": _data_uri(plan.source), "type": "image_url"},
-        }
-        if plan.aspect:
-            body["aspect_ratio"] = plan.aspect
-        if negative:
-            body["negative_prompt"] = negative
-        return "/images/edits", body
-    if plan.mode == "video_edit":
-        body = {
-            "model": VIDEO_EDIT_MODEL,
-            "prompt": prompt,
-            "video": {"url": _data_uri(plan.source)},
-        }
-        if negative:
-            body["negative_prompt"] = negative
-        return "/videos/edits", body
-    body = {
-        "model": VIDEO_MODEL,
-        "prompt": prompt,
-        "duration": plan.seconds,
-        "resolution": "480p",
-    }
-    if plan.aspect:
-        body["aspect_ratio"] = plan.aspect
-    if plan.mode == "image_video":
-        body["image"] = {"url": _data_uri(plan.source)}
-    if negative:
-        body["negative_prompt"] = negative
-    return "/videos/generations", body
+    if prepared is None or not getattr(prepared, "sent_prompt", None):
+        raise ImagineError("Safety rules could not be applied, so nothing was generated.")
+    from core.asset_backend import get_backend
+
+    return get_backend().build_request(plan, prepared)
 
 
 _FILTERED = "That one was filtered."
@@ -672,15 +629,7 @@ def video_poll(payload: dict) -> tuple[str, str]:
     return "failed", "Imagine did not finish the video."
 
 
-_last_http_ids: dict[str, str] = {}
-
-
-def last_http_ids() -> dict[str, str]:
-    return dict(_last_http_ids)
-
-
-def _store_http_ids(headers=None, payload=None, status: int = 0) -> None:
-    del status
+def _ids_from_http(headers=None, payload=None) -> dict[str, str]:
     req_id = ""
     resp_id = ""
     if headers is not None:
@@ -693,14 +642,33 @@ def _store_http_ids(headers=None, payload=None, status: int = 0) -> None:
     if isinstance(payload, dict):
         req_id = req_id or str(payload.get("request_id") or "").strip()
         resp_id = resp_id or str(payload.get("id") or payload.get("response_id") or "").strip()
-    _last_http_ids.clear()
+    out: dict[str, str] = {}
     if req_id:
-        _last_http_ids["request_id"] = req_id
+        out["request_id"] = req_id
     if resp_id:
-        _last_http_ids["response_id"] = resp_id
+        out["response_id"] = resp_id
+    return out
 
 
-def http_json(method: str, url: str, key: str, body: dict | None = None, timeout: int = 120) -> tuple[int, dict]:
+class HttpJsonResult(tuple):
+    """status, payload — plus per-call request/response ids (L1)."""
+
+    def __new__(cls, status, payload, ids=None):
+        obj = super().__new__(cls, (status, payload))
+        obj.request_id = str((ids or {}).get("request_id") or "")
+        obj.response_id = str((ids or {}).get("response_id") or "")
+        return obj
+
+    def ids(self) -> dict[str, str]:
+        out: dict[str, str] = {}
+        if self.request_id:
+            out["request_id"] = self.request_id
+        if self.response_id:
+            out["response_id"] = self.response_id
+        return out
+
+
+def http_json(method: str, url: str, key: str, body: dict | None = None, timeout: int = 120) -> HttpJsonResult:
     # The choke point already checked the user prompt. The body prompt
     # includes the safety footer and must not be re-run through the matcher.
     data = None
@@ -733,9 +701,8 @@ def http_json(method: str, url: str, key: str, body: dict | None = None, timeout
         raise ImagineError(_error_text(payload if isinstance(payload, dict) else {}, status))
     if not isinstance(payload, dict):
         raise ImagineError("Imagine returned an unexpected response.")
-    _store_http_ids(resp_headers, payload, status)
     check_payload(payload)
-    return status, payload
+    return HttpJsonResult(status, payload, _ids_from_http(resp_headers, payload))
 
 
 def _host_name(url: str) -> str:
@@ -833,24 +800,40 @@ def http_bytes(url: str, limit: int = MAX_BYTES, timeout: int = 120) -> tuple[by
 
 
 def refuse_speaker(is_owner: bool, *, user_id=None, guild_id=None, channel_id=None) -> str | None:
-    """Audit and return a refusal if the kill switch or owner-only gate applies."""
+    """Audit and return a refusal if a gate applies (kill switch, owner-only, DMs, lockout, caps)."""
+    from core.asset_limits import (
+        DM_REFUSAL,
+        LOCKOUT_REFUSAL,
+        in_direct_message,
+        is_locked,
+        rate_refusal,
+    )
     from core.asset_safety import KILL_SWITCH_OFF, _audit, asset_enabled
 
     ids = dict(user_id=user_id, guild_id=guild_id, channel_id=channel_id)
-    if speaker_allowed(is_owner):
-        return None
     if not asset_enabled():
         _audit("refusal", category="kill-switch", **ids)
         return KILL_SWITCH_OFF
-    _audit("refusal", category="owner-only", **ids)
-    return refusal(is_owner)
+    if in_direct_message(guild_id):
+        _audit("refusal", category="dm-disabled", **ids)
+        return DM_REFUSAL
+    if not speaker_allowed(is_owner):
+        _audit("refusal", category="owner-only", **ids)
+        return refusal(is_owner)
+    if is_locked(user_id):
+        _audit("refusal", category="lockout", **ids)
+        return LOCKOUT_REFUSAL
+    capped = rate_refusal(user_id, guild_id)
+    if capped:
+        _audit("refusal", category="rate-limit", **ids)
+        return capped
+    return None
 
 
 async def run_asset(
     plan: AssetPlan,
     key: str,
     *,
-    prepared=None,
     user_id=None,
     guild_id=None,
     channel_id=None,
@@ -859,14 +842,18 @@ async def run_asset(
 
     Always returns a classified file, or raises. A blocked prompt is not
     retried. A blocked or unchecked file is not returned, and a download
-    URL is never handed to the caller in place of bytes.
+    URL is never handed to the caller in place of bytes. Callers must still
+    wait for owner review before posting.
     """
+    from core.asset_backend import get_backend
+    from core.asset_limits import record_use
     from core.asset_safety import (
         KILL_SWITCH_OFF,
         MISSING_KEY,
         asset_enabled,
         check_generated_media,
         prepare_generation,
+        require_enabled,
         _audit,
     )
 
@@ -877,33 +864,44 @@ async def run_asset(
     if not key:
         _audit("refusal", category="missing-key", **ids)
         raise ImagineError(MISSING_KEY)
-    if prepared is None:
-        prepared = await prepare_generation(
-            getattr(plan, "prompt", "") or "",
-            user_id=user_id,
-            guild_id=guild_id,
-            channel_id=channel_id,
-        )
+    prepared = await prepare_generation(
+        getattr(plan, "prompt", "") or "",
+        user_id=user_id,
+        guild_id=guild_id,
+        channel_id=channel_id,
+    )
+    backend = get_backend()
     path, body = request_for(plan, prepared)
-    timeout = 180 if plan.mode.startswith("video") or plan.mode == "image_video" else 120
+    timeout = 180 if plan.mode == "video" else 120
+    job_ids: dict[str, str] = {}
 
     def _post():
-        return http_json("POST", API + path, key, body, timeout=timeout)
+        return http_json("POST", backend.api_base() + path, key, body, timeout=timeout)
 
     try:
-        _status, payload = await asyncio.to_thread(_post)
-        if plan.mode in ("image", "image_edit"):
-            url = image_url(payload)
+        posted = await asyncio.to_thread(_post)
+        _status, payload = posted
+        job_ids = posted.ids() if hasattr(posted, "ids") else {}
+        require_enabled()
+        if plan.mode == "image":
+            url = backend.image_url(payload)
         else:
-            request_id = video_start_id(payload)
+            request_id = backend.video_start_id(payload)
             deadline = asyncio.get_running_loop().time() + VIDEO_WAIT_SECONDS
             url = ""
             while True:
-                def _poll(rid=request_id):
-                    return http_json("GET", f"{API}/videos/{rid}", key, None, timeout=60)
+                require_enabled()
 
-                _status, polled = await asyncio.to_thread(_poll)
-                state, found = video_poll(polled)
+                def _poll(rid=request_id):
+                    return http_json("GET", f"{backend.api_base()}/videos/{rid}", key, None, timeout=60)
+
+                polled_result = await asyncio.to_thread(_poll)
+                _status, polled = polled_result
+                if hasattr(polled_result, "ids"):
+                    extra = polled_result.ids()
+                    if extra:
+                        job_ids = extra
+                state, found = backend.video_poll(polled)
                 if state == "done":
                     url = found
                     break
@@ -912,6 +910,7 @@ async def run_asset(
                 if asyncio.get_running_loop().time() >= deadline:
                     raise ImagineError("That video took too long. Try a shorter one.")
                 await asyncio.sleep(_POLL_SECONDS)
+        require_enabled()
         data, mime = await asyncio.to_thread(http_bytes, url)
     except ImagineError as exc:
         _audit(
@@ -944,7 +943,7 @@ async def run_asset(
     name = filename_for(mime)
     if name == "asset.bin":
         name = "asset.mp4" if "video" in plan.mode else "asset.jpg"
-    http_ids = last_http_ids()
+    require_enabled()
     await check_generated_media(
         data,
         mime,
@@ -952,14 +951,16 @@ async def run_asset(
         user_id=user_id,
         guild_id=guild_id,
         channel_id=channel_id,
-        request_id=http_ids.get("request_id", ""),
-        response_id=http_ids.get("response_id", ""),
+        request_id=job_ids.get("request_id", ""),
+        response_id=job_ids.get("response_id", ""),
     )
+    require_enabled()
+    record_use(user_id, guild_id)
     _audit(
         "success",
         footer_hash=prepared.footer_hash,
-        request_id=http_ids.get("request_id", ""),
-        response_id=http_ids.get("response_id", ""),
+        request_id=job_ids.get("request_id", ""),
+        response_id=job_ids.get("response_id", ""),
         **ids,
     )
     return AssetFile(data=data, filename=name, mime=mime, mode=plan.mode)

@@ -63,6 +63,10 @@ _OFFICIAL_IMAGINE = {
     ROOT / "core" / "asset_safety.py",
     ROOT / "core" / "tools_asset.py",
     ROOT / "core" / "asset_message.py",
+    ROOT / "core" / "asset_filter.py",
+    ROOT / "core" / "asset_backend.py",
+    ROOT / "core" / "asset_review.py",
+    ROOT / "core" / "asset_limits.py",
     ROOT / "cogs" / "asset.py",
 }
 
@@ -136,6 +140,10 @@ class NoMediaGenerationTests(unittest.TestCase):
             "core.tools_asset",
             "core.asset_message",
             "core.asset_safety",
+            "core.asset_filter",
+            "core.asset_backend",
+            "core.asset_review",
+            "core.asset_limits",
             "cogs.asset",
         ):
             self.assertFalse(_import_fails(name), f"{name} must be importable on this branch")
@@ -492,11 +500,15 @@ class NoMediaGenerationTests(unittest.TestCase):
         from core.media_scan import is_official_imagine_module, module_is_blocked
 
         for name in (
-            "cogs.asset",
             "core.imagine",
             "core.tools_asset",
             "core.asset_message",
             "core.asset_safety",
+            "core.asset_filter",
+            "core.asset_backend",
+            "core.asset_review",
+            "core.asset_limits",
+            "cogs.asset",
         ):
             self.assertTrue(is_official_imagine_module(name), name)
             self.assertEqual(module_is_blocked(name, source_root=ROOT), "")

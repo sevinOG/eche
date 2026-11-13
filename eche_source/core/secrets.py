@@ -16,6 +16,8 @@ import sys
 from typing import Any
 
 # Keys that must never sit in plaintext settings.json
+CURRENT_XAI_KEY_EPOCH = "2026-11-hardened-asset"
+
 SECRET_KEYS = (
     "discord_token",
     "inf_api_key",       # GROQ_API_KEY
@@ -74,9 +76,11 @@ PUBLIC_KEYS = (
     "blocked_words",                # extra hard-blocked words, one per line or comma (core/blocklist.py)
     "memory_mask_slurs",            # "0" stops masking slurs in memory pins. Blank stays on.
     "asset_enabled",                # "1" turns ?asset on. Blank or missing stays OFF.
-    "asset_owner_only",             # "1" limits ?asset to the owner once it is enabled.
+    "asset_owner_only",             # blank or missing stays ON (owner only). "0" opens it to the guild.
     "tool_asset",                   # "0" leaves the asset tool out of the prompt. Blank stays on.
     "child_check_model",            # second-check instruction model; blank uses the default
+    "age_vision_model",             # under-21 appearance check; blank uses the default
+    "xai_key_epoch",                # must match CURRENT_XAI_KEY_EPOCH or the stored xAI key is ignored
 )
 
 # Map settings key -> environment variable used by the bot
@@ -390,7 +394,8 @@ def _migrate_plaintext_settings(root: str) -> None:
     for key in SECRET_KEYS:
         plain = str(data.get(key) or "").strip()
         if plain:
-            if not secrets.get(key):
+            # Pre-build / legacy xAI keys in settings.json must not come back.
+            if key != "xai_api_key" and not secrets.get(key):
                 secrets[key] = plain
             found = True
             data.pop(key, None)
@@ -421,6 +426,9 @@ def load_all(root: str | None = None) -> dict[str, str]:
     out = {**public, **secrets}
     for key in (*SECRET_KEYS, *PUBLIC_KEYS):
         out.setdefault(key, "")
+    if (out.get("xai_api_key") or "").strip():
+        if str(out.get("xai_key_epoch") or "").strip() != CURRENT_XAI_KEY_EPOCH:
+            out["xai_api_key"] = ""
 
     stored = (out.get("project_path") or "").strip()
     try:
@@ -540,15 +548,39 @@ def save_all(data: dict[str, Any], root: str | None = None) -> None:
     secrets = {k: str(data.get(k) or "").strip() for k in SECRET_KEYS}
 
     existing = _load_encrypted_secrets(root)
+    existing_public = _load_public(root)
+    entered_xai = bool(secrets.get("xai_api_key"))
     for key in SECRET_KEYS:
         if not secrets.get(key) and existing.get(key):
+            if key == "xai_api_key":
+                epoch = str(public.get("xai_key_epoch") or existing_public.get("xai_key_epoch") or "").strip()
+                if epoch != CURRENT_XAI_KEY_EPOCH:
+                    continue
             secrets[key] = existing[key]
+    if entered_xai:
+        public["xai_key_epoch"] = CURRENT_XAI_KEY_EPOCH
+        secrets["xai_api_key"] = str(data.get("xai_api_key") or "").strip()
+
+    old_enabled = str(existing_public.get("asset_enabled") or "")
+    old_owner = str(existing_public.get("asset_owner_only") or "")
+    new_enabled = str(public.get("asset_enabled") or "")
+    new_owner = str(public.get("asset_owner_only") or "")
+    key_set = bool((secrets.get("xai_api_key") or "").strip())
 
     _save_public(root, public)
     _save_encrypted_secrets(root, secrets)
     try:
-        from core.audit import safe_activity
+        from core.audit import record, safe_activity
         safe_activity("settings-save", outcome="success")
+        record(
+            "settings-save",
+            outcome="success",
+            asset_enabled_old=old_enabled,
+            asset_enabled_new=new_enabled,
+            asset_owner_only_old=old_owner,
+            asset_owner_only_new=new_owner,
+            xai_key_set=key_set,
+        )
     except Exception:
         pass
 

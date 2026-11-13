@@ -9,7 +9,8 @@ import re
 
 import discord
 
-from core.asset_message import source_from_message
+from core.asset_review import require_owner_review
+from core.asset_safety import require_enabled
 from core.debuglog import dprint
 from core.imagine import (
     AssetFile,
@@ -26,8 +27,7 @@ _DESCRIPTION = (
     "Make a picture or a video with Grok Imagine when they ask for one. "
     "prompt is their wording, copied through — do not soften, sanitize, or rewrite for filters. "
     "kind is image or video when they named one. Leave kind empty to decide from the prompt. "
-    "When they name Image 1 / a character lock / this picture, they must attach or reply to that file. "
-    "A thread of those files is the thread tool."
+    "Editing an attached or replied-to file is not available. A thread of those files is the thread tool."
 )
 
 
@@ -98,11 +98,14 @@ async def make_asset(ctx, arguments: dict) -> ToolResult:
         kind = ""
     ids = _ids(message)
     try:
-        source = await source_from_message(ctx.message)
-        plan = plan_asset(prompt, kind=kind, source=source)
+        plan = plan_asset(prompt, kind=kind)
         result = await run_asset(plan, api_key(), **ids)
         if not isinstance(result, AssetFile):
             raise ImagineError("I couldn't make that.")
+        result = await require_owner_review(
+            result, bot=getattr(ctx, "bot", None), origin=ctx, **ids
+        )
+        require_enabled()
     except ImagineError as exc:
         return ToolResult(text=exc.text, fence=False, detail=exc.text)
     except Exception as exc:
@@ -112,6 +115,7 @@ async def make_asset(ctx, arguments: dict) -> ToolResult:
     if len(caption) > 120:
         caption = caption[:119].rstrip() + "…"
     try:
+        require_enabled()
         await _post(ctx.message, result, caption)
     except Exception as exc:
         dprint(f"[asset] send failed: {type(exc).__name__}")
@@ -141,7 +145,7 @@ def register_asset_tool() -> None:
                 "properties": {
                     "prompt": {
                         "type": "string",
-                        "description": "What the picture or video should show, or the change to make.",
+                        "description": "What the picture or video should show.",
                     },
                     "kind": {
                         "type": "string",
