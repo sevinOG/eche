@@ -68,7 +68,7 @@ _ALWAYS = (
     r"\blad\b", r"\blass\b", r"\bbairn\b", r"\btween\b", r"juvenile",
     r"adolescent", r"youngster", r"schoolkid", r"school\s*kid",
     r"elementary\s+(?:school|student)", r"first-?year",
-    r"junior-?high", r"middle-?school(?:\s+student|\s+dance)?", r"middle\s+school",
+    r"junior[\s\-]?high", r"jr[\s\-]?high", r"middle-?school(?:\s+student|\s+dance)?", r"middle\s+school",
     r"munchkin", r"\btyke\b", r"moppet", r"half-?pint", r"imouto",
     r"randoseru", r"bo\s+peep", r"looks\s+very\s+young",
     r"flat-?chested", r"doll-?sized", r"size\s+of\s+a\s+doll", r"\bpixie\b", r"3\s*(?:ft|feet|foot)\s+tall",
@@ -83,7 +83,7 @@ _ALWAYS = (
     r"maternelle", r"uniforme\s+scolaire",
     r"\bfils\b", r"\bfille\b", r"sœur", r"soeur", r"\bfrère\b", r"\bfrere\b",
     # ES
-    r"niña", r"nina", r"niño", r"nino", r"bebé", r"bebe",
+    r"\bniña\b", r"\bnina\b", r"\bniño\b", r"\bnino\b", r"bebé", r"bebe",
     r"recién\s+nacid[oa]", r"recien\s+nacid[oa]",
     r"\bhijo\b", r"\bhija\b", r"hermana", r"hermano",
     r"guardería", r"guarderia", r"uniforme\s+escolar",
@@ -258,6 +258,47 @@ _OBJECT_LEXICON = frozenset({
     "чашка", "ложка", "тарелка", "яблоко", "кукла", "игрушка",
     "茶杯", "勺子", "杯子", "玩偶", "玩具", "人形", "おもちゃ",
     "찻잔", "숟가락", "인형", "장난감",
+    # Match, pencil, eraser, candle, crayon, twig in ES FR DE PT IT JA ZH KO RU.
+    "cerilla", "fosforo", "fósforo", "lapiz", "lápiz", "goma", "borrador",
+    "vela", "candela", "crayon", "crayón", "ramita", "ramilla",
+    "allumette", "bougie", "chandelle", "gomme", "brindille", "rameau",
+    "streichholz", "bleistift", "radiergummi", "kerze", "wachsmalstift",
+    "buntstift", "zweig",
+    "lapis", "lápis", "borracha", "graveto", "galho",
+    "fiammifero", "matita", "gomma", "pastello", "rametto", "ramoscello",
+    "マッチ", "鉛筆", "えんぴつ", "消しゴム", "ろうそく", "キャンドル",
+    "クレヨン", "小枝",
+    "火柴", "铅笔", "橡皮", "橡皮擦", "蜡烛", "蠟燭", "蜡笔", "蠟筆", "树枝", "嫩枝",
+    "성냥", "연필", "지우개", "양초", "크레용", "크레파스", "나뭇가지", "잔가지",
+    "спичка", "карандаш", "ластик", "свеча", "свечка", "мелок", "веточка",
+    "прутик", "ветка",
+})
+
+# Classes used to keep ordinary cooking, decor and pet scenes from
+# looking like personified incidents.
+_ANIMAL_LEXICON = frozenset({
+    "bunny", "rabbit", "kitten", "cat", "puppy", "dog", "mouse", "mice",
+    "rat", "hamster", "fox", "wolf", "bear", "cub", "deer", "fawn", "owl",
+    "bird", "duck", "chick", "chicken", "hen", "goose", "swan", "frog",
+    "toad", "fish", "whale", "dolphin", "seal", "otter", "squirrel",
+    "chipmunk", "hedgehog", "raccoon", "panda", "koala", "monkey", "ape",
+    "elephant", "giraffe", "lion", "tiger", "zebra", "horse", "pony",
+    "pig", "cow", "goat", "sheep", "lamb", "bee", "butterfly", "bug",
+    "insect", "spider", "ant", "worm", "snail", "turtle", "lizard",
+    "snake", "dragon", "unicorn", "phoenix",
+})
+_FOOD_LEXICON = frozenset({
+    "loaf", "bread", "cookie", "cookies", "biscuit", "cake", "pie",
+    "apple", "pear", "orange", "banana", "carrot", "potato", "onion",
+    "pepper", "pumpkin", "gingerbread", "donut", "doughnut", "pretzel",
+    "fruit", "vegetable", "berry", "berries", "meat", "soup", "sandwich",
+    "noodle", "noodles", "pasta", "rice", "cheese", "muffin", "cupcake",
+    "bagel", "waffle", "pancake", "cereal",
+    "manzana", "pomme", "apfel", "maca", "maçã", "mela", "яблоко",
+})
+_CANDLE_LEXICON = frozenset({
+    "candle", "wick", "vela", "candela", "bougie", "chandelle", "kerze",
+    "свеча", "свечка", "蜡烛", "蠟燭", "ろうそく", "キャンドル", "양초",
 })
 
 _JOB_STEMS = frozenset({
@@ -314,6 +355,8 @@ _HARM_RE = re.compile(
     r"fizzle[sd]?|fizzling|alight|"
     r"on\s+fire|set\s+(?:on\s+fire|alight)|up\s+in\s+flames|"
     r"goes\s+up\s+in\s+flames|"
+    r"catch(?:es)?\s+fire|caught\s+fire|"
+    r"burst(?:s|ing)?\s+into\s+flames|"
     # ES FR DE PT IT
     r"quema(?:r|do|da|ndo)?|incendio|incendiar(?:se)?|"
     r"br[uû]l(?:er|é|ee|és|ée|ant)?|en\s+feu|"
@@ -345,9 +388,9 @@ _ROMANCE_RE = re.compile(
     r"[eé]poux|[eé]pouse|mari(?:age|er|é)|"
     r"k[uü]ss(?:en|t|end)?|lieb(?:e|t|en|end)?|umarm(?:en|t|ung)|"
     r"geliebte[rn]?|braut|br[aä]utigam|ehemann|ehefrau|"
-    r"beij(?:o|ar|ando|a)|abra(?:c|ç)(?:ar|ando|o|a)|abraz(?:ar|ando|o|a)|apaixonad[oa]|namorad[oa]|espos[oa]|"
-    r"baci(?:o|are|ando)|innamorat[oa]|spos[oa]|abbracci(?:o|are|ando|a)|"
-    r"поцелуй|целова(?:ть|л|ла)|целу(?:ет|ют|ющ(?:ий|ая|ее|ие)?)|влюбленн(?:ый|ая)|любовь|обнимать|жених|невеста"
+    r"beij(?:o|ar|ando|a|am)|abra(?:c|ç)(?:ar|ando|o|a)|abraz(?:ar|ando|o|a)|apaixonad[oa]|namorad[oa]|espos[oa]|"
+    r"baci(?:o|are|ando|a|ano)|innamorat[oa]|spos[oa]|abbracci(?:o|are|ando|a)|"
+    r"поцелуй|целова(?:ть|л|ла)|целу(?:ет|ют|ются|ющ(?:ий|ая|ее|ие)?)|влюбленн(?:ый|ая)|любовь|обнимать|жених|невеста"
     r")\b"
     r"|キス|恋愛|抱きし|恋人|"
     r"亲吻|接吻|恋爱|拥抱|新婚|"
@@ -371,6 +414,64 @@ _NOUN_WITH_FACE_RE = re.compile(
     r"(?i)\b([^\W\d_]{3,})\s+with\s+(?:an?\s+)?(?:big|googly|cute|large|wide)\s+(?:eyes|face|eye)\b"
 )
 _LEET_ONE_AS_L = str.maketrans({"1": "l"})
+# o/e/a and common digit-for-letter substitutions, applied to mixed tokens.
+_LEET_MAP = str.maketrans({
+    "0": "o", "1": "i", "3": "e", "4": "a", "5": "s", "7": "t", "@": "a",
+})
+
+# Romance that describes a human relationship or occasion, not an object acting.
+_PEOPLE_ROMANCE_RE = re.compile(
+    r"(?i)\b(?:"
+    r"bride|groom|husband|wife|boyfriend|girlfriend|"
+    r"wedding|married|marry|marriage|dating|valentine|"
+    r"novio|novia|esposo|esposa|namorad[oa]|spos[oa]|"
+    r"[eé]poux|[eé]pouse|ehemann|ehefrau|брак|жених|невеста"
+    r")\b"
+)
+_DISTRESS_RE = re.compile(
+    r"(?i)\b(?:"
+    r"scream|screams|screaming|cry|cries|crying|sob|sobs|sobbing|"
+    r"wail|wails|wailing|weep|weeps|weeping|shriek|shrieks|shrieking|"
+    r"howl|howls|howling|beg|begs|begging|plead|pleads|pleading"
+    r")\b"
+)
+_MILD_HARM_RE = re.compile(
+    r"(?i)(?:"
+    r"\b(?:slice|slices|sliced|slicing|melt|melts|melted|melting)\b|"
+    r"catch(?:es)?\s+fire|caught\s+fire|"
+    r"burst(?:s|ing)?\s+into\s+flames"
+    r")"
+)
+
+# Common emoji → words for romance, harm, distress and staple objects.
+_EMOJI_WORDS = {
+    "💋": " kiss ", "😘": " kiss ", "💏": " kiss ", "💑": " love ",
+    "💕": " love ", "❤": " love ", "❤️": " love ", "💖": " love ",
+    "💗": " love ", "💓": " love ", "💞": " love ", "😍": " love ",
+    "🔥": " fire ", "💥": " fire ", "😢": " cry ", "😭": " cry ",
+    "😱": " scream ", "😩": " cry ",
+    "✏": " pencil ", "✏️": " pencil ", "📝": " pencil ",
+    "🖍": " crayon ", "🖍️": " crayon ",
+    "🕯": " candle ", "🕯️": " candle ",
+    "✂": " sliced ", "✂️": " sliced ",
+}
+_EMOJI_RE = re.compile("|".join(re.escape(k) for k in sorted(_EMOJI_WORDS, key=len, reverse=True)))
+
+_IRREGULAR_PLURALS = {
+    "matches": "match", "knives": "knife", "leaves": "leaf",
+    "mice": "mouse", "geese": "goose", "wolves": "wolf",
+    "calves": "calf", "lives": "life", "wives": "wife",
+    "halves": "half", "loaves": "loaf", "shelves": "shelf",
+    "berries": "berry",
+    "cerillas": "cerilla", "fosforos": "fosforo", "fósforos": "fósforo",
+    "lapices": "lapiz", "lápices": "lápiz",
+    "allumettes": "allumette", "bougies": "bougie",
+    "streichholzer": "streichholz", "streichhölzer": "streichholz",
+    "kerzen": "kerze", "bleistifte": "bleistift",
+    "fiammiferi": "fiammifero", "matite": "matita",
+    "спички": "спичка", "свечи": "свеча", "карандаши": "карандаш",
+}
+
 
 import unicodedata
 
@@ -408,6 +509,41 @@ def _dehyphen(text: str) -> str:
     return (text or "").replace("-", "")
 
 
+def _map_emoji(text: str) -> str:
+    if not text or not _EMOJI_RE.search(text):
+        return text or ""
+    return _EMOJI_RE.sub(lambda m: _EMOJI_WORDS.get(m.group(0), " "), text)
+
+
+def _flatten_screenplay(text: str) -> str:
+    """Turn dialogue/action lines and parentheticals into a flat sentence."""
+    raw = text or ""
+    raw = re.sub(r"[()\[\]]", " ", raw)
+    raw = re.sub(r"[\r\n]+", " ", raw)
+    return re.sub(r"\s+", " ", raw).strip()
+
+
+def _singular_forms(token: str) -> list[str]:
+    """Token plus a simple English singular, including irregulars."""
+    word = (token or "").lower()
+    if not word:
+        return []
+    out = [word]
+    irregular = _IRREGULAR_PLURALS.get(word)
+    if irregular:
+        out.append(irregular)
+    if word.endswith("ies") and len(word) > 4:
+        out.append(word[:-3] + "y")
+    elif word.endswith(("ches", "shes", "sses", "xes", "zes")) and len(word) > 4:
+        out.append(word[:-2])
+    elif word.endswith("ves") and len(word) > 4:
+        out.append(word[:-3] + "f")
+        out.append(word[:-3] + "fe")
+    elif word.endswith("s") and not word.endswith(("ss", "us", "is")) and len(word) > 3:
+        out.append(word[:-1])
+    return list(dict.fromkeys(out))
+
+
 def _forms(text: str) -> list[str]:
     """Raw text plus normalized, folded, reversed, de-hyphenated and collapsed forms."""
     from core.blocklist import _folded, _join_spaced_letters, _join_hyphenated, normalize
@@ -416,9 +552,18 @@ def _forms(text: str) -> list[str]:
     seen: set[str] = set()
     raw = text or ""
     seeds = [raw, _unwrap_enclosed(raw), _strip_bidi(raw)]
-    # If bidi controls were present, also inspect the reversed payload.
+    mapped = _map_emoji(raw)
+    if mapped != raw:
+        seeds.append(mapped)
+    flat = _flatten_screenplay(raw)
+    if flat and flat != raw:
+        seeds.append(flat)
+        if _map_emoji(flat) != flat:
+            seeds.append(_map_emoji(flat))
+    # Reverse only when bidi controls were present, so ordinary sentences
+    # are not inspected backwards (that invented "nina" inside "cleaning").
     stripped = _strip_bidi(raw)
-    if stripped != raw or stripped != stripped[::-1]:
+    if stripped != raw:
         seeds.append(stripped[::-1])
         seeds.append(_strip_bidi(_unwrap_enclosed(raw))[::-1])
     try:
@@ -431,6 +576,8 @@ def _forms(text: str) -> list[str]:
             seed,
             _folded(seed),
             _folded(seed.translate(_LEET_ONE_AS_L)),
+            _folded(seed.translate(_LEET_MAP)),
+            seed.translate(_LEET_MAP),
             _join_spaced_letters(seed),
             _join_spaced_letters(_folded(seed)),
             _join_hyphenated(seed),
@@ -500,9 +647,14 @@ def _object_stems(text: str) -> set[str]:
 
 def _lexicon_hits(text: str) -> set[str]:
     found: set[str] = set()
-    for token in re.findall(r"[^\W\d_]{3,}", (text or "").lower()):
-        if token in _OBJECT_LEXICON:
-            found.add(token)
+    raw = (text or "").lower()
+    tokens = re.findall(r"[^\W\d_]{3,}", raw)
+    for match in re.finditer(r"\bpairs?\s+of\s+([^\W\d_]{3,})\b", raw):
+        tokens.append(match.group(1))
+    for token in tokens:
+        for form in _singular_forms(token):
+            if form in _OBJECT_LEXICON:
+                found.add(form)
     return found
 
 
@@ -526,7 +678,38 @@ def _anthro_incident(text: str) -> bool:
     if stems or _HUMANIZER_RE.search(raw):
         # Personified object: enough on its own, or with romance/harm.
         return True
-    return bool(_ROMANCE_RE.search(raw) or _HARM_RE.search(raw))
+    romance = bool(_ROMANCE_RE.search(raw))
+    harm = bool(_HARM_RE.search(raw))
+    distress = bool(_DISTRESS_RE.search(raw))
+    animals = objects & _ANIMAL_LEXICON
+    foods_candles = objects & (_FOOD_LEXICON | _CANDLE_LEXICON)
+    other = objects - animals - foods_candles
+
+    # Food or candles + cut/melt/catch-fire only count with distress or
+    # object-directed romance, so cooking and decor scenes stay allowed.
+    if foods_candles and not other and not animals:
+        mild_only = bool(_MILD_HARM_RE.search(raw)) and not (
+            harm and _HARM_RE.search(_MILD_HARM_RE.sub(" ", raw))
+        )
+        object_romance = romance and not (
+            _PEOPLE_ROMANCE_RE.search(raw) and not re.search(
+                r"(?i)\b(?:kiss|kisses|kissing|smooch|cuddle|cuddling|"
+                r"love|loves|in\s+love|embrace|peck)\b",
+                raw,
+            )
+        )
+        if mild_only and not distress and not object_romance:
+            harm = False
+        if romance and not object_romance and not harm:
+            romance = False
+
+    # Pets cuddling is not an incident. Animal + romance needs harm too,
+    # or a humanizer (already handled above).
+    if animals and not other and not foods_candles:
+        if romance and not harm:
+            romance = False
+
+    return bool(romance or harm)
 
 
 def _masked(text: str) -> str:

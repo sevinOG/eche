@@ -801,6 +801,45 @@ class HeldOutIncidentFilterTests(unittest.TestCase):
         for text in blocked:
             self.assertTrue(media_prompt_blocked(text), text)
 
+    def test_plural_and_translated_objects_still_count(self):
+        # Category coverage for plurals, "pair of", and the 9-language
+        # object nouns. Not held-out probe wording.
+        blocked = [
+            "two pencils kiss",
+            "a pair of matches in love",
+            "los lápices se besan",
+            "les allumettes s'embrassent",
+            "ein Bleistift küsst eine Kerze",
+            "os fósforos se beijam",
+            "i fiammiferi si baciano",
+            "спички целуются",
+        ]
+        for text in blocked:
+            self.assertTrue(media_prompt_blocked(text), text)
+
+    def test_cooking_pets_and_household_scenes_pass(self):
+        allowed = [
+            "chocolate cake being sliced",
+            "a bride and groom cutting their cake",
+            "a candle melting on a windowsill",
+            "a dog and a cat cuddling on a couch",
+            "a robot vacuum cleaning a kitchen",
+        ]
+        for text in allowed:
+            self.assertFalse(media_prompt_blocked(text), text)
+        self.assertTrue(media_prompt_blocked("a cake screaming as it is sliced"))
+        self.assertTrue(media_prompt_blocked("a candle crying as it melts"))
+        self.assertTrue(media_prompt_blocked("an anthropomorphic dog in love"))
+
+    def test_junior_high_is_blocked(self):
+        self.assertTrue(media_prompt_blocked("a junior high student"))
+        self.assertTrue(media_prompt_blocked("a jr high student"))
+
+    def test_screenplay_leet_and_emoji_forms_are_read(self):
+        self.assertTrue(media_prompt_blocked("PENCIL\n(kisses the eraser)"))
+        self.assertTrue(media_prompt_blocked("p3nc1l k1ss3s 4n 3r4s3r"))
+        self.assertTrue(media_prompt_blocked("✏️ 💋"))
+
     def test_media_filter_locks_only_after_two_hits_in_an_hour(self):
         from core.asset_limits import (
             is_locked,
