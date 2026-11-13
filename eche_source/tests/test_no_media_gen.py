@@ -216,6 +216,9 @@ class NoMediaGenerationTests(unittest.TestCase):
 
         for model in (
             "google/gemini-2.5-flash-image",
+            "google/gemini-3-pro-image-preview",
+            "openai/gpt-5-image",
+            "x/z-image-turbo",
             "black-forest-labs/flux-schnell",
             "stabilityai/sdxl",
             "grok-imagine",
@@ -226,6 +229,7 @@ class NoMediaGenerationTests(unittest.TestCase):
             self.assertEqual(reject_image_model(model, "llama3"), "llama3")
         self.assertFalse(is_image_model_id("llama3"))
         self.assertFalse(is_image_model_id("qwen/qwen3.8-27b"))
+        self.assertFalse(is_image_model_id("gpt-4o"))
 
         with tempfile.TemporaryDirectory(prefix="eche-model-") as raw:
             root = Path(raw)
