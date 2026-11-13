@@ -628,15 +628,31 @@ def _child_post(messages: list) -> str:
     try:
         with urllib.request.urlopen(req, timeout=CHILD_CHECK_TIMEOUT) as resp:
             raw = resp.read()
+            http_resp = resp
     except Exception as exc:
+        try:
+            from core.audit import api as audit_api
+            audit_api("child-check", outcome="error")
+        except Exception:
+            pass
         raise RuntimeError(f"child-check request failed: {type(exc).__name__}") from exc
     finally:
         global _last_child_check_ms
         _last_child_check_ms = (time.perf_counter() - started) * 1000.0
     try:
         payload = json.loads(raw.decode("utf-8"))
+        try:
+            from core.audit import api_from_http
+            api_from_http("child-check", http_resp, payload, outcome="success")
+        except Exception:
+            pass
         return str(payload["choices"][0]["message"]["content"] or "")
     except Exception as exc:
+        try:
+            from core.audit import api_from_http
+            api_from_http("child-check", http_resp, outcome="error")
+        except Exception:
+            pass
         raise RuntimeError("child-check response unreadable") from exc
 
 
@@ -755,10 +771,32 @@ def _age_vision_post(images: list) -> str:
         headers["HTTP-Referer"] = "https://github.com/sevinOG/eche"
         headers["X-Title"] = "Eche"
     req = urllib.request.Request(url, data=body, headers=headers, method="POST")
-    with urllib.request.urlopen(req, timeout=AGE_VISION_TIMEOUT) as resp:
-        raw = resp.read()
-    payload = json.loads(raw.decode("utf-8"))
-    return str(payload["choices"][0]["message"]["content"] or "")
+    try:
+        with urllib.request.urlopen(req, timeout=AGE_VISION_TIMEOUT) as resp:
+            raw = resp.read()
+            http_resp = resp
+    except Exception as exc:
+        try:
+            from core.audit import api as audit_api
+            audit_api("age-vision", outcome="error")
+        except Exception:
+            pass
+        raise RuntimeError(f"age-vision request failed: {type(exc).__name__}") from exc
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+        try:
+            from core.audit import api_from_http
+            api_from_http("age-vision", http_resp, payload, outcome="success")
+        except Exception:
+            pass
+        return str(payload["choices"][0]["message"]["content"] or "")
+    except Exception as exc:
+        try:
+            from core.audit import api_from_http
+            api_from_http("age-vision", http_resp, outcome="error")
+        except Exception:
+            pass
+        raise RuntimeError("age-vision response unreadable") from exc
 
 
 def _age_vision_sync(images: list) -> str:
