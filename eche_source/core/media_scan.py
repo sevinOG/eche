@@ -112,6 +112,13 @@ IMAGE_MODEL_MARKERS = (
     "gptimg",
     "dal-e",
     "dale",
+    "stable-cascade",
+    "stablecascade",
+    "deepfloyd",
+    "deep-floyd",
+    "niji",
+    "mjv6",
+    "mj-v6",
 )
 
 
@@ -189,6 +196,13 @@ VIDEO_MODEL_MARKERS = (
     "dynamicrafter",
     "genmo",
     "aurora",
+    "kllng",
+    "synthesia",
+    "talkinghead",
+    "talking-head",
+    "lipsync",
+    "lip-sync",
+    "d-id",
 )
 
 # Lookalike letters that show up in evasive model ids (Cyrillic ѕora, etc.).
@@ -205,6 +219,7 @@ _MODEL_CONFUSABLES = str.maketrans({
     "Ι": "i", "ı": "i",
     "ꓢ": "s", "ꮪ": "s", "ꓦ": "v", "ꓗ": "k",
     "๐": "o", "ƒ": "f", "ꮩ": "v", "ꓜ": "m",
+    "ө": "o", "Ө": "o", "Ꮩ": "v", "໐": "o", "ꓡ": "l",
     "$": "s",
 })
 def _load_model_confusables() -> dict[str, str]:
@@ -349,7 +364,7 @@ def _long_markers() -> list[str]:
 
 
 _SHORT_SUFFIXES = ("pro", "fast", "turbo", "flash", "lite", "ultra", "mini", "max", "hd", "labs")
-_SHORT_PREFIXES = ("super", "pro", "my", "x", "the")
+_SHORT_PREFIXES = ("super", "pro", "my", "x", "the", "our")
 
 
 def _suffix_is_version_or_tier(text: str) -> bool:
@@ -489,6 +504,8 @@ def is_image_model_id(model: str) -> bool:
     remainder = _strip_video_chat_tags(model)
     if not remainder.strip("-_/.()[] 	"):
         return False
+    if re.search(r"(?i)(?:^|/)dall(?:[-_]?e|\b)", remainder):
+        return True
     for form in _fold_lookalikes(remainder):
         if _is_image_model_id_folded(form):
             return True

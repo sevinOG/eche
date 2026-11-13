@@ -78,8 +78,6 @@ PUBLIC_KEYS = (
     "asset_enabled",                # "1" turns ?asset on. Blank or missing stays OFF.
     "asset_owner_only",             # blank or missing stays ON (owner only). "0" opens it to the guild.
     "tool_asset",                   # "0" leaves the asset tool out of the prompt. Blank stays on.
-    "child_check_model",            # second-check instruction model; blank uses the default
-    "age_vision_model",             # under-21 appearance check; blank uses the default
     "xai_key_epoch",                # must match CURRENT_XAI_KEY_EPOCH or the stored xAI key is ignored
 )
 
