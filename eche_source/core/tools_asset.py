@@ -83,12 +83,23 @@ async def make_asset(ctx, arguments: dict) -> ToolResult:
     if not ok:
         return ToolResult(text=why, fence=False)
     message = getattr(ctx, "message", None)
-    prompt = asset_prompt(arguments, getattr(message, "content", "") or "")
+    user_text = getattr(message, "content", "") or ""
+    prompt = asset_prompt(arguments, user_text)
+    from core.guardrails import softened_prompt
+
+    if softened_prompt(prompt, user_text):
+        prompt = asset_prompt({}, user_text)
     kind = str((arguments or {}).get("kind") or "").strip().lower()
     if kind not in ("image", "video"):
         kind = ""
+    author = getattr(message, "author", None)
+    channel = getattr(message, "channel", None)
     try:
-        check_prompt(prompt)
+        check_prompt(
+            prompt,
+            user_id=getattr(author, "id", None),
+            channel_id=getattr(channel, "id", None),
+        )
         source = await source_from_message(ctx.message)
         plan = plan_asset(prompt, kind=kind, source=source)
         key = api_key()

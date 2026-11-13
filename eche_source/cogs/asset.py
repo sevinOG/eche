@@ -31,7 +31,13 @@ class Asset(commands.Cog):
             return
         try:
             # The block check runs before the source file is even fetched.
-            check_prompt(prompt)
+            author = getattr(ctx, "author", None)
+            channel = getattr(getattr(ctx, "message", None), "channel", None) or getattr(ctx, "channel", None)
+            check_prompt(
+                prompt,
+                user_id=getattr(author, "id", None),
+                channel_id=getattr(channel, "id", None),
+            )
             source = await source_from_message(ctx.message)
             plan = plan_asset(prompt, source=source)
         except ImagineError as exc:

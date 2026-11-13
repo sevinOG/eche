@@ -163,15 +163,21 @@ def refusal(is_owner: bool) -> str:
     return "Only the owner can ask for assets."
 
 
-def check_prompt(text: str) -> None:
+def check_prompt(text: str, *, user_id=None, channel_id=None) -> None:
     """Hard block for every picture or video prompt, before any API call.
 
     Only the minors list in core/blocklist.py (plus Settings → Blocked words)
-    refuses here. Crude or offensive prompts go through.
+    refuses here, plus a close rewrite of a recent minors refusal, and a
+    request for help getting around a filter. Crude or offensive prompts
+    still go through.
     """
     from core.blocklist import REFUSAL, is_blocked, note
+    from core.guardrails import BYPASS_REFUSAL, asks_to_bypass_filter
 
-    if is_blocked(text):
+    if asks_to_bypass_filter(text):
+        note("asset prompt bypass")
+        raise ImagineError(BYPASS_REFUSAL)
+    if is_blocked(text, user_id=user_id, channel_id=channel_id):
         note("asset prompt")
         raise ImagineError(REFUSAL)
 
@@ -515,12 +521,27 @@ def request_for(plan: AssetPlan) -> tuple[str, dict]:
 
 
 _FILTERED = "That one was filtered."
+_UNAVAILABLE = "Image generation is unavailable right now."
 _FILTER_MARKERS = (
     "content moderation",
     "respect_moderation",
     "filtered by moderation",
     "did not respect moderation",
     "moderation rules",
+)
+_BILLING_MARKERS = (
+    "used all available credits",
+    "monthly spending limit",
+    "spending limit",
+    "credit hold",
+    "purchase more",
+    "insufficient credits",
+    "out of credits",
+    "billing",
+    "payment required",
+    "payment failed",
+    "quota",
+    "your team",
 )
 
 
@@ -539,11 +560,13 @@ def _error_text(payload: dict, status: int) -> str:
     message = " ".join(message.split())
     if _moderation_message(message):
         return _FILTERED
-    if not message:
-        message = f"Imagine returned {status}."
-    if len(message) > 180:
-        message = message[:179].rstrip() + "…"
-    return message
+    folded = message.casefold()
+    if any(marker in folded for marker in _BILLING_MARKERS):
+        return _UNAVAILABLE
+    # Never pass provider text through. It can include a team id.
+    if status >= 400 or message:
+        return _UNAVAILABLE
+    return f"Imagine returned {status}."
 
 
 def _filtered(payload: dict) -> bool:

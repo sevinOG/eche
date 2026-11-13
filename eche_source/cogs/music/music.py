@@ -385,6 +385,58 @@ def extract_youtube(url):
         merged.lines.extend(notes2.lines)
     return info2 if info2 is not None else info, merged, exc2 if exc2 is not None else exc
 
+_VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
+_PLAYLIST_ID_RE = re.compile(r"^(?:PL|UU|FL|RD|OL)[A-Za-z0-9_-]{10,}$")
+_PLAYLIST_URL_RE = re.compile(r"(?:[?&]list=|/playlist\?)", re.IGNORECASE)
+PLAYLIST_REFUSAL = (
+    "That's a playlist. Send a single video link, a video ID, or search terms."
+)
+
+
+def is_playlist_query(query: str) -> bool:
+    """True for a playlist URL or a bare playlist id, not a single video."""
+    raw = (query or "").strip()
+    if not raw:
+        return False
+    if _VIDEO_ID_RE.fullmatch(raw):
+        return False
+    if _PLAYLIST_URL_RE.search(raw):
+        return True
+    return bool(_PLAYLIST_ID_RE.fullmatch(raw))
+
+
+def bare_video_id(query: str) -> str | None:
+    """An 11-character video id, either alone or in a watch URL."""
+    raw = (query or "").strip()
+    if _VIDEO_ID_RE.fullmatch(raw):
+        return raw
+    match = re.search(r"(?:v=|youtu\.be/)([A-Za-z0-9_-]{11})", raw)
+    if match:
+        return match.group(1)
+    return None
+
+
+def track_label(info: dict | None, fallback: str = "") -> str:
+    if not isinstance(info, dict):
+        return fallback
+    title = str(info.get("title") or "").strip()
+    artist = str(info.get("uploader") or info.get("artist") or "").strip()
+    if title and artist and artist.lower() not in ("unknown", "unknown title"):
+        return f"{artist} | {title}"
+    return title or fallback
+
+
+def playback_decision(vc_playing: bool, vc_paused: bool, has_current: bool, has_queue: bool) -> str:
+    """What ?play with no query should do: already, resume, start, or empty."""
+    if vc_playing:
+        return "already"
+    if vc_paused and has_current:
+        return "resume"
+    if has_current or has_queue:
+        return "start"
+    return "empty"
+
+
 FFMPEG_OPTIONS = {
     "before_options": (
         "-nostdin "
@@ -395,6 +447,21 @@ FFMPEG_OPTIONS = {
     ),
     "options": "-vn"
 }
+
+
+def _lookup_video_info(query: str):
+    """Metadata for a single video id or URL. None when it cannot be resolved."""
+    if is_playlist_query(query):
+        return None
+    video_id = bare_video_id(query)
+    url = f"https://www.youtube.com/watch?v={video_id}" if video_id else query
+    try:
+        info, _notes, exc = extract_youtube(url)
+    except TrackError:
+        return None
+    if exc is not None:
+        return None
+    return _playable_info(info)
 
 
 class Music(commands.Cog):
@@ -431,10 +498,9 @@ class Music(commands.Cog):
         if not query or not isinstance(query, str):
             return None
 
-        # Direct URL
-        match = re.search(r"(?:v=|youtu\.be/)([A-Za-z0-9_-]{11})", query)
-        if match:
-            return match.group(1)
+        video_id = bare_video_id(query)
+        if video_id:
+            return video_id
 
         if yt_dlp is None:
             return None
@@ -742,20 +808,47 @@ class Music(commands.Cog):
         if query is None:
             async with self._queue_lock:
                 await self._load_queue_once()
-                already = self.playing
-                empty = not self.queue
-                if not already and not empty:
+                vc = self.vc
+                playing = bool(vc and getattr(vc, "is_playing", lambda: False)())
+                paused = bool(vc and getattr(vc, "is_paused", lambda: False)())
+                has_current = self.current is not None
+                has_queue = bool(self.queue)
+                decision = playback_decision(playing, paused, has_current, has_queue)
+                if decision == "start" and self.current is not None:
+                    self.queue.insert(0, self.current)
+                    self.current = None
+                if decision in ("resume", "start"):
                     self.playing = True
-            if already:
+            if decision == "already":
                 return await ctx.send("Already playing.")
-            if empty:
+            if decision == "empty":
                 return await ctx.send("Queue is empty.")
+            if decision == "resume":
+                try:
+                    self.vc.resume()
+                except Exception:
+                    await ctx.send("Resuming playback…")
+                    return await self.play_next(ctx)
+                return await ctx.send("Resuming playback…")
             await ctx.send("Resuming playback…")
             return await self.play_next(ctx)
 
+        if is_playlist_query(query):
+            return await ctx.send(PLAYLIST_REFUSAL)
+
+        label = query
+        if bare_video_id(query) or "://" in query:
+            info = None
+            try:
+                info = await asyncio.to_thread(_lookup_video_info, query)
+            except Exception:
+                info = None
+            resolved = track_label(info, "")
+            label = resolved or ""
+
         entry = {
             "artist": "",
-            "title": query,
+            "title": label or query,
             "duration": 0,
             "url": query,
         }
@@ -771,14 +864,28 @@ class Music(commands.Cog):
             await ctx.send(f"⚠️ Queue error: {err}")
         if start:
             await self.play_next(ctx)
+        elif label:
+            await ctx.send(f"Added: **{label}**")
         else:
-            await ctx.send(f"Added: **{query}**")
+            await ctx.send("Added to the queue. I'll show the title when it plays.")
 
     @commands.command()
     async def skip(self, ctx):
-        if self.vc and self.vc.is_playing():
-            self.vc.stop()
+        vc = self.vc
+        paused = bool(vc and getattr(vc, "is_paused", lambda: False)())
+        playing = bool(vc and getattr(vc, "is_playing", lambda: False)())
+        if playing or paused:
+            vc.stop()
             await ctx.send("Skipped.")
+        elif self.current or self.playing or self.queue:
+            # Stale flag: nothing is actually on the voice client.
+            async with self._queue_lock:
+                self.current = None
+                self.playing = bool(self.queue)
+            if self.playing:
+                await ctx.send("Skipped.")
+                return await self.play_next(ctx)
+            await ctx.send("Nothing is playing.")
         else:
             await ctx.send("Nothing is playing.")
 

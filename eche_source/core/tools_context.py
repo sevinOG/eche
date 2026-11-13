@@ -1,11 +1,11 @@
 # core/tools_context.py
 # Chat tool: show the speaker what Eche remembers about them.
 #
-# Anyone can use it, in any wording. The model decides when someone is asking
-# about their own memory or context; there is no phrase trigger. It only ever
-# reads the speaker's own pin. Model arguments are ignored, so it cannot be
-# pointed at another member. The text is filtered (no mentions, ids, or slurs)
-# before it is posted.
+# Anyone can use it, but only when they explicitly ask to see their memory
+# or what Eche remembers about them. A pasted link or "what do you think"
+# is not enough. It only ever reads the speaker's own pin. Model arguments
+# are ignored, so it cannot be pointed at another member. The text is
+# filtered (no mentions, ids, or slurs) before it is posted.
 
 from __future__ import annotations
 
@@ -16,10 +16,15 @@ TOOL_NAME = "context_raw"
 
 _DESCRIPTION = (
     "Show the speaker what you remember about them: their own stored memory. "
-    "Use it whenever they ask, in any wording, what you know or remember about them, "
-    "or to see their memory, context, notes, or profile. "
+    "Use it only when they explicitly ask to see their memory, context, or "
+    "what you know or remember about them. "
     "It only reads the speaker's own memory, never anyone else's. "
-    "Do not use it for other questions."
+    "Do not use it for a pasted link, an image, or a question about something they just sent."
+)
+
+NOT_A_MEMORY_REQUEST = (
+    "The user did not ask to see their memory. "
+    "Answer their latest message normally. Do not mention or quote their stored memory."
 )
 
 NOTHING_STORED = "I don't have anything stored about you yet."
@@ -51,13 +56,18 @@ def own_memory_text(content: str | None) -> str:
 async def show_own_context(ctx: ToolContext, arguments: dict) -> ToolResult:
     """Always the speaker. Model arguments are ignored on purpose."""
     del arguments
+    from core.guardrails import asks_for_memory
+
+    content = getattr(ctx.message, "content", "") or ""
+    if not asks_for_memory(content):
+        return ToolResult(text=NOT_A_MEMORY_REQUEST, fence=False, for_model=True)
     author = ctx.message.author
-    content = await read_raw_context(
+    stored = await read_raw_context(
         ctx.bot,
         author.id,
         getattr(author, "name", None),
     )
-    return ToolResult(text=own_memory_text(content), fence=False)
+    return ToolResult(text=own_memory_text(stored), fence=False)
 
 
 def register_builtin_tools() -> None:

@@ -173,6 +173,9 @@ def clean_memory_text(text: str) -> str:
     cleaned = strip_mentions(text)
     if masking_enabled():
         cleaned = mask_slurs(cleaned)
+    from core.guardrails import drop_filter_evasion
+
+    cleaned = drop_filter_evasion(cleaned)
     return _tidy_spacing(cleaned)
 
 

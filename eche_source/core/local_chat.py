@@ -25,8 +25,11 @@ async def reply_local(user_text: str) -> str:
     if not user_text:
         return ""
     from core.blocklist import REFUSAL, is_blocked
+    from core.guardrails import BYPASS_REFUSAL, asks_to_bypass_filter, coaches_bypass
 
-    if is_blocked(user_text):
+    if asks_to_bypass_filter(user_text):
+        return BYPASS_REFUSAL
+    if is_blocked(user_text, user_id="local", channel_id="desktop"):
         return REFUSAL
 
     # Push settings (incl. Ollama mode + key) into this process for client.py
@@ -100,8 +103,10 @@ async def reply_local(user_text: str) -> str:
         else:
             text = out
         text = _strip_tags(str(text or ""))
-        if is_blocked(text):
+        if is_blocked(text, user_id="local", channel_id="desktop"):
             return REFUSAL
+        if coaches_bypass(text):
+            return BYPASS_REFUSAL
         return text or "(empty model reply)"
     except Exception as e:
         return f"(local chat error: {e})"

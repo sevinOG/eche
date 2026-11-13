@@ -52,12 +52,14 @@ class TempRoot(unittest.TestCase):
         os.makedirs(os.path.join(self.root, "config"), exist_ok=True)
         bl._extra_cache = ("", -1.0, None)
         cf._mask_cache = ("", -1.0, True)
+        bl.clear_recent_blocks()
 
     def tearDown(self):
         self._env.stop()
         shutil.rmtree(self.root, ignore_errors=True)
         bl._extra_cache = ("", -1.0, None)
         cf._mask_cache = ("", -1.0, True)
+        bl.clear_recent_blocks()
 
     def save(self, **values):
         from core.secrets import settings_path
@@ -140,7 +142,7 @@ class MatchTests(TempRoot):
 
 def _fake_message(text):
     author = SimpleNamespace(id=42, name="alice", display_name="Alice")
-    channel = SimpleNamespace(send=mock.AsyncMock())
+    channel = SimpleNamespace(id=99, send=mock.AsyncMock())
     return SimpleNamespace(
         content=text,
         author=author,
@@ -209,8 +211,9 @@ class ChatTests(TempRoot):
         model = self.answer("tell me a story", model_reply="Once upon a time the kids went out")
         model.assert_called_once()
         self.assertEqual(self.sent, [bl.REFUSAL])
-        said = self.om.remember_bot.call_args[0][3]
-        self.assertEqual(said, bl.REFUSAL)
+        self.om.remember_user.assert_not_called()
+        self.om.remember_bot.assert_not_called()
+        self.cog._record_server_line.assert_not_called()
 
     def test_clean_turn_goes_through(self):
         model = self.answer("what's a kidney for", model_reply="Filtering blood.")
