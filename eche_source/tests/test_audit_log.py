@@ -112,6 +112,11 @@ class AuditLogTests(unittest.TestCase):
         os.environ.pop("ECHE_AUDIT_PATH", None)
         from core import audit as audit_mod
         self.audit_mod = audit_mod
+        try:
+            audit_mod.consume_refusal()
+        except Exception:
+            pass
+        audit_mod._refusal.set(False)
 
     def tearDown(self):
         if self._old_root is None:
@@ -333,6 +338,9 @@ class AuditLogTests(unittest.TestCase):
         self.assertIn('name="image"', image_src)
         self.assertIn("on_message_edit", bot)
         self.assertIn("on_app_command_completion", bot)
+        self.assertIn("on_error", bot)
+        self.assertIn("on_app_command_error", bot)
+        self.assertIn("on_command_error", bot)
         events = (SOURCE / "cogs" / "events" / "on_message.py").read_text(encoding="utf-8")
         self.assertIn("audit_chat", events)
 
@@ -405,6 +413,405 @@ class AuditLogTests(unittest.TestCase):
         rec = [r for r in _records(self.audit) if r.get("event") == "command"][-1]
         self.assertEqual(rec.get("outcome"), "refusal")
         self.assertEqual(rec.get("name"), "ask")
+
+
+    def test_ids_are_not_value_scrubbed(self):
+        """HOME_SERVER_ID and ECHE_OWNER_ID must stay visible as guild_id/user_id."""
+        owner = "123456789012345678"
+        home = "987654321098765432"
+        with mock.patch.dict(os.environ, {"ECHE_OWNER_ID": owner, "HOME_SERVER_ID": home, "GROQ_MODEL": "llama-3-8b"}):
+            rec = self.audit_mod.command(
+                "image",
+                "success",
+                user_id=owner,
+                guild_id=home,
+                channel_id="555555555555555555",
+            )
+        self.assertEqual(rec.get("user_id"), owner)
+        self.assertEqual(rec.get("guild_id"), home)
+        raw = self.audit.read_text(encoding="utf-8")
+        self.assertIn(owner, raw)
+        self.assertIn(home, raw)
+        self.assertNotIn("[redacted]", rec.get("user_id"))
+        self.assertNotIn("[redacted]", rec.get("guild_id"))
+        # Model names from ENV_MAP must not be treated as secrets either,
+        # but they should not appear unless we logged them; the ids stayed.
+
+    def test_versioned_webhook_and_xai_key_are_redacted(self):
+        v10 = "https://discord.com/api/v10/webhooks/123456789012345678/abcdefghijklmnopqrstuvwxyzABCDEFGH"
+        v9 = "https://discord.com/api/v9/webhooks/123456789012345678/abcdefghijklmnopqrstuvwxyzABCDEFGH"
+        key = "xai-abcdefghijklmnopqrstuvwxyz012345"
+        cleaned = self.audit_mod.redact(f"url={v10} also={v9} key={key}")
+        self.assertNotIn("abcdefghijklmnopqrstuvwxyzABCDEFGH", cleaned)
+        self.assertNotIn(key, cleaned)
+        self.assertIn("[redacted]", cleaned)
+
+    def test_archive_cap_keeps_safety_lines_and_rotates_fallback(self):
+        folder = self.root / "logs"
+        # Three tiny archives of mixed content; cap is 1 file / tiny size.
+        for i in range(3):
+            path = folder / f"audit.jsonl.2020010{i}-000000"
+            path.write_text(
+                '{"event":"command","outcome":"success","name":"ping"}\n'
+                '{"event":"block","outcome":"refusal","category":"keep-me","safety":true}\n',
+                encoding="utf-8",
+            )
+        with mock.patch.object(self.audit_mod, "AUDIT_MAX_ARCHIVES", 1), \
+             mock.patch.object(self.audit_mod, "AUDIT_MAX_ARCHIVE_BYTES", 50):
+            self.audit_mod._prune_archives(str(folder))
+        safety_hits = 0
+        command_hits = 0
+        for path in folder.glob("audit.jsonl.*"):
+            body = path.read_text(encoding="utf-8")
+            safety_hits += body.count("keep-me")
+            command_hits += body.count('"name":"ping"')
+        self.assertGreaterEqual(safety_hits, 3)
+        self.assertEqual(command_hits, 0)
+
+        # Fallback rotation uses the same helper.
+        fallback = folder / "audit.fallback.jsonl"
+        fallback.write_bytes(b"x" * (self.audit_mod.AUDIT_MAX_BYTES + 10))
+        self.audit_mod._rotate_if_needed(str(fallback))
+        self.assertFalse(fallback.exists() and fallback.stat().st_size > self.audit_mod.AUDIT_MAX_BYTES)
+        self.assertTrue(any(folder.glob("audit.fallback.jsonl.*")))
+
+    def test_icacls_nonzero_falls_back_to_chmod_and_alerts(self):
+        from core import secrets as secrets_mod
+
+        target = self.root / "logs" / "acl-target"
+        target.write_text("x", encoding="utf-8")
+        fake = mock.Mock(returncode=1, stdout="", stderr="access denied")
+        with mock.patch.object(secrets_mod.sys, "platform", "win32"), \
+             mock.patch("subprocess.run", return_value=fake), \
+             mock.patch("getpass.getuser", return_value="tester"):
+            with self.assertRaises(RuntimeError):
+                secrets_mod._restrict_acl_windows(str(target))
+        # chmod fallback already ran; audit ACL path should alert
+        with mock.patch.object(secrets_mod.sys, "platform", "win32"), \
+             mock.patch("subprocess.run", return_value=fake), \
+             mock.patch("getpass.getuser", return_value="tester"):
+            self.audit_mod._apply_acl(str(target))
+        alert = self.root / "logs" / "audit.alert"
+        self.assertTrue(alert.exists(), "expected an ACL failure alert")
+        self.assertIn("ACL", alert.read_text(encoding="utf-8"))
+
+    def test_logs_directory_gets_an_acl(self):
+        src = (SOURCE / "core" / "audit.py").read_text(encoding="utf-8")
+        self.assertIn("_ensure_log_dir", src)
+        self.assertIn("_apply_acl(folder)", src)
+        # Creating a path applies the directory ACL helper.
+        path = self.audit_mod.audit_path()
+        self.assertTrue(Path(path).parent.is_dir())
+        mode = Path(path).parent.stat().st_mode & 0o777
+        self.assertEqual(mode, 0o700)
+
+    def test_message_edit_skips_bot_and_self(self):
+        from core.bot import Eche
+
+        human = SimpleNamespace(id=11, bot=False)
+        bot_user = SimpleNamespace(id=99, bot=True)
+        me = SimpleNamespace(id=42, bot=True)
+
+        async def run():
+            bot = SimpleNamespace(user=me)
+            after_bot = SimpleNamespace(
+                author=bot_user, guild=SimpleNamespace(id=2),
+                channel=SimpleNamespace(id=3), content="edited",
+            )
+            after_self = SimpleNamespace(
+                author=me, guild=SimpleNamespace(id=2),
+                channel=SimpleNamespace(id=3), content="edited",
+            )
+            after_embed = SimpleNamespace(
+                author=human, guild=SimpleNamespace(id=2),
+                channel=SimpleNamespace(id=3), content="same",
+            )
+            after_human = SimpleNamespace(
+                author=human, guild=SimpleNamespace(id=2),
+                channel=SimpleNamespace(id=3), content="new text",
+            )
+            before = SimpleNamespace(content="same")
+            await Eche.on_message_edit(bot, before, after_bot)
+            await Eche.on_message_edit(bot, before, after_self)
+            await Eche.on_message_edit(bot, after_embed, after_embed)
+            await Eche.on_message_edit(bot, before, after_human)
+
+        asyncio.run(run())
+        rows = [r for r in _records(self.audit) if r.get("event") == "message_edit"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].get("user_id"), "11")
+
+    def test_rotate_permission_error_still_appends_safety(self):
+        self.audit.write_bytes(b"y" * 100)
+        with mock.patch.object(self.audit_mod, "AUDIT_MAX_BYTES", 10), \
+             mock.patch("os.rename", side_effect=PermissionError("in use")):
+            self.audit_mod.block("still-logged", footer_hash="abc", user_id=1, channel_id=2)
+        raw = self.audit.read_text(encoding="utf-8")
+        self.assertIn("still-logged", raw)
+
+    def test_exception_inside_handler_still_logs(self):
+        from discord.ext import commands
+        from core.bot import Eche
+
+        async def run():
+            bot = object.__new__(Eche)
+            ctx = SimpleNamespace(
+                command=SimpleNamespace(qualified_name="ping", name="ping"),
+                author=SimpleNamespace(id=1),
+                guild=SimpleNamespace(id=2),
+                channel=SimpleNamespace(id=3),
+                send=mock.AsyncMock(),
+            )
+            await Eche.on_command_error(bot, ctx, RuntimeError("boom"))
+            await Eche.on_error(bot, "on_message")
+            interaction = SimpleNamespace(
+                user=SimpleNamespace(id=1),
+                guild=SimpleNamespace(id=2),
+                channel=SimpleNamespace(id=3),
+                command=SimpleNamespace(qualified_name="slash", name="slash"),
+            )
+            await Eche.on_app_command_error(bot, interaction, RuntimeError("slash failed"))
+
+        asyncio.run(run())
+        rows = _records(self.audit)
+        self.assertTrue(any(r.get("event") == "command" and r.get("outcome") == "error" and r.get("name") == "ping" for r in rows))
+        self.assertTrue(any(r.get("event") == "error" and r.get("source") == "on_message" for r in rows))
+        self.assertTrue(any(r.get("event") == "error" and r.get("source") == "app_command" for r in rows))
+        self.assertTrue(any(r.get("event") == "command" and r.get("name") == "slash" and r.get("outcome") == "error" for r in rows))
+
+
+class AuditCompletenessTests(AuditLogTests):
+    """Discover registered commands, slash commands, tools, and listeners at runtime."""
+
+    def test_runtime_discovery_success_and_error_paths(self):
+        import core.tools_admin  # noqa: F401
+        import core.tools_context  # noqa: F401
+        import core.tools_duckduckgo  # noqa: F401
+        import core.tools_thread  # noqa: F401
+        from core.bot import Eche
+        from core.tools import ToolContext, ToolResult, execute, registered_names
+        from core import tools as tools_mod
+        from discord.ext import commands
+
+        async def run():
+            # Lightweight bot: load the same extensions Eche does, without
+            # starting background loops or logging in.
+            import discord
+            from discord.ext import commands as dcmds
+            import re as _re
+
+            bot_src = (SOURCE / "core" / "bot.py").read_text(encoding="utf-8")
+            extensions = _re.findall(r'"((?:cogs)\.[A-Za-z0-9_.]+)"', bot_src)
+            # Keep unique order from setup_hook's list.
+            seen_ext = set()
+            ext_list = []
+            for ext in extensions:
+                if ext not in seen_ext:
+                    seen_ext.add(ext)
+                    ext_list.append(ext)
+
+            intents = discord.Intents.none()
+            bot = dcmds.Bot(command_prefix="?", intents=intents, help_command=None)
+            for ext in ext_list:
+                try:
+                    await bot.load_extension(ext)
+                except Exception:
+                    pass
+
+            command_names = sorted({c.qualified_name for c in bot.walk_commands()})
+            # AST discovery is a floor in case a cog failed to import.
+            for name in discover_cog_commands():
+                if name not in command_names:
+                    command_names.append(name)
+
+            app_names = []
+            try:
+                for cmd in bot.tree.walk_commands():
+                    app_names.append(getattr(cmd, "qualified_name", None) or cmd.name)
+            except Exception:
+                try:
+                    app_names = [c.name for c in bot.tree.get_commands()]
+                except Exception:
+                    app_names = []
+
+            tool_names = sorted(registered_names())
+
+            listener_events = set()
+            extra = getattr(bot, "extra_events", {}) or {}
+            for ev, funcs in extra.items():
+                if funcs:
+                    listener_events.add(ev)
+            for cog in bot.cogs.values():
+                for ev, _fn in cog.get_listeners():
+                    listener_events.add(ev)
+            for name in dir(type(bot)):
+                if name.startswith("on_") and callable(getattr(Eche, name, None)):
+                    if name in {
+                        "on_command_completion", "on_command_error",
+                        "on_message", "on_message_edit",
+                        "on_app_command_completion", "on_app_command_error",
+                        "on_error",
+                    } or name in extra:
+                        listener_events.add(name)
+
+            # --- commands: success and error ---
+            for name in command_names:
+                ctx = SimpleNamespace(
+                    command=SimpleNamespace(qualified_name=name, name=name.split()[-1]),
+                    author=SimpleNamespace(id=11),
+                    guild=SimpleNamespace(id=22),
+                    channel=SimpleNamespace(id=33),
+                    invoked_with=name.split()[-1],
+                    send=mock.AsyncMock(),
+                    message=SimpleNamespace(
+                        author=SimpleNamespace(id=11),
+                        guild=SimpleNamespace(id=22),
+                        channel=SimpleNamespace(id=33),
+                    ),
+                )
+                await Eche.on_command_completion(bot, ctx)
+                await Eche.on_command_error(bot, ctx, RuntimeError("test-fail"))
+
+            # --- slash / app commands ---
+            if not app_names:
+                app_names = ["(no-slash-registered)"]
+                # Still exercise the hooks so the error/success path is covered.
+            for name in app_names:
+                interaction = SimpleNamespace(
+                    user=SimpleNamespace(id=11),
+                    guild=SimpleNamespace(id=22),
+                    channel=SimpleNamespace(id=33),
+                    command=SimpleNamespace(qualified_name=name, name=name),
+                )
+                command_obj = SimpleNamespace(qualified_name=name, name=name)
+                await Eche.on_app_command_completion(bot, interaction, command_obj)
+                await Eche.on_app_command_error(bot, interaction, RuntimeError("slash-fail"))
+
+            # --- tools: success and error (handler exception) ---
+            message = SimpleNamespace(
+                author=SimpleNamespace(id=11),
+                guild=SimpleNamespace(id=22),
+                channel=SimpleNamespace(id=33),
+            )
+            tctx = ToolContext(bot=bot, message=message)
+
+            async def ok(_ctx, _args):
+                return ToolResult(text="ok")
+
+            async def boom(_ctx, _args):
+                raise RuntimeError("tool exploded")
+
+            with mock.patch.object(tools_mod, "default_tools_enabled", return_value=True), \
+                    mock.patch.object(tools_mod, "tool_prompt_enabled", return_value=True), \
+                    mock.patch("core.admin_tools.admin_tools_enabled", return_value=True), \
+                    mock.patch("core.admin_tools.author_is_owner", new=mock.AsyncMock(return_value=True)):
+                original = dict(tools_mod._TOOLS)
+                try:
+                    for name, tool in list(tools_mod._TOOLS.items()):
+                        tools_mod._TOOLS[name] = type(tool)(
+                            name=tool.name,
+                            description=tool.description,
+                            handler=ok,
+                            parameters=tool.parameters,
+                            access=tool.access,
+                        )
+                    for name in tool_names:
+                        await execute(name, {}, tctx)
+                    for name, tool in list(tools_mod._TOOLS.items()):
+                        tools_mod._TOOLS[name] = type(tool)(
+                            name=tool.name,
+                            description=tool.description,
+                            handler=boom,
+                            parameters=tool.parameters,
+                            access=tool.access,
+                        )
+                    for name in tool_names:
+                        await execute(name, {}, tctx)
+                finally:
+                    tools_mod._TOOLS.clear()
+                    tools_mod._TOOLS.update(original)
+
+            # --- listeners: success via real hooks; error via on_error ---
+            human = SimpleNamespace(
+                author=SimpleNamespace(id=11, bot=False),
+                guild=SimpleNamespace(id=22),
+                channel=SimpleNamespace(id=33),
+                content="hello completeness",
+                id=44,
+            )
+            try:
+                await Eche.on_message(bot, human)
+            except Exception:
+                pass
+            before = SimpleNamespace(content="old")
+            after = SimpleNamespace(
+                author=SimpleNamespace(id=11, bot=False),
+                guild=SimpleNamespace(id=22),
+                channel=SimpleNamespace(id=33),
+                content="new",
+            )
+            try:
+                await Eche.on_message_edit(bot, before, after)
+            except Exception:
+                pass
+            for ev in sorted(listener_events):
+                await Eche.on_error(bot, ev)
+
+            # LLM turn + guardrail block (success and error / block)
+            self.audit_mod.api("groq", request_id="req-1", response_id="resp-1", outcome="success")
+            self.audit_mod.api("groq", outcome="error")
+            self.audit_mod.block("llm-input-always", user_id=11, guild_id=22, channel_id=33)
+
+            try:
+                await bot.close()
+            except Exception:
+                pass
+            return command_names, app_names, tool_names, sorted(listener_events)
+
+        command_names, app_names, tool_names, listener_events = asyncio.run(run())
+        rows = _records(self.audit)
+        self.assertTrue(command_names, "no commands discovered at runtime")
+        self.assertTrue(tool_names, "no tools discovered at runtime")
+        self.assertTrue(listener_events, "no listeners discovered at runtime")
+
+        command_ok = {(r.get("name"), r.get("outcome")) for r in rows if r.get("event") == "command"}
+        missing_cmd = []
+        for name in command_names:
+            if (name, "success") not in command_ok:
+                missing_cmd.append(f"{name}:success")
+            if (name, "error") not in command_ok:
+                missing_cmd.append(f"{name}:error")
+        self.assertEqual(missing_cmd, [], f"commands missing audit records: {missing_cmd}")
+
+        app_ok = {(r.get("name"), r.get("outcome")) for r in rows if r.get("event") == "command"}
+        missing_app = []
+        for name in app_names:
+            if (name, "success") not in app_ok or (name, "error") not in app_ok:
+                missing_app.append(name)
+        self.assertEqual(missing_app, [], f"slash commands missing audit records: {missing_app}")
+
+        tool_ok = {(r.get("name"), r.get("outcome")) for r in rows if r.get("event") == "tool"}
+        missing_tool = []
+        for name in tool_names:
+            if (name, "success") not in tool_ok:
+                missing_tool.append(f"{name}:success")
+            if (name, "error") not in tool_ok:
+                missing_tool.append(f"{name}:error")
+        self.assertEqual(missing_tool, [], f"tools missing audit records: {missing_tool}")
+
+        error_sources = {r.get("source") for r in rows if r.get("event") == "error"}
+        missing_ev = [ev for ev in listener_events if ev not in error_sources]
+        self.assertEqual(missing_ev, [], f"listeners missing error-path audit records: {missing_ev}")
+
+        self.assertTrue(any(r.get("event") == "message_edit" for r in rows))
+        self.assertTrue(any(r.get("event") == "api" and r.get("outcome") == "success" for r in rows))
+        self.assertTrue(any(r.get("event") == "api" and r.get("outcome") == "error" for r in rows))
+        self.assertTrue(any(r.get("event") == "block" for r in rows))
+
+        # Exception inside a tool handler already produced outcome=error above.
+        self.assertTrue(any(r.get("event") == "tool" and r.get("outcome") == "error" for r in rows))
+
+
 
 
 if __name__ == "__main__":

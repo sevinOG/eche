@@ -273,12 +273,21 @@ class Eche(commands.Bot):
             pass
 
     async def on_message_edit(self, before, after):
+        author = getattr(after, "author", None)
+        # Skip bots, this bot's own edits, and embed-only / unchanged content.
+        if author is None or getattr(author, "bot", False):
+            return
+        me = getattr(self, "user", None)
+        if me is not None and getattr(author, "id", None) == getattr(me, "id", None):
+            return
+        if getattr(before, "content", None) == getattr(after, "content", None):
+            return
         try:
             from core.audit import bind_from_message, record
             bind_from_message(after)
             record(
                 "message_edit",
-                user_id=getattr(getattr(after, "author", None), "id", None),
+                user_id=getattr(author, "id", None),
                 guild_id=getattr(getattr(after, "guild", None), "id", None),
                 channel_id=getattr(getattr(after, "channel", None), "id", None),
             )
@@ -302,17 +311,65 @@ class Eche(commands.Bot):
         except Exception:
             pass
 
-    async def on_command_error(self, ctx, error):
-        if isinstance(error, commands.CommandNotFound):
-            return
+    async def on_error(self, event_method, *args, **kwargs):
+        """Unhandled event or cog listener exception."""
+        import traceback
         try:
-            from core.audit import command_from_ctx
+            from core.audit import error as audit_error
+            message = None
+            ctx = None
+            for item in args:
+                if getattr(item, "author", None) is not None and getattr(item, "channel", None) is not None:
+                    message = item
+                    break
+                if getattr(item, "command", None) is not None or getattr(item, "send", None) is not None:
+                    ctx = item
+                    break
+            audit_error(
+                str(event_method or "event"),
+                error_type="unhandled",
+                ctx=ctx,
+                message=message,
+            )
+        except Exception:
+            pass
+        traceback.print_exc()
+
+    async def on_app_command_error(self, interaction, error):
+        try:
+            from core.audit import command as audit_command, error as audit_error
+            user = getattr(interaction, "user", None)
+            guild = getattr(interaction, "guild", None)
+            channel = getattr(interaction, "channel", None)
+            command = getattr(interaction, "command", None)
+            name = getattr(command, "qualified_name", None) or getattr(command, "name", None) or "app"
+            ids = dict(
+                user_id=getattr(user, "id", None),
+                guild_id=getattr(guild, "id", None),
+                channel_id=getattr(channel, "id", None),
+            )
+            audit_command(str(name), "error", error_type=type(error).__name__, **ids)
+            audit_error("app_command", error_type=type(error).__name__, **ids, name=str(name))
+        except Exception:
+            pass
+
+    async def on_command_error(self, ctx, error):
+        try:
+            from core.audit import command_from_ctx, error as audit_error
             if isinstance(error, (commands.NotOwner, commands.CheckFailure, commands.MissingPermissions)):
                 command_from_ctx(ctx, "refusal")
             else:
                 command_from_ctx(ctx, "error", error_type=type(error).__name__)
+            audit_error(
+                "command",
+                error_type=type(error).__name__,
+                ctx=ctx,
+                name=getattr(getattr(ctx, 'command', None), 'qualified_name', None) or getattr(getattr(ctx, 'command', None), 'name', None) or getattr(ctx, 'invoked_with', '') or '',
+            )
         except Exception:
             pass
+        if isinstance(error, commands.CommandNotFound):
+            return
         if isinstance(error, commands.NotOwner):
             try:
                 await ctx.send("Only an owner from Settings → Security can use that command.")
@@ -336,6 +393,10 @@ class Eche(commands.Bot):
     # ---------------------------------------------------------
     async def setup_hook(self):
         print(">>> setup_hook: loading extensions")
+        try:
+            self.tree.error(self.on_app_command_error)
+        except Exception as e:
+            print(f">>> app command error hook skipped: {e}")
         try:
             from core.classifier import warn_if_unconfigured
             warn_if_unconfigured()
