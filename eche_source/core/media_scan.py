@@ -84,6 +84,15 @@ IMAGE_MODEL_MARKERS = (
     "gemini-omni",
     "midjourney",
     "seedream",
+    "ideogram",
+    "recraft",
+    "mj-v7",
+    "mjv7",
+    "sd3.5",
+    "sd35",
+    "sd3",
+    "imggen",
+    "img-gen",
 )
 
 
@@ -123,6 +132,18 @@ VIDEO_MODEL_MARKERS = (
     "wan2",
     "mochi",
     "hunyuanvideo",
+    "text2video",
+    "text-to-video",
+    "txt2vid",
+    "img2vid",
+    "img2video",
+    "cogvideo",
+    "stablevideo",
+    "stable-video",
+    "svd-xt",
+    "svdxt",
+    "animatediff",
+    "animate-diff",
 )
 
 # Lookalike letters that show up in evasive model ids (Cyrillic ѕora, etc.).
@@ -132,6 +153,10 @@ _MODEL_CONFUSABLES = str.maketrans({
     "ԁ": "d", "ԁ": "d",
     "Α": "a", "А": "a", "Е": "e", "О": "o", "Р": "p", "С": "c",
     "Ѕ": "s",
+    "ꜱ": "s", "ᴇ": "e",
+    "ν": "v", "Ν": "v",
+    "к": "k", "К": "k",
+    "$": "s", "@": "a",
 })
 _MODEL_LEET = str.maketrans({
     "0": "o", "1": "i", "3": "e", "4": "a", "5": "s", "7": "t",
@@ -241,11 +266,43 @@ def _long_markers() -> list[str]:
     return out
 
 
+_SHORT_SUFFIXES = ("pro", "fast", "turbo", "flash", "lite")
+_SHORT_PREFIXES = ("super", "pro", "my", "x")
+
+
+def _suffix_is_version_or_tier(text: str) -> bool:
+    """Empty, digits, and/or pro/fast/turbo/flash/lite."""
+    s = text or ""
+    while s:
+        if s[0].isdigit():
+            s = s.lstrip("0123456789")
+            continue
+        hit = next((suf for suf in _SHORT_SUFFIXES if s.startswith(suf)), None)
+        if not hit:
+            return False
+        s = s[len(hit):]
+    return True
+
+
+def _prefix_is_short_evasion(text: str) -> bool:
+    return (text or "") in ("",) + _SHORT_PREFIXES
+
+
 def _short_token_match(token: str, marker: str) -> bool:
-    """Whole-token match, or the marker plus a trailing version number (veo3)."""
-    if token == marker:
-        return True
-    return token.startswith(marker) and token[len(marker):].isdigit()
+    """Whole-token match, or a short marker with a version/tier wrapper.
+
+    veo3, sora2pro, veo3fast, rayflash, xsora2, prosora, supersora, mysora.
+    """
+    if not token or not marker:
+        return False
+    start = 0
+    while True:
+        pos = token.find(marker, start)
+        if pos < 0:
+            return False
+        if _prefix_is_short_evasion(token[:pos]) and _suffix_is_version_or_tier(token[pos + len(marker):]):
+            return True
+        start = pos + 1
 
 
 def _long_token_match(token: str, marker: str) -> bool:
@@ -253,16 +310,22 @@ def _long_token_match(token: str, marker: str) -> bool:
 
 
 def _adjacent_spans(tokens: list[str]) -> list[str]:
-    """Concatenations of adjacent tokens. Digit-only tokens are not leet-folded."""
+    """Concatenations of adjacent tokens, with and without letter-token leet.
+
+    Digit-only tokens are never leet-folded. The un-leeted join keeps
+    ids like mj-v7 (mj + v7) from becoming mjvt.
+    """
     n = len(tokens)
     out: list[str] = []
     for i in range(n):
-        parts: list[str] = []
+        plain: list[str] = []
+        leet: list[str] = []
         for j in range(i, n):
-            parts.append(_leet_token(tokens[j]))
-            span = "".join(parts)
-            if span and span not in out:
-                out.append(span)
+            plain.append(tokens[j])
+            leet.append(_leet_token(tokens[j]))
+            for span in ("".join(plain), "".join(leet)):
+                if span and span not in out:
+                    out.append(span)
     return out
 
 
@@ -271,8 +334,6 @@ def is_image_model_id(model: str) -> bool:
     raw_tokens = _tokens(model)
     if not raw_tokens and not (model or "").strip():
         return False
-    if "image" in normalize_model_id(model):
-        return True
     tokens = _join_singleton_runs(raw_tokens)
     short = _short_markers()
     long = _long_markers()
@@ -283,12 +344,16 @@ def is_image_model_id(model: str) -> bool:
             if form not in spans:
                 spans.append(form)
     for span in spans:
+        if "image" in span:
+            return True
         for marker in short:
             if _short_token_match(span, marker):
                 return True
         for marker in long:
             if _long_token_match(span, marker):
                 return True
+    if "image" in normalize_model_id(model):
+        return True
     return False
 
 

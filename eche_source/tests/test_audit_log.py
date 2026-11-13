@@ -141,6 +141,91 @@ def discover_background_tasks(root: Path = SOURCE) -> set[str]:
     return names
 
 
+def _self_attrs(node: ast.AST | None) -> set[str]:
+    found: set[str] = set()
+    if node is None:
+        return found
+    for sub in ast.walk(node):
+        if (
+            isinstance(sub, ast.Attribute)
+            and isinstance(sub.value, ast.Name)
+            and sub.value.id in {"self", "cls"}
+        ):
+            found.add(sub.attr)
+    return found
+
+
+def _bind_name(func: ast.AST | None, name: str) -> ast.AST | None:
+    if func is None:
+        return None
+    for sub in ast.walk(func):
+        if isinstance(sub, ast.Assign):
+            for target in sub.targets:
+                if isinstance(target, ast.Name) and target.id == name:
+                    return sub.value
+        if (
+            isinstance(sub, ast.AnnAssign)
+            and isinstance(sub.target, ast.Name)
+            and sub.target.id == name
+        ):
+            return sub.value
+    return None
+
+
+def _unwrap_iter(node: ast.AST | None, func: ast.AST | None) -> ast.AST | None:
+    if node is None:
+        return None
+    if (
+        isinstance(node, ast.Call)
+        and _call_func_name(node) in {"enumerate", "reversed", "sorted", "list", "tuple"}
+        and node.args
+    ):
+        return _unwrap_iter(node.args[0], func)
+    if isinstance(node, ast.Name):
+        bound = _bind_name(func, node.id)
+        if bound is not None:
+            return _unwrap_iter(bound, func)
+    return node
+
+
+def _loop_connected_slots(tree: ast.AST) -> set[str]:
+    """Names passed as btn.clicked.connect(slot) inside a for-loop."""
+    parents: dict[ast.AST, ast.AST | None] = {}
+
+    def walk(node: ast.AST, parent: ast.AST | None = None) -> None:
+        parents[node] = parent
+        for child in ast.iter_child_nodes(node):
+            walk(child, node)
+
+    walk(tree)
+
+    def ancestor(node, types):
+        cur = node
+        while cur is not None:
+            if isinstance(cur, types):
+                return cur
+            cur = parents.get(cur)
+        return None
+
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "connect"
+            and node.args
+            and isinstance(node.args[0], ast.Name)
+        ):
+            continue
+        for_node = ancestor(node, ast.For)
+        if for_node is None:
+            continue
+        func = ancestor(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        iterable = _unwrap_iter(for_node.iter, func)
+        names |= _self_attrs(iterable)
+    return names
+
+
 def discover_qt_slots(root: Path = SOURCE / "gui") -> set[str]:
     """Connected Qt signals and button-factory slot arguments under gui/."""
     names: set[str] = set()
@@ -156,6 +241,7 @@ def discover_qt_slots(root: Path = SOURCE / "gui") -> set[str]:
                 params = [a.arg for a in list(node.args.args) + list(node.args.kwonlyargs)]
                 if any(p in slot_param_names for p in params):
                     slot_funcs.add(node.name)
+        names |= _loop_connected_slots(tree)
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
@@ -236,6 +322,8 @@ REVIEWED_ENTRYPOINTS = {
     "write_handoff_script": "updater script write",
     "purge_removed_program_files": "updater tombstone purge",
     "_toggle_cog": "Cog Manager load/unload",
+    "_on_drop_files": "Cog Manager module install",
+    "_on_local_clear": "desktop chat clear-history",
     "_fire_stored": "reminder fire",
     "_schedule_fire": "in-session reminder fire",
     "entertainer_background_loop": "entertainer background loop",
@@ -1713,18 +1801,30 @@ class AuditCompletenessTests(AuditLogTests):
             bank_inst._user_id = 99
             bank_inst._home_id = 22
             bank_inst._starter = "STARTER:0"
+            bank_inst._cache = {}
             bank_inst.balance_spin = SimpleNamespace(value=lambda: 12.34)
             bank_inst.editor = SimpleNamespace(
                 blockSignals=lambda *_a, **_k: None,
                 setPlainText=lambda *_a, **_k: None,
             )
+            bank_inst.user_list = SimpleNamespace(count=lambda: 0)
             bank_inst._set_busy = lambda *_a, **_k: None
             bank_inst._start = lambda *_a, **_k: None
-            bank_inst._on_saved = lambda *_a, **_k: None
+            bank_inst._apply_text = lambda *_a, **_k: None
+            bank_inst._log = lambda *_a, **_k: None
             try:
                 EconomyWindow._save(bank_inst)
             except Exception:
                 pass
+            if len(_records(self.audit)) > before:
+                gaps.append("_save:logged-before-finish")
+            with mock.patch("gui.widgets.economywindow.QMessageBox.information"):
+                try:
+                    EconomyWindow._on_saved(
+                        bank_inst, True, "Saved", {"text": "Balance: 12.34\nSTARTER:999.99"}
+                    )
+                except Exception:
+                    pass
             if len(_records(self.audit)) <= before:
                 gaps.append("_save")
             else:
@@ -1763,6 +1863,89 @@ class AuditCompletenessTests(AuditLogTests):
                     pass
             if len(_records(self.audit)) <= before:
                 gaps.append("check_for_updates")
+
+            before = len(_records(self.audit))
+            from gui.widgets.contexteditor import ContextEditorWorker, KIND_BOT
+            bot_worker = SimpleNamespace(
+                action="reset",
+                kind=KIND_BOT,
+                target_id="11",
+                content="",
+            )
+            bot_pin = SimpleNamespace(
+                content="Eche with 11\nSummary:\n(none yet)\n",
+                edit=mock.AsyncMock(),
+            )
+            bot_thread = SimpleNamespace(id=33, guild=SimpleNamespace(id=22))
+            from core import discord_store
+            with mock.patch("core.discord_store.user_channel", return_value=SimpleNamespace(id=1)), \
+                 mock.patch("core.discord_store.find_thread", new=mock.AsyncMock(return_value=bot_thread)), \
+                 mock.patch("core.discord_store.find_bot_record", new=mock.AsyncMock(return_value=bot_pin)), \
+                 mock.patch.object(
+                     discord_store,
+                     "_write_pinned_unlocked",
+                     new=mock.AsyncMock(return_value=(SimpleNamespace(id=2), "edited")),
+                 ):
+                try:
+                    await ContextEditorWorker._bot(bot_worker, SimpleNamespace(id=22))
+                except Exception:
+                    pass
+            if len(_records(self.audit)) <= before:
+                gaps.append("reset_pin")
+
+            before = len(_records(self.audit))
+            from gui.widgets.cogmanager import CogManagerWindow
+            cogs_dest = Path(tempfile.mkdtemp(prefix="eche-cogs-drop-"))
+            (cogs_dest / "utils").mkdir()
+            (cogs_dest / "games").mkdir()
+            drop_src = Path(tempfile.mkdtemp(prefix="eche-secret-home-alice-")) / "utils"
+            drop_src.mkdir(parents=True, exist_ok=True)
+            src_file = drop_src / "mycog.py"
+            src_file.write_text("async def setup(bot):\n    return\n", encoding="utf-8")
+            drop_inst = SimpleNamespace(
+                main_window=None,
+                status_label=SimpleNamespace(setText=lambda *_a, **_k: None),
+                rebuild_from_disk=lambda *_a, **_k: None,
+                _send=lambda *_a, **_k: None,
+                _loaded=set(),
+            )
+            with mock.patch(
+                "gui.widgets.cogmanager._writable_cogs_root",
+                return_value=str(cogs_dest),
+            ):
+                try:
+                    CogManagerWindow._on_drop_files(drop_inst, [str(src_file)])
+                except Exception:
+                    pass
+            placed_cog = cogs_dest / "utils" / "mycog.py"
+            if not placed_cog.is_file() or len(_records(self.audit)) <= before:
+                gaps.append("_on_drop_files")
+            else:
+                blob = " ".join(str(r) for r in _records(self.audit)[before:])
+                secret_bits = (
+                    "secret-home-alice",
+                    str(src_file),
+                    str(cogs_dest),
+                    "async def setup",
+                )
+                if any(bit in blob for bit in secret_bits):
+                    gaps.append("_on_drop_files:path-or-content-logged")
+
+            before = len(_records(self.audit))
+            from gui.main import MainWindow
+            clear_inst = SimpleNamespace(
+                local_output=SimpleNamespace(
+                    clear=lambda: None,
+                    append=lambda *_a, **_k: None,
+                )
+            )
+            with mock.patch("core.local_chat_memory.clear_turns"):
+                try:
+                    MainWindow._on_local_clear(clear_inst)
+                except Exception:
+                    pass
+            if len(_records(self.audit)) <= before:
+                gaps.append("_on_local_clear")
 
             return gaps
 
@@ -1807,6 +1990,35 @@ class AuditCompletenessTests(AuditLogTests):
         self.assertTrue(
             any(item.startswith("dummy_unlogged_slot") for item in gaps),
             f"expected dummy slot to be missing, got {gaps}",
+        )
+
+    def test_loop_wired_unlogged_dummy_slot_fails_completeness(self):
+        """clicked.connect(slot) inside a loop must be discovered and reviewed."""
+        tmp = Path(tempfile.mkdtemp(prefix="eche-qt-loop-"))
+        (tmp / "dummy_loop_slots.py").write_text(
+            "class Window:\n"
+            "    def dummy_unlogged_loop_slot(self):\n"
+            "        return None\n"
+            "    def wire(self):\n"
+            "        editors = [\n"
+            "            ('Dummy', self.dummy_unlogged_loop_slot),\n"
+            "        ]\n"
+            "        for text, slot in editors:\n"
+            "            btn.clicked.connect(slot)\n",
+            encoding="utf-8",
+        )
+        found = discover_qt_slots(tmp)
+        self.assertIn(
+            "dummy_unlogged_loop_slot",
+            found,
+            f"loop-wired slot not discovered: {found}",
+        )
+        gaps = self._require_background_and_gui_success(
+            extra_slots={"dummy_unlogged_loop_slot"}
+        )
+        self.assertTrue(
+            any(item.startswith("dummy_unlogged_loop_slot") for item in gaps),
+            f"expected loop-wired dummy slot to be missing, got {gaps}",
         )
 
     def test_unlogged_dummy_stdin_command_fails_completeness(self):
