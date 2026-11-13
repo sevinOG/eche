@@ -268,6 +268,10 @@ REVIEWED_ENTRYPOINTS = {
     "UNLOAD_COG": "stdin UNLOAD_COG",
     "shutdown_for_update": "GUI shutdown for update",
     "closeEvent": "GUI close",
+    "_move_data_folder": "settings data-folder move",
+    "on_save_clicked": "Unifier builder source write",
+    "_save": "economy bank record save",
+    "check_for_updates": "settings check-for-updates",
 }
 
 
@@ -1653,6 +1657,112 @@ class AuditCompletenessTests(AuditLogTests):
                     pass
             if len(_records(self.audit)) <= before:
                 gaps.append("_confirm_reset_memory")
+
+            before = len(_records(self.audit))
+            move_inst = SimpleNamespace()
+            move_inst.data_folder_edit = SimpleNamespace(text=lambda: "dest")
+            move_inst.data_folder_status = SimpleNamespace(setText=lambda *_a, **_k: None)
+            plan = SimpleNamespace(conflicts=[], target="dest")
+            with mock.patch("core.data_folder.validate_target", return_value=""), \
+                 mock.patch("core.data_folder.plan_move", return_value=plan), \
+                 mock.patch(
+                     "core.data_folder.apply_move",
+                     return_value={"copied": 1, "skipped": 0, "same": 0},
+                 ), \
+                 mock.patch("gui.widgets.settingswindow.QMessageBox.information"):
+                try:
+                    SettingsWindow._move_data_folder(move_inst)
+                except Exception:
+                    pass
+            if len(_records(self.audit)) <= before:
+                gaps.append("_move_data_folder")
+            else:
+                blob = " ".join(str(r) for r in _records(self.audit)[before:])
+                if "dest" in blob.lower() or "/home/" in blob or "C:\\" in blob:
+                    gaps.append("_move_data_folder:path-logged")
+
+            before = len(_records(self.audit))
+            from gui.widgets.unifierpanel import UnifierPanel
+            unifier_target = self.root / "builder.py"
+            unifier_inst = SimpleNamespace()
+            unifier_inst.text = SimpleNamespace(
+                toPlainText=lambda: "builder source body must not be logged"
+            )
+            unifier_inst.path_label = SimpleNamespace(setText=lambda *_a, **_k: None)
+            unifier_inst.content_saved = SimpleNamespace(emit=lambda *_a, **_k: None)
+            unifier_inst.setWindowTitle = lambda *_a, **_k: None
+            unifier_inst.current_file_path = None
+            with mock.patch(
+                "gui.widgets.unifierpanel._write_path",
+                return_value=str(unifier_target),
+            ), mock.patch("gui.widgets.unifierpanel.QMessageBox.information"):
+                try:
+                    UnifierPanel.on_save_clicked(unifier_inst)
+                except Exception:
+                    pass
+            if len(_records(self.audit)) <= before:
+                gaps.append("on_save_clicked")
+            else:
+                blob = " ".join(str(r) for r in _records(self.audit)[before:])
+                if "builder source body must not be logged" in blob:
+                    gaps.append("on_save_clicked:content-logged")
+
+            before = len(_records(self.audit))
+            from gui.widgets.economywindow import EconomyWindow
+            bank_inst = SimpleNamespace()
+            bank_inst._user_id = 99
+            bank_inst._home_id = 22
+            bank_inst._starter = "STARTER:0"
+            bank_inst.balance_spin = SimpleNamespace(value=lambda: 12.34)
+            bank_inst.editor = SimpleNamespace(
+                blockSignals=lambda *_a, **_k: None,
+                setPlainText=lambda *_a, **_k: None,
+            )
+            bank_inst._set_busy = lambda *_a, **_k: None
+            bank_inst._start = lambda *_a, **_k: None
+            bank_inst._on_saved = lambda *_a, **_k: None
+            try:
+                EconomyWindow._save(bank_inst)
+            except Exception:
+                pass
+            if len(_records(self.audit)) <= before:
+                gaps.append("_save")
+            else:
+                blob = " ".join(str(r) for r in _records(self.audit)[before:])
+                if "12.34" in blob or "STARTER" in blob:
+                    gaps.append("_save:balance-logged")
+
+            before = len(_records(self.audit))
+            upd_check = SimpleNamespace()
+            upd_check.radio_local = SimpleNamespace(isChecked=lambda: False)
+            upd_check.project_path_edit = SimpleNamespace(text=lambda: "")
+            upd_check.check_btn = SimpleNamespace(setEnabled=lambda *_a, **_k: None)
+            upd_check.stack = SimpleNamespace(setEnabled=lambda *_a, **_k: None)
+            upd_check.update_status = SimpleNamespace(setText=lambda *_a, **_k: None)
+            upd_check._on_update_log = lambda *_a, **_k: None
+            upd_check._on_update_ready = lambda *_a, **_k: None
+            upd_check._update_worker = None
+            fake_worker = SimpleNamespace(
+                log_line=SimpleNamespace(connect=lambda *_a, **_k: None),
+                finished_ok=SimpleNamespace(connect=lambda *_a, **_k: None),
+                start=lambda: None,
+            )
+            with mock.patch(
+                "gui.widgets.settingswindow.QMessageBox.question",
+                return_value=QMessageBox.StandardButton.Yes,
+            ), mock.patch(
+                "core.app_update.default_source_target",
+                return_value=str(self.root),
+            ), mock.patch(
+                "gui.widgets.settingswindow.UpdatePrepareWorker",
+                return_value=fake_worker,
+            ):
+                try:
+                    SettingsWindow.check_for_updates(upd_check)
+                except Exception:
+                    pass
+            if len(_records(self.audit)) <= before:
+                gaps.append("check_for_updates")
 
             return gaps
 

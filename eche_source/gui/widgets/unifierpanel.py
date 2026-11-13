@@ -126,10 +126,31 @@ class UnifierPanel(QWidget):
             self.setWindowTitle(
                 f"{APP_NAME} — Unifier · {os.path.basename(target)} (Saved)"
             )
+            try:
+                from core.audit import safe_activity
+                safe_activity(
+                    "builder-save",
+                    action="save-builder-source",
+                    outcome="success",
+                    file="builder.py",
+                )
+            except Exception:
+                pass
             QMessageBox.information(
                 self,
                 "Saved",
                 f"Builder source updated (not encrypted):\n{target}",
             )
         except Exception as e:
+            try:
+                from core.audit import safe_activity
+                safe_activity(
+                    "builder-save",
+                    action="save-builder-source",
+                    outcome="error",
+                    error_type=type(e).__name__,
+                    file="builder.py",
+                )
+            except Exception:
+                pass
             QMessageBox.critical(self, "Save failed", str(e))
