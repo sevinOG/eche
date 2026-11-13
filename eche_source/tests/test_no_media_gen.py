@@ -14,21 +14,44 @@ ROOT = Path(__file__).resolve().parents[1]
 # Production trees only. Tests may mention deleted APIs when asserting absence.
 _SKIP_DIRS = {"tests", "__pycache__", "assets", "venv", ".venv"}
 
-_FORBIDDEN_SUBSTRINGS = (
+_ENDPOINT_NEEDLES = (
     "images/generations",
     "videos/generations",
+    "images/edits",
+    "videos/edits",
     "api.x.ai",
     "console.x.ai",
     "grok-imagine",
     "XAI_API_KEY",
+    "generativelanguage.googleapis.com",
+    "responseModalities",
+    "flash-image",
+    "gemini-2.5-flash-image",
+    "dall-e",
+    "dall.e",
+    "openai.images",
+    "images.generate",
+    "api.stability.ai",
+    "stability.sd",
+    "replicate.com",
+    "fal.ai",
+    "api.fal.ai",
+)
+
+# Module names may appear in core/denied_modules.py so leftover files cannot load.
+_MODULE_NEEDLES = (
     "core.imagine",
     "tools_asset",
     "cogs.asset",
+    "cogs.flash",
     "asset_message",
     "plan_asset",
     "?asset",
     "is_asset_command",
 )
+_MODULE_NAME_OK = {
+    ROOT / "core" / "denied_modules.py",
+}
 
 # Comments in secrets.py may name dropped keys so leftover install files
 # are ignored. Those names must not appear in loadable key maps.
@@ -63,6 +86,7 @@ class NoMediaGenerationTests(unittest.TestCase):
             "core.tools_asset",
             "core.asset_message",
             "cogs.asset",
+            "cogs.flash",
         ):
             self.assertTrue(_import_fails(name), f"{name} should not be importable")
 
@@ -83,23 +107,27 @@ class NoMediaGenerationTests(unittest.TestCase):
         self.assertNotIn("tool_asset", secrets.PUBLIC_KEYS)
         self.assertNotIn("asset_owner_only", secrets.PUBLIC_KEYS)
 
+    def test_generation_modules_include_flash(self):
+        self.assertTrue(_import_fails("cogs.flash"), "cogs.flash should not be importable")
+
+    def test_setup_hook_has_no_media_cog(self):
+        src = (ROOT / "core" / "bot.py").read_text(encoding="utf-8")
+        self.assertNotIn('"cogs.flash"', src)
+        self.assertNotIn("'cogs.flash'", src)
+        self.assertNotIn('"cogs.asset"', src)
+
     def test_production_source_has_no_generation_endpoints(self):
         hits = []
         for path in _iter_source_files():
             text = path.read_text(encoding="utf-8", errors="replace")
-            # Tree comments may name dropped keys; still forbid endpoints.
-            allow_key_names = path in _COMMENT_OK
-            for needle in _FORBIDDEN_SUBSTRINGS:
-                if needle not in text:
-                    continue
-                if allow_key_names and needle in {
-                    "XAI_API_KEY",
-                }:
-                    # secrets.py should not map the env var; comments shouldn't
-                    # need the env name. Fail anyway if it shows up.
+            for needle in _ENDPOINT_NEEDLES:
+                if needle in text:
                     hits.append(f"{path.relative_to(ROOT)}: {needle}")
-                    continue
-                hits.append(f"{path.relative_to(ROOT)}: {needle}")
+            if path in _MODULE_NAME_OK:
+                continue
+            for needle in _MODULE_NEEDLES:
+                if needle in text:
+                    hits.append(f"{path.relative_to(ROOT)}: {needle}")
         self.assertEqual(hits, [], "generation markers found in production source")
 
     def test_production_ast_has_no_imagine_imports(self):

@@ -404,7 +404,8 @@ class CogManagerWindow(QMainWindow):
                     full_path = os.path.join(root, file)
                     rel = os.path.relpath(full_path, base)
                     modules.append(rel.replace(os.sep, ".")[:-3])
-        return sorted(set(modules))
+        from core.denied_modules import is_denied_module
+        return sorted({m for m in modules if not is_denied_module(m)})
 
     @staticmethod
     def _short_module(ext: str) -> str:
@@ -497,6 +498,15 @@ class CogManagerWindow(QMainWindow):
         else:
             full = "cogs." + display_module
 
+        from core.denied_modules import is_denied_module
+        if is_denied_module(full):
+            self.status_label.setText(f"Refused to load denied media module: {full}")
+            cb = self._rows.get(display_module)
+            if cb:
+                cb.blockSignals(True)
+                cb.setChecked(False)
+                cb.blockSignals(False)
+            return
         if checked:
             self._send(f"LOAD_COG {full}")
         else:

@@ -25,6 +25,86 @@ _APP_CANDIDATES = ("eche_source", "echelon_source", "eche-source", "echelon-sour
 _SKIP_DIRS = {".venv", "__pycache__", "dist", "build", ".git", "cookies", "logs", "memories", "context"}
 _SKIP_FILES = {"settings.json", "secrets.dpapi.json"}
 
+# Only these trees are considered program code. Never inspect or delete
+# anything outside them, and never touch user data even if it appears here.
+_CODE_DIRS = ("core", "cogs", "gui")
+_PROTECTED_DIR_NAMES = {
+    "config", "data", "memories", "memory", "logs", "cookies", "context",
+    ".venv", "venv", "__pycache__",
+}
+_PROTECTED_FILE_NAMES = {
+    "settings.json", "secrets.dpapi.json", ".env", ".env.local",
+}
+_CODE_SUFFIXES = {".py", ".pyc", ".pyo", ".pyd", ".pyw"}
+
+
+def _is_protected(path: Path, root: Path) -> bool:
+    try:
+        rel = path.relative_to(root)
+    except ValueError:
+        return True
+    parts = {part.lower() for part in rel.parts[:-1]}
+    if parts & {name.lower() for name in _PROTECTED_DIR_NAMES}:
+        return True
+    if path.name in _PROTECTED_FILE_NAMES or path.name.startswith(".env"):
+        return True
+    return False
+
+
+def iter_shipped_code_files(root: str | Path) -> set[str]:
+    """Relative posix paths of code files the release ships under core/cogs/gui."""
+    root = Path(root)
+    found: set[str] = set()
+    for folder in _CODE_DIRS:
+        base = root / folder
+        if not base.is_dir():
+            continue
+        for path in base.rglob("*"):
+            if not path.is_file():
+                continue
+            if path.suffix.lower() not in _CODE_SUFFIXES:
+                continue
+            if _is_protected(path, root):
+                continue
+            found.add(path.relative_to(root).as_posix())
+    return found
+
+
+def purge_removed_program_files(stage: str | Path, target: str | Path) -> list[str]:
+    # Not robocopy /PURGE: that would also delete user files. Manifest diff only.
+    """Delete code files in the install that the new release no longer contains.
+
+    Limited to core/, cogs/, and gui/. Never deletes config, .env, data,
+    memory, logs, or other user files. `stage` is the new release tree.
+    """
+    stage = Path(stage)
+    target = Path(target)
+    if not stage.is_dir() or not target.is_dir():
+        raise ValueError("stage and target must be directories")
+    try:
+        if stage.resolve() == target.resolve():
+            return []
+    except Exception:
+        if os.path.normcase(str(stage)) == os.path.normcase(str(target)):
+            return []
+    keep = iter_shipped_code_files(stage)
+    if not keep:
+        raise RuntimeError("New release manifest was empty; refusing to purge.")
+    removed: list[str] = []
+    for rel in sorted(iter_shipped_code_files(target)):
+        if rel in keep:
+            continue
+        path = target / rel
+        if _is_protected(path, target):
+            continue
+        # Extra belt: only delete under the code dirs.
+        top = rel.split("/")[0]
+        if top not in _CODE_DIRS:
+            continue
+        path.unlink()
+        removed.append(rel)
+    return removed
+
 
 def archive_zip_url(branch: str = GITHUB_BRANCH) -> str:
     return (
@@ -189,6 +269,16 @@ if not exist "{target_s}" mkdir "{target_s}"
 robocopy "{stage_s}" "{target_s}" /E /NFL /NDL /NJH /NJS /nc /ns /np /XD {skip_dirs} /XF {skip_files}
 if !errorlevel! GEQ 8 (
   echo [Eche] Could not copy the staged source. Robocopy code !errorlevel!.
+  pause
+  exit /b 1
+)
+echo Removing program files the new release no longer ships...
+py -3 -c "import sys; sys.path.insert(0, r'{stage_s}'); from core.app_update import purge_removed_program_files; purge_removed_program_files(r'{stage_s}', r'{target_s}')"
+if errorlevel 1 (
+  python -c "import sys; sys.path.insert(0, r'{stage_s}'); from core.app_update import purge_removed_program_files; purge_removed_program_files(r'{stage_s}', r'{target_s}')"
+)
+if errorlevel 1 (
+  echo [Eche] Could not remove stale program files.
   pause
   exit /b 1
 )
