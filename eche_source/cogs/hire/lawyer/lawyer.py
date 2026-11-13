@@ -6,6 +6,7 @@ import os
 import time
 
 from cogs.economy.bank import Bank
+from core.chat_panel import send_visible, edit_visible
 
 LAWYER_COST = 50000
 CASE_FILE = "lawsuits.json"
@@ -16,9 +17,9 @@ async def _post_case(msg, content: str):
     from core.client import discord_chunks
 
     parts = discord_chunks(content) or ["⚖️"]
-    await msg.edit(content=parts[0], view=None)
+    await edit_visible(msg, content=parts[0], view=None)
     for extra in parts[1:]:
-        await msg.channel.send(extra)
+        await send_visible(msg.channel, extra)
 
 
 # -----------------------------
@@ -111,15 +112,11 @@ class AccusationModal(Modal, title="Lawsuit Accusation"):
             message_id=msg_id,
         )
 
-        await self.parent_view.message.edit(
-            content=content,
-            view=defense_view,
-        )
+        await edit_visible(self.parent_view.message, content=content,
+            view=defense_view,)
 
-        await interaction.response.send_message(
-            "Accusations submitted. The defendant has been notified.",
-            ephemeral=True,
-        )
+        await send_visible(interaction, "Accusations submitted. The defendant has been notified.",
+            ephemeral=True, sender=interaction.response.send_message)
 
 
 class DefenseModal(Modal, title="Submit Your Defense"):
@@ -148,10 +145,8 @@ class DefenseModal(Modal, title="Submit Your Defense"):
         cases = load_cases()
         case = cases.get(str(self.message_id))
         if not case or case.get("status") != "awaiting_defense":
-            return await interaction.response.send_message(
-                "This case is no longer accepting defenses.",
-                ephemeral=True,
-            )
+            return await send_visible(interaction, "This case is no longer accepting defenses.",
+                ephemeral=True, sender=interaction.response.send_message)
 
         case["defense"] = defense_text
         case["status"] = "awaiting_judgment"
@@ -173,10 +168,8 @@ class DefenseModal(Modal, title="Submit Your Defense"):
 
         await _post_case(msg, content)
 
-        await interaction.response.send_message(
-            "Defense submitted. The judge will now review the case.",
-            ephemeral=True,
-        )
+        await send_visible(interaction, "Defense submitted. The judge will now review the case.",
+            ephemeral=True, sender=interaction.response.send_message)
 
         # ⭐ Automatically trigger the judge
         await self.ctx.bot.law_manager.run_case(self.message_id)
@@ -283,22 +276,20 @@ class Lawyer(commands.Cog):
     @commands.command(name="law")
     async def lawyer(self, ctx, defendant: discord.Member = None, settlement_amount: str = None):
         if defendant is None or settlement_amount is None:
-            return await ctx.send("Usage: `?law @user <settlement amount>`")
+            return await send_visible(ctx, "Usage: `?law @user <settlement amount>`")
 
         try:
             settlement_amount = int(settlement_amount)
         except:
-            return await ctx.send("❌ Settlement amount must be a number.")
+            return await send_visible(ctx, "❌ Settlement amount must be a number.")
 
         bank: Bank = self.bot.get_cog("Bank")
         if bank is None:
-            return await ctx.send("❌ Bank system not loaded.")
+            return await send_visible(ctx, "❌ Bank system not loaded.")
 
         bal = await bank.load_bank(ctx.author)
         if bal < LAWYER_COST:
-            return await ctx.send(
-                f"❌ You need **{LAWYER_COST:,} coins** to hire a lawyer."
-            )
+            return await send_visible(ctx, f"❌ You need **{LAWYER_COST:,} coins** to hire a lawyer.")
 
         view = LawyerStartView(
             ctx=ctx,
@@ -308,12 +299,10 @@ class Lawyer(commands.Cog):
             bank=bank,
         )
 
-        msg = await ctx.send(
-            f"⚖️ **PLAINTIFF:** {ctx.author.mention}\n"
+        msg = await send_visible(ctx, f"⚖️ **PLAINTIFF:** {ctx.author.mention}\n"
             f"⚖️ **DEFENDANT:** {defendant.mention} is accused of...\n\n"
             f"Click **Enter accusations** to continue.",
-            view=view,
-        )
+            view=view,)
         view.message = msg
 
     # -------------------------

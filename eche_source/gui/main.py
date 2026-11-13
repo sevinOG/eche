@@ -28,7 +28,6 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QHBoxLayout,
     QPushButton,
-    QTextEdit,
     QPlainTextEdit,
     QLabel,
     QSplitter,
@@ -264,8 +263,9 @@ class MainWindow(QMainWindow):
         splitter_vertical = QSplitter(Qt.Orientation.Vertical)
         splitter_top = QSplitter(Qt.Orientation.Horizontal)
 
-        self.chat_output = QTextEdit()
+        self.chat_output = QPlainTextEdit()
         self.chat_output.setReadOnly(True)
+        self.chat_output.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
         from core.chat_panel import ChatPanelModel
         self.chat_model = ChatPanelModel()
         self.log_output = LogPane()
@@ -648,7 +648,8 @@ class MainWindow(QMainWindow):
         title_row.addWidget(self.local_clear_btn)
         layout.addLayout(title_row)
 
-        self.local_output = QTextEdit()
+        self.local_output = QPlainTextEdit()
+        self.local_output.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
         self.local_output.setReadOnly(True)
         self.local_output.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
@@ -678,7 +679,7 @@ class MainWindow(QMainWindow):
             from core.local_chat_memory import load_turns
             turns = load_turns()
         except Exception as e:
-            self.local_output.append(f"(could not load local history: {e})")
+            self.local_output.appendPlainText(f"(could not load local history: {e})")
             return
         for t in turns:
             role = (t.get("role") or "user").lower()
@@ -686,7 +687,7 @@ class MainWindow(QMainWindow):
             if not content:
                 continue
             who = "You" if role == "user" else "Eche"
-            self.local_output.append(f"{who}: {content}")
+            self.local_output.appendPlainText(f"{who}: {content}")
         sb = self.local_output.verticalScrollBar()
         if sb is not None:
             sb.setValue(sb.maximum())
@@ -699,12 +700,12 @@ class MainWindow(QMainWindow):
             return
 
         self.local_input.clear()
-        self.local_output.append(f"You: {text}")
+        self.local_output.appendPlainText(f"You: {text}")
         try:
             from core.local_chat_memory import append_turn
             append_turn("user", text)
         except Exception as e:
-            self.local_output.append(f"(save user turn failed: {e})")
+            self.local_output.appendPlainText(f"(save user turn failed: {e})")
 
         self.local_send_btn.setEnabled(False)
         self.local_input.setEnabled(False)
@@ -717,18 +718,18 @@ class MainWindow(QMainWindow):
 
     def _on_local_reply(self, reply: str) -> None:
         reply = (reply or "").strip() or "(empty)"
-        self.local_output.append(f"Eche: {reply}")
+        self.local_output.appendPlainText(f"Eche: {reply}")
         try:
             from core.local_chat_memory import append_turn
             append_turn("assistant", reply)
         except Exception as e:
-            self.local_output.append(f"(save assistant turn failed: {e})")
+            self.local_output.appendPlainText(f"(save assistant turn failed: {e})")
         sb = self.local_output.verticalScrollBar()
         if sb is not None:
             sb.setValue(sb.maximum())
 
     def _on_local_err(self, err: str) -> None:
-        self.local_output.append(f"(local error: {err})")
+        self.local_output.appendPlainText(f"(local error: {err})")
 
     def _on_local_worker_done(self) -> None:
         self.local_send_btn.setEnabled(True)
@@ -740,7 +741,7 @@ class MainWindow(QMainWindow):
             from core.local_chat_memory import clear_turns
             clear_turns()
         except Exception as e:
-            self.local_output.append(f"(clear failed: {e})")
+            self.local_output.appendPlainText(f"(clear failed: {e})")
             return
         self.local_output.clear()
 
@@ -1247,7 +1248,16 @@ class MainWindow(QMainWindow):
             return
         try:
             ts = time.strftime("%H:%M:%S")
-            widget.append(f"[{ts}] {text}")
+            line = f"[{ts}] {text}"
+            # Plain text only. QTextEdit.append would interpret HTML.
+            if hasattr(widget, "appendPlainText"):
+                widget.appendPlainText(line)
+            elif hasattr(widget, "insertPlainText"):
+                current = widget.toPlainText() if hasattr(widget, "toPlainText") else ""
+                prefix = "" if (not current or current.endswith("\n")) else "\n"
+                widget.insertPlainText(prefix + line + "\n")
+            else:
+                widget.append(line)
             sb = widget.verticalScrollBar()
             if sb is not None:
                 sb.setValue(sb.maximum())

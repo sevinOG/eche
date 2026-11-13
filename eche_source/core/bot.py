@@ -283,7 +283,8 @@ class Eche(commands.Bot):
             return
         if isinstance(error, commands.NotOwner):
             try:
-                await ctx.send("Only an owner from Settings → Security can use that command.")
+                from core.chat_panel import send_visible
+                await send_visible(ctx, "Only an owner from Settings → Security can use that command.")
             except Exception:
                 pass
             return
@@ -294,8 +295,9 @@ class Eche(commands.Bot):
             from core.client import discord_chunks
 
             parts = discord_chunks(f"Error: {error}") or ["Error."]
+            from core.chat_panel import send_visible
             for part in parts:
-                await ctx.send(part)
+                await send_visible(ctx, part)
         except Exception:
             pass
 

@@ -2,6 +2,7 @@ import discord
 from discord.ext import commands
 from discord.ui import View, Select
 import os
+from core.chat_panel import send_visible, edit_visible
 
 # New manager
 try:
@@ -49,14 +50,10 @@ class TargetSelect(Select):
 
     async def callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.ctx.author.id:
-            return await interaction.response.send_message(
-                "This menu isn't for you.", ephemeral=True
-            )
+            return await send_visible(interaction, "This menu isn't for you.", ephemeral=True, sender=interaction.response.send_message)
 
         if self.values[0] == "none":
-            return await interaction.response.send_message(
-                "No valid targets available in this server.", ephemeral=True
-            )
+            return await send_visible(interaction, "No valid targets available in this server.", ephemeral=True, sender=interaction.response.send_message)
 
         target_id = int(self.values[0])
         target = self.ctx.guild.get_member(target_id)
@@ -64,16 +61,12 @@ class TargetSelect(Select):
             try:
                 target = await self.ctx.guild.fetch_member(target_id)
             except Exception:
-                return await interaction.response.send_message(
-                    "Could not find that user anymore.", ephemeral=True
-                )
+                return await send_visible(interaction, "Could not find that user anymore.", ephemeral=True, sender=interaction.response.send_message)
 
         # Final message always same
         try:
-            await self.parent_message.edit(
-                content=f"**{self.ctx.author.display_name} hired a specialist...**",
-                view=None
-            )
+            await edit_visible(self.parent_message, content=f"**{self.ctx.author.display_name} hired a specialist...**",
+                view=None)
         except Exception:
             pass
 
@@ -104,14 +97,14 @@ class HireJobView(View):
 
     async def interaction_check(self, interaction: discord.Interaction):
         if interaction.user.id != self.ctx.author.id:
-            await interaction.response.send_message("This menu isn't yours.", ephemeral=True)
+            await send_visible(interaction, "This menu isn't yours.", ephemeral=True, sender=interaction.response.send_message)
             return False
         return True
 
     async def on_timeout(self):
         try:
             if self.message:
-                await self.message.edit(content="Hire menu timed out.", view=None)
+                await edit_visible(self.message, content="Hire menu timed out.", view=None)
         except Exception:
             pass
 
@@ -127,10 +120,8 @@ class HireJobView(View):
         view = View(timeout=60)
         view.add_item(dropdown)
 
-        await self.message.edit(
-            content=prompt if valid_members else f"No hirable users in **{self.ctx.guild.name}**. Users must be opted into memory and be in this server.",
-            view=view
-        )
+        await edit_visible(self.message, content=prompt if valid_members else f"No hirable users in **{self.ctx.guild.name}**. Users must be opted into memory and be in this server.",
+            view=view)
 
     @discord.ui.button(label="Mugger", style=discord.ButtonStyle.danger, emoji="🔪")
     async def mugger(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -148,10 +139,8 @@ class HireJobView(View):
     async def entertainers(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
         try:
-            await self.message.edit(
-                content=f"**{self.ctx.author.display_name} hired a specialist...**",
-                view=None
-            )
+            await edit_visible(self.message, content=f"**{self.ctx.author.display_name} hired a specialist...**",
+                view=None)
         except Exception:
             pass
 
@@ -167,7 +156,7 @@ class Hire(commands.Cog):
     @commands.command(name="hire")
     async def hire(self, ctx, amount: int):
         if amount <= 0:
-            return await ctx.send("Amount must be positive.")
+            return await send_visible(ctx, "Amount must be positive.")
         
         # Ensure guild has chunked members
         if not ctx.guild.chunked:
@@ -178,10 +167,8 @@ class Hire(commands.Cog):
                     pass
 
         view = HireJobView(ctx, amount, self.bot)
-        msg = await ctx.send(
-            f"What kind of specialist do you want to hire for **${amount}**?",
-            view=view
-        )
+        msg = await send_visible(ctx, f"What kind of specialist do you want to hire for **${amount}**?",
+            view=view)
         view.message = msg
 
 

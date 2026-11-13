@@ -21,6 +21,7 @@ _bot = None
 _loop: Optional[asyncio.AbstractEventLoop] = None
 _enabled = False
 _reasoning_handler = None
+_emit_lock = threading.Lock()
 
 
 def is_enabled() -> bool:
@@ -34,15 +35,19 @@ def is_enabled() -> bool:
 def configure_stdio() -> None:
     """Use UTF-8 for the GUI pipe. A Windows cp1252 stdout would drop emoji
     and typical model punctuation when emit() writes a chat line."""
-    for stream in (sys.stdout, sys.stderr):
+    for stream in (sys.stdout, sys.stderr, sys.stdin):
         reconfigure = getattr(stream, "reconfigure", None)
         if reconfigure is None:
             continue
+        kwargs = {"encoding": "utf-8", "errors": "replace"}
+        if stream is not sys.stdin:
+            kwargs["line_buffering"] = True
         try:
-            reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+            reconfigure(**kwargs)
         except Exception:
+            kwargs.pop("line_buffering", None)
             try:
-                reconfigure(encoding="utf-8", errors="replace")
+                reconfigure(**kwargs)
             except Exception:
                 pass
 
@@ -64,55 +69,52 @@ def emit(event: str, data: Optional[dict[str, Any]] = None) -> None:
         return
     payload = {"event": event, "data": data or {}}
     line = json.dumps(payload, ensure_ascii=False) + "\n"
-    try:
-        sys.stdout.write(line)
-        sys.stdout.flush()
-        return
-    except Exception:
-        pass
-    # A non-UTF-8 text stdout (common on Windows) raises on emoji or dashes.
-    # Write the same line as UTF-8 bytes so the GUI reader can still parse it.
-    try:
-        buf = getattr(sys.stdout, "buffer", None)
-        if buf is None:
+    with _emit_lock:
+        try:
+            sys.stdout.write(line)
+            sys.stdout.flush()
             return
-        buf.write(line.encode("utf-8", errors="replace"))
-        buf.flush()
-    except Exception:
-        pass
+        except Exception:
+            pass
+        # A non-UTF-8 text stdout (common on Windows) raises on emoji or dashes.
+        # Write the same line as UTF-8 bytes so the GUI reader can still parse it.
+        try:
+            buf = getattr(sys.stdout, "buffer", None)
+            if buf is None:
+                return
+            buf.write(line.encode("utf-8", errors="replace"))
+            buf.flush()
+        except Exception:
+            pass
 
 
 def parse_bridge_line(raw: str) -> Tuple[Optional[str], dict[str, Any]]:
     """Parse one stdout line from the bot process.
 
-    A library print or a merged stderr fragment may sit in front of the JSON
-    object. Recover the event when the line still contains a valid payload,
-    so a dirty line does not drop a chat message from the panel.
+    Only a complete event line produced by emit() is accepted: the stripped
+    line must start with '{"event"' and must be one JSON object. Mid-line
+    recovery is unsafe because model and exception text share this pipe.
+    Losing a chat line that got glued to a log print is better than letting
+    untrusted text drive the GUI.
     """
     text = "" if raw is None else str(raw).strip()
-    if not text:
+    if not text.startswith('{"event"'):
         return None, {}
-    candidates: list[str] = []
-    if text.startswith("{"):
-        candidates.append(text)
-    marker = text.find('{"event"')
-    if marker > 0:
-        candidates.append(text[marker:])
-    decoder = json.JSONDecoder()
-    for blob in candidates:
-        obj = None
+    obj = None
+    try:
+        obj = json.loads(text)
+    except Exception:
         try:
-            obj = json.loads(blob)
+            obj, end = json.JSONDecoder().raw_decode(text)
         except Exception:
-            try:
-                obj, _end = decoder.raw_decode(blob)
-            except Exception:
-                obj = None
-        if isinstance(obj, dict) and "event" in obj:
-            data = obj.get("data") or {}
-            if not isinstance(data, dict):
-                data = {}
-            return obj.get("event"), data
+            return None, {}
+        if text[end:].strip():
+            return None, {}
+    if isinstance(obj, dict) and "event" in obj:
+        data = obj.get("data") or {}
+        if not isinstance(data, dict):
+            data = {}
+        return obj.get("event"), data
     return None, {}
 
 
@@ -271,12 +273,8 @@ async def _announce(bot, text: str) -> None:
         log("ANNOUNCE failed: no sendable channel", channel="bridge")
         return
     try:
-        await channel.send(text)
-        try:
-            from core.chat_panel import outbound
-            outbound(text)
-        except Exception:
-            pass
+        from core.chat_panel import send_visible
+        await send_visible(channel, text)
         log(f"Announced: {text}", channel="bridge")
     except Exception as e:
         log(f"ANNOUNCE failed: {e}", channel="bridge")

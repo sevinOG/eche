@@ -5,6 +5,7 @@ import io
 from discord.ext import commands
 
 from core.home_id import home_server_id_from_env
+from core.chat_panel import send_visible, edit_visible
 
 HOME_SERVER_ID = home_server_id_from_env()
 
@@ -24,7 +25,7 @@ class ConfirmPurchaseView(discord.ui.View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.seller.id:
-            await interaction.response.send_message("Only the seller can respond to this.", ephemeral=True)
+            await send_visible(interaction, "Only the seller can respond to this.", ephemeral=True, sender=interaction.response.send_message)
             return False
         return True
 
@@ -34,8 +35,8 @@ class ConfirmPurchaseView(discord.ui.View):
                 child.disabled = True
         if self.message:
             try:
-                await self.message.edit(view=self)
-                await self.ctx.send("⏳ Sale request expired — no response from the seller.")
+                await edit_visible(self.message, view=self)
+                await send_visible(self.ctx, "⏳ Sale request expired — no response from the seller.")
             except discord.HTTPException:
                 pass
 
@@ -44,14 +45,14 @@ class ConfirmPurchaseView(discord.ui.View):
         # Re-check balances and existence
         buyer_balance = await self.cog.get_balance(self.buyer)
         if buyer_balance < self.price:
-            await interaction.response.send_message("❌ Buyer no longer has enough coins.", ephemeral=True)
+            await send_visible(interaction, "❌ Buyer no longer has enough coins.", ephemeral=True, sender=interaction.response.send_message)
             self.stop()
             return
 
         # Reload seller hosted items to ensure item still exists
         items = await self.cog.load_items(self.seller_hosted_file)
         if self.item_entry not in items:
-            await interaction.response.send_message("❌ Item is no longer hosted.", ephemeral=True)
+            await send_visible(interaction, "❌ Item is no longer hosted.", ephemeral=True, sender=interaction.response.send_message)
             self.stop()
             return
 
@@ -76,7 +77,7 @@ class ConfirmPurchaseView(discord.ui.View):
             data = await attachment.read()
             files.append(discord.File(io.BytesIO(data), filename=attachment.filename))
 
-        await owned_file.channel.send(content=original_msg.content, files=files)
+        await owned_file.channel.send(content=original_msg.content, files=files)  # hidden shop store, not the chat panel
 
         owned_items.append(self.item_name)
         await self.cog.save_items(owned_file, "OWNED ITEMS", owned_items)
@@ -84,16 +85,12 @@ class ConfirmPurchaseView(discord.ui.View):
         for child in self.children:
             if isinstance(child, discord.ui.Button):
                 child.disabled = True
-        await self.message.edit(view=self)
+        await edit_visible(self.message, view=self)
 
-        await interaction.response.send_message(
-            f"✅ Sale completed: **{self.item_name}** sold to **{self.buyer.display_name}** "
-            f"for **{self.price:,} coins**."
-        )
-        await self.ctx.send(
-            f"✅ {self.buyer.mention} bought **{self.item_name}** from {self.seller.mention} "
-            f"for **{self.price:,} coins**."
-        )
+        await send_visible(interaction, f"✅ Sale completed: **{self.item_name}** sold to **{self.buyer.display_name}** "
+            f"for **{self.price:,} coins**.", sender=interaction.response.send_message)
+        await send_visible(self.ctx, f"✅ {self.buyer.mention} bought **{self.item_name}** from {self.seller.mention} "
+            f"for **{self.price:,} coins**.")
         self.stop()
 
     @discord.ui.button(label="Decline", style=discord.ButtonStyle.danger)
@@ -101,11 +98,9 @@ class ConfirmPurchaseView(discord.ui.View):
         for child in self.children:
             if isinstance(child, discord.ui.Button):
                 child.disabled = True
-        await self.message.edit(view=self)
-        await interaction.response.send_message("❌ Sale declined.", ephemeral=True)
-        await self.ctx.send(
-            f"❌ {self.seller.mention} declined the sale of **{self.item_name}** to {self.buyer.mention}."
-        )
+        await edit_visible(self.message, view=self)
+        await send_visible(interaction, "❌ Sale declined.", ephemeral=True, sender=interaction.response.send_message)
+        await send_visible(self.ctx, f"❌ {self.seller.mention} declined the sale of **{self.item_name}** to {self.buyer.mention}.")
         self.stop()
 
 
@@ -197,7 +192,7 @@ class Shops(commands.Cog):
             ),
             color=discord.Color.green()
         )
-        await ctx.send(embed=embed)
+        await send_visible(ctx, embed=embed)
 
     # -------- ?shop owned --------
     @shop.command(name="owned")
@@ -206,14 +201,14 @@ class Shops(commands.Cog):
         items = await self.load_items(owned_file)
 
         if not items:
-            return await ctx.send("🛒 You don't own any items.")
+            return await send_visible(ctx, "🛒 You don't own any items.")
 
         embed = discord.Embed(
             title="🧰 Owned Items",
             description="\n".join(f"• {i}" for i in items),
             color=discord.Color.blue()
         )
-        await ctx.send(embed=embed)
+        await send_visible(ctx, embed=embed)
 
     # -------- ?shop hosted --------
     @shop.command(name="hosted")
@@ -222,55 +217,56 @@ class Shops(commands.Cog):
         items = await self.load_items(hosted_file)
 
         if not items:
-            return await ctx.send("📦 You are not hosting any items.")
+            return await send_visible(ctx, "📦 You are not hosting any items.")
 
         embed = discord.Embed(
             title="📦 Hosted Items",
             description="\n".join(f"• {i}" for i in items),
             color=discord.Color.orange()
         )
-        await ctx.send(embed=embed)
+        await send_visible(ctx, embed=embed)
 
     # -------- ?shop createitem "Name" price --------
     @shop.command(name="createitem")
     async def shop_createitem(self, ctx, *, args: str = None):
         if args is None:
-            return await ctx.send('Usage: `?shop createitem "Item Name" price`')
+            return await send_visible(ctx, 'Usage: `?shop createitem "Item Name" price`')
 
         if not args.startswith('"'):
-            return await ctx.send('❌ Name must be in quotes.')
+            return await send_visible(ctx, '❌ Name must be in quotes.')
 
         try:
             end_quote = args.index('"', 1)
             item_name = args[1:end_quote]
         except ValueError:
-            return await ctx.send("❌ Missing closing quote.")
+            return await send_visible(ctx, "❌ Missing closing quote.")
 
         remaining = args[end_quote + 1:].strip()
         if not remaining:
-            return await ctx.send("❌ Missing price.")
+            return await send_visible(ctx, "❌ Missing price.")
 
         try:
             price = int(remaining)
         except ValueError:
-            return await ctx.send("❌ Price must be a number.")
+            return await send_visible(ctx, "❌ Price must be a number.")
 
         if price < 10000:
-            return await ctx.send("❌ Minimum price is 10,000.")
+            return await send_visible(ctx, "❌ Minimum price is 10,000.")
 
         _, hosted_file = await self.ensure_shop_files(ctx.author)
         items = await self.load_items(hosted_file)
 
         for entry in items:
             if entry.split(" | ")[0].lower() == item_name.lower():
-                return await ctx.send("❌ You already have an item with that name.")
+                return await send_visible(ctx, "❌ You already have an item with that name.")
 
         files = []
         for attachment in ctx.message.attachments:
             data = await attachment.read()
             files.append(discord.File(io.BytesIO(data), filename=attachment.filename))
 
-        forwarded = await hosted_file.channel.send(
+        forwarded = await hosted_file.channel.send(  # hidden shop store, not the chat panel
+            
             content=f"📦 **{item_name}**\nPrice: **{price:,} coins**",
             files=files
         )
@@ -279,27 +275,27 @@ class Shops(commands.Cog):
         items.append(new_entry)
         await self.save_items(hosted_file, "HOSTED ITEMS", items)
 
-        await ctx.send(f"✅ Item **{item_name}** created and hosted for **{price:,} coins**.")
+        await send_visible(ctx, f"✅ Item **{item_name}** created and hosted for **{price:,} coins**.")
 
     # -------- ?shop buy item price (with confirmation buttons) --------
     @shop.command(name="buy")
     async def shop_buy(self, ctx, *, args: str = None):
         if args is None:
-            return await ctx.send("Usage: `?shop buy itemname price`")
+            return await send_visible(ctx, "Usage: `?shop buy itemname price`")
 
         parts = args.split()
         if len(parts) < 2:
-            return await ctx.send("Usage: `?shop buy itemname price`")
+            return await send_visible(ctx, "Usage: `?shop buy itemname price`")
 
         item_name = parts[0]
         try:
             offered_price = int(parts[1])
         except ValueError:
-            return await ctx.send("❌ Price must be a number.")
+            return await send_visible(ctx, "❌ Price must be a number.")
 
         guild = self.bot.get_guild(HOME_SERVER_ID)
         if guild is None:
-            return await ctx.send("❌ Home server not found.")
+            return await send_visible(ctx, "❌ Home server not found.")
 
         seller = None
         seller_hosted_file = None
@@ -325,17 +321,17 @@ class Shops(commands.Cog):
                 break
 
         if seller is None:
-            return await ctx.send("❌ That item is not hosted by anyone.")
+            return await send_visible(ctx, "❌ That item is not hosted by anyone.")
 
         if offered_price != real_price:
-            return await ctx.send(f"❌ Correct price is **{real_price:,}** coins.")
+            return await send_visible(ctx, f"❌ Correct price is **{real_price:,}** coins.")
 
         if seller.id == ctx.author.id:
-            return await ctx.send("❌ You cannot buy your own item.")
+            return await send_visible(ctx, "❌ You cannot buy your own item.")
 
         buyer_balance = await self.get_balance(ctx.author)
         if buyer_balance < real_price:
-            return await ctx.send("❌ You do not have enough coins.")
+            return await send_visible(ctx, "❌ You do not have enough coins.")
 
         view = ConfirmPurchaseView(
             cog=self,
@@ -348,39 +344,37 @@ class Shops(commands.Cog):
             seller_hosted_file=seller_hosted_file
         )
 
-        msg = await ctx.send(
-            f"{seller.mention} {ctx.author.mention}\n"
+        msg = await send_visible(ctx, f"{seller.mention} {ctx.author.mention}\n"
             f"**{item_name}** — Purchase Request\n"
             f"Price: **{real_price:,} coins**",
-            view=view
-        )
+            view=view)
         view.message = msg
 
     # -------- ?shop sell item (remove from owned) --------
     @shop.command(name="sell")
     async def shop_sell(self, ctx, *, item: str = None):
         if item is None:
-            return await ctx.send("Usage: `?shop sell itemname`")
+            return await send_visible(ctx, "Usage: `?shop sell itemname`")
 
         owned_file, _ = await self.ensure_shop_files(ctx.author)
         items = await self.load_items(owned_file)
 
         if item not in items:
-            return await ctx.send("❌ You don't own that item.")
+            return await send_visible(ctx, "❌ You don't own that item.")
 
         items.remove(item)
         await self.save_items(owned_file, "OWNED ITEMS", items)
 
-        await ctx.send(f"🗑️ Removed **{item}** from your owned items.")
+        await send_visible(ctx, f"🗑️ Removed **{item}** from your owned items.")
 
     # -------- ?shop give item @user (user-level transfer) --------
     @shop.command(name="give")
     async def shop_give(self, ctx, item_name: str = None, member: discord.Member = None):
         if item_name is None or member is None:
-            return await ctx.send("Usage: `?shop give itemname @user`")
+            return await send_visible(ctx, "Usage: `?shop give itemname @user`")
 
         if member.id == ctx.author.id:
-            return await ctx.send("❌ You already are that user.")
+            return await send_visible(ctx, "❌ You already are that user.")
 
         # Search ONLY invoking user's inventories
         owned_file, hosted_file = await self.ensure_shop_files(ctx.author)
@@ -407,7 +401,7 @@ class Shops(commands.Cog):
                     break
 
             if not from_hosted:
-                return await ctx.send("❌ You don't own or host that item.")
+                return await send_visible(ctx, "❌ You don't own or host that item.")
 
         target_owned_file, _ = await self.ensure_shop_files(member)
         target_owned_items = await self.load_items(target_owned_file)
@@ -418,30 +412,29 @@ class Shops(commands.Cog):
                 data = await attachment.read()
                 files.append(discord.File(io.BytesIO(data), filename=attachment.filename))
 
-            await target_owned_file.channel.send(content=original_msg.content, files=files)
+            await target_owned_file.channel.send(content=original_msg.content, files=files)  # hidden shop store, not the chat panel
         else:
-            await target_owned_file.channel.send(f"📦 **{item_name}** (Gifted from {ctx.author.display_name})")
+            await target_owned_file.channel.send(  # hidden shop store, not the chat panel
+                f"📦 **{item_name}** (Gifted from {ctx.author.display_name})")
 
         target_owned_items.append(item_name)
         await self.save_items(target_owned_file, "OWNED ITEMS", target_owned_items)
 
-        await ctx.send(
-            f"✅ Transferred **{item_name}** from **{ctx.author.display_name}** "
-            f"to **{member.display_name}**."
-        )
+        await send_visible(ctx, f"✅ Transferred **{item_name}** from **{ctx.author.display_name}** "
+            f"to **{member.display_name}**.")
 
     # -------- OWNER UTILS (optional) --------
     @commands.command(name="shoprebuild")
     @commands.is_owner()
     async def shop_rebuild(self, ctx, member: discord.Member = None):
         if member is None:
-            return await ctx.send("Usage: `?shoprebuild @user`")
+            return await send_visible(ctx, "Usage: `?shoprebuild @user`")
 
         owned_file, hosted_file = await self.ensure_shop_files(member)
         await self.save_items(owned_file, "OWNED ITEMS", [])
         await self.save_items(hosted_file, "HOSTED ITEMS", [])
 
-        await ctx.send(f"🔧 Rebuilt shop files for {member.display_name}.")
+        await send_visible(ctx, f"🔧 Rebuilt shop files for {member.display_name}.")
 
 
 async def setup(bot):

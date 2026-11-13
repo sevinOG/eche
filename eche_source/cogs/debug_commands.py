@@ -5,6 +5,7 @@ import discord
 from discord.ext import commands
 
 from core.context_manager import get_home_guild
+from core.chat_panel import send_visible
 
 
 class DebugCommands(commands.Cog):
@@ -22,7 +23,7 @@ class DebugCommands(commands.Cog):
 
         guild = get_home_guild(self.bot)
         if guild is None:
-            return await ctx.send("Home server not found.")
+            return await send_visible(ctx, "Home server not found.")
         try:
             await guild.fetch_channels()
         except Exception:
@@ -41,7 +42,7 @@ class DebugCommands(commands.Cog):
             count += 1
 
         save_opted_in(set(opted))
-        await ctx.send(f"Opted in **{count}** users who have a channel in bot memory.")
+        await send_visible(ctx, f"Opted in **{count}** users who have a channel in bot memory.")
 
     # ---------------------------------------------------------
     # PING
@@ -49,7 +50,7 @@ class DebugCommands(commands.Cog):
     @commands.command(name="ping")
     @commands.is_owner()
     async def ping(self, ctx):
-        await ctx.send("Pong.")
+        await send_visible(ctx, "Pong.")
 
     # ---------------------------------------------------------
     # FLASHYTHING — delete last N messages
@@ -58,7 +59,7 @@ class DebugCommands(commands.Cog):
     @commands.is_owner()
     async def flashything(self, ctx, count: int = 1):
         if count < 1:
-            return await ctx.send("Count must be at least 1.")
+            return await send_visible(ctx, "Count must be at least 1.")
 
         deleted = 0
         async for msg in ctx.channel.history(limit=200):
@@ -72,10 +73,8 @@ class DebugCommands(commands.Cog):
                 except Exception:
                     pass
 
-        await ctx.send(
-            f"Flashything complete. Deleted {deleted} messages.",
-            delete_after=3,
-        )
+        await send_visible(ctx, f"Flashything complete. Deleted {deleted} messages.",
+            delete_after=3,)
 
     # ---------------------------------------------------------
     # FLASHYTHING NUKE — delete EVERYTHING except pinned
@@ -92,7 +91,7 @@ class DebugCommands(commands.Cog):
                 to_delete.append(msg)
 
         if not to_delete:
-            confirm = await ctx.send("Nothing to delete — only pinned messages remain.")
+            confirm = await send_visible(ctx, "Nothing to delete — only pinned messages remain.")
             return await confirm.delete(delay=3)
 
         try:
@@ -104,7 +103,7 @@ class DebugCommands(commands.Cog):
                 except Exception:
                     pass
 
-        confirm = await ctx.send(f"Nuke complete. Deleted {len(to_delete)} messages.")
+        confirm = await send_visible(ctx, f"Nuke complete. Deleted {len(to_delete)} messages.")
         await confirm.delete(delay=3)
 
 

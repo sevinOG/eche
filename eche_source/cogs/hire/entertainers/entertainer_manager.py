@@ -7,6 +7,7 @@ import discord
 import os
 
 from cogs.economy.bank import Bank
+from core.chat_panel import send_visible
 
 # In-memory registry: batch_id -> job dict
 ENTERTAINER_JOBS = {}
@@ -216,7 +217,7 @@ async def entertainer_background_loop(bot):
                     channel = guild.get_channel(invoke_channel_id)
 
                 if channel:
-                    await channel.send(f"<@{user_id}> {msg} (Batch: `{batch_id}`)")
+                    await send_visible(channel, f"<@{user_id}> {msg} (Batch: `{batch_id}`)")
 
                 # If no ticks left or expired, mark for removal
                 if job["ticks_remaining"] <= 0 or datetime.utcnow() >= job["expires_at"]:

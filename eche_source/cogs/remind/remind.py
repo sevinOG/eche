@@ -3,6 +3,7 @@
 import discord
 from discord.ext import commands
 from cogs.remind.remind_handler import ReminderHandler
+from core.chat_panel import send_visible
 
 
 class Remind(commands.Cog):
@@ -45,7 +46,7 @@ class Remind(commands.Cog):
             user = f"role:{role.id}"
 
         else:
-            await ctx.send("I couldn't identify the user or role you want to remind.")
+            await send_visible(ctx, "I couldn't identify the user or role you want to remind.")
             return
 
         # Delegate to handler
@@ -55,7 +56,7 @@ class Remind(commands.Cog):
             time_and_message=time_and_message
         )
 
-        await ctx.send(response)
+        await send_visible(ctx, response)
 
 
 # ---------------------------------------------------------

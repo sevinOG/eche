@@ -4,6 +4,7 @@ from discord.ext import commands
 # ⭐ NEW — allow bot economy participation
 from core.bot_whitelist import is_allowed_bot
 from core.home_id import home_server_id_from_env
+from core.chat_panel import send_visible
 
 HOME_SERVER_ID = home_server_id_from_env()
 
@@ -73,7 +74,7 @@ class Bank(commands.Cog):
     async def bank_rebuild(self, ctx, member: discord.Member = None):
 
         if member is None:
-            return await ctx.send("Usage: `?bankrebuild @user`")
+            return await send_visible(ctx, "Usage: `?bankrebuild @user`")
 
         from core.discord_store import (
             THREAD_BANK,
@@ -85,28 +86,26 @@ class Bank(commands.Cog):
 
         guild = self.bot.get_guild(HOME_SERVER_ID)
         if guild is None:
-            return await ctx.send("Home guild not found.")
+            return await send_visible(ctx, "Home guild not found.")
 
         thread = await ensure_user_thread(
             guild, member.id, THREAD_BANK, getattr(member, "name", None)
         )
         if thread is None:
-            return await ctx.send("Could not open that user's bank thread.")
+            return await send_visible(ctx, "Could not open that user's bank thread.")
 
         for msg in await list_pins(thread):
             if (msg.content or "").startswith("BANK DATA"):
                 await msg.delete()
         forget_parent(thread.id)
 
-        new_msg = await thread.send("BANK DATA\n500.00\nSTARTER:1")
+        new_msg = await thread.send("BANK DATA\n500.00\nSTARTER:1")  # hidden bank store, not the chat panel
         await new_msg.pin()
         remember_record(thread.id, new_msg)
 
-        await ctx.send(
-            f"✅ Rebuilt **{member.display_name}**'s bank file.\n"
+        await send_visible(ctx, f"✅ Rebuilt **{member.display_name}**'s bank file.\n"
             f"Balance reset to **500.00**.\n"
-            f"Bank thread: {thread.mention}"
-        )
+            f"Bank thread: {thread.mention}")
 
     # ---------------------------------------------------------
     # ?bank (root)
@@ -124,7 +123,7 @@ class Bank(commands.Cog):
             ),
             color=discord.Color.gold()
         )
-        await ctx.send(embed=embed)
+        await send_visible(ctx, embed=embed)
 
     # ---------------------------------------------------------
     # ?bank value [@user]
@@ -139,7 +138,7 @@ class Bank(commands.Cog):
             description=f"**{bal:.2f} coins**",
             color=discord.Color.gold()
         )
-        await ctx.send(embed=embed)
+        await send_visible(ctx, embed=embed)
 
     # ---------------------------------------------------------
     # ?bank give @user amount  (BOT-FRIENDLY)
@@ -148,35 +147,35 @@ class Bank(commands.Cog):
     async def bank_give(self, ctx, member: discord.Member = None, amount: str = None):
 
         if member is None or amount is None:
-            return await ctx.send("Usage: `?bank give @user amount`")
+            return await send_visible(ctx, "Usage: `?bank give @user amount`")
 
         # Validate amount
         try:
             amount = float(amount)
         except:
-            return await ctx.send("❌ Amount must be a number.")
+            return await send_visible(ctx, "❌ Amount must be a number.")
 
         if amount <= 0:
-            return await ctx.send("❌ Amount must be greater than 0.")
+            return await send_visible(ctx, "❌ Amount must be greater than 0.")
 
         # ⭐ Allow bots IF they are whitelisted
         if member.bot and not is_allowed_bot(member.id):
-            return await ctx.send("❌ That bot is not allowed to participate in the economy.")
+            return await send_visible(ctx, "❌ That bot is not allowed to participate in the economy.")
 
         # ⭐ Also ensure the SENDER bot is allowed
         if ctx.author.bot and not is_allowed_bot(ctx.author.id):
-            return await ctx.send("❌ You (bot) are not allowed to use the economy.")
+            return await send_visible(ctx, "❌ You (bot) are not allowed to use the economy.")
 
         # Prevent giving to yourself
         if member.id == ctx.author.id:
-            return await ctx.send("❌ You cannot give coins to yourself.")
+            return await send_visible(ctx, "❌ You cannot give coins to yourself.")
 
         # Load balances
         sender_bal = await self.load_bank(ctx.author)
         receiver_bal = await self.load_bank(member)
 
         if sender_bal < amount:
-            return await ctx.send("❌ You do not have enough coins to give that amount.")
+            return await send_visible(ctx, "❌ You do not have enough coins to give that amount.")
 
         # Apply transfer
         sender_bal = round(sender_bal - amount, 2)
@@ -185,10 +184,8 @@ class Bank(commands.Cog):
         await self.save_bank(ctx.author, sender_bal)
         await self.save_bank(member, receiver_bal)
 
-        await ctx.send(
-            f"💸 **{ctx.author.display_name}** gave **{amount:.2f} coins** to **{member.display_name}**!\n"
-            f"Your new balance: **{sender_bal:.2f} coins**"
-        )
+        await send_visible(ctx, f"💸 **{ctx.author.display_name}** gave **{amount:.2f} coins** to **{member.display_name}**!\n"
+            f"Your new balance: **{sender_bal:.2f} coins**")
 
 
 async def setup(bot):

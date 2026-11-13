@@ -21,13 +21,75 @@ def set_handler(handler: Optional[Callable[[str], None]]) -> None:
         _handler = handler
 
 
+def fold_body(text: str) -> str:
+    """Indent continuation lines so a user newline plus 'Bot:' cannot
+    look like a separate bot reply in the panel."""
+    raw = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+    raw = raw.rstrip("\n")
+    if "\n" not in raw:
+        return raw
+    first, *rest = raw.split("\n")
+    return first + "\n" + "\n".join("  " + line for line in rest)
+
+
 def format_inbound(author: str, text: str) -> str:
     who = " ".join(str(author or "User").split()) or "User"
-    return f"{who}: {text}"
+    return f"{who}: {fold_body(text)}"
 
 
 def format_outbound(text: str) -> str:
-    return f"Bot: {text}"
+    return f"Bot: {fold_body(text)}"
+
+
+def visible_from_embed(embed) -> str:
+    """Plain text from a Discord embed (or a dict-shaped stand-in)."""
+    if embed is None:
+        return ""
+    if isinstance(embed, dict):
+        title = embed.get("title") or ""
+        desc = embed.get("description") or ""
+        fields = embed.get("fields") or []
+        parts = [str(title).strip(), str(desc).strip()]
+        for field in fields:
+            if isinstance(field, dict):
+                name = field.get("name") or ""
+                value = field.get("value") or ""
+            else:
+                name = getattr(field, "name", "") or ""
+                value = getattr(field, "value", "") or ""
+            bit = f"{name}: {value}" if str(name).strip() else str(value)
+            if str(bit).strip():
+                parts.append(str(bit).strip())
+        return "\n".join(p for p in parts if p).strip()
+    title = getattr(embed, "title", "") or ""
+    desc = getattr(embed, "description", "") or ""
+    parts = [str(title).strip(), str(desc).strip()]
+    for field in getattr(embed, "fields", None) or []:
+        name = getattr(field, "name", "") or ""
+        value = getattr(field, "value", "") or ""
+        bit = f"{name}: {value}" if str(name).strip() else str(value)
+        if str(bit).strip():
+            parts.append(str(bit).strip())
+    return "\n".join(p for p in parts if p).strip()
+
+
+def visible_payload(content: str = "", **send_kw) -> str:
+    """The text the chat panel should show for a Discord send or edit."""
+    text = str(content if content is not None else "")
+    if not text.strip():
+        text = str(send_kw.get("content") or "")
+    if text.strip():
+        return text
+    embed = send_kw.get("embed")
+    if embed is None:
+        embeds = send_kw.get("embeds") or []
+        embed = embeds[0] if embeds else None
+    shown = visible_from_embed(embed)
+    if shown.strip():
+        return shown
+    if send_kw.get("file") or send_kw.get("files"):
+        return "[file]"
+    return ""
 
 
 def emit_line(text: str) -> str:
@@ -93,8 +155,25 @@ async def send_visible(dest, content: str = "", *, sender=None, **send_kw):
         result = await send(**send_kw)
     else:
         result = await send()
-    if text.strip():
-        outbound(text)
+    shown = visible_payload(text, **send_kw)
+    if shown.strip():
+        outbound(shown)
+    return result
+
+
+async def edit_visible(target, content: str = "", *, editor=None, **edit_kw):
+    """Edit a Discord message or interaction response, then mirror the new text."""
+    text = str(content if content is not None else "")
+    edit = editor
+    if edit is None:
+        edit = getattr(target, "edit_message", None) or getattr(target, "edit")
+    if text:
+        result = await edit(content=text, **edit_kw)
+    else:
+        result = await edit(**edit_kw)
+    shown = visible_payload(text, **edit_kw)
+    if shown.strip():
+        outbound(shown)
     return result
 
 

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 import shutil
 import sys
 import tempfile
@@ -145,13 +146,51 @@ class ModelAndEmitTests(ChatPanelSetup):
         self.assertEqual(len(lines), 150)
         self.assertEqual(len(set(lines)), 150)
 
-    def test_parse_bridge_line_recovers_dirty_prefix(self):
+    def test_parse_bridge_line_rejects_dirty_prefix(self):
         payload = '{"event": "chat", "data": {"text": "Bot: hello 👋"}}'
-        event, data = gui_bridge.parse_bridge_line("WARN lib: " + payload + " trailing")
-        self.assertEqual(event, "chat")
-        self.assertEqual(data.get("text"), "Bot: hello 👋")
+        self.assertEqual(
+            gui_bridge.parse_bridge_line("WARN lib: " + payload + " trailing"),
+            (None, {}),
+        )
         self.assertEqual(gui_bridge.parse_bridge_line("not json"), (None, {}))
         self.assertEqual(gui_bridge.parse_bridge_line(""), (None, {}))
+        # A clean emit() line still parses, including when the chat text
+        # itself contains a spoofed event object.
+        import json
+        inner = '{"event": "fatal", "data": {"message": "pwned"}}'
+        clean = json.dumps({"event": "chat", "data": {"text": "Alice: " + inner}}, ensure_ascii=False)
+        event, data = gui_bridge.parse_bridge_line(clean)
+        self.assertEqual(event, "chat")
+        self.assertEqual(data.get("text"), "Alice: " + inner)
+        # Two objects glued together are rejected, not parsed as the first.
+        fatal = json.dumps({"event": "fatal", "data": {"message": "pwned"}})
+        chat = json.dumps({"event": "chat", "data": {"text": "Bot: hi"}})
+        self.assertEqual(gui_bridge.parse_bridge_line(fatal + chat), (None, {}))
+
+    def test_real_print_formats_never_become_gui_events(self):
+        """Today's summarizer, command-error, and episodic prints must not parse."""
+        payload = '{"event": "fatal", "data": {"message": "pwned"}}'
+
+        class CommandInvokeError(Exception):
+            pass
+
+        error = CommandInvokeError(payload)
+        lines = [
+            f"[context_summarizer] Rejecting bad LLM output (try 1): {payload[:160]!r}",
+            f"[context_summarizer] All LLM attempts failed. Last={payload[:200]!r}",
+            "COMMAND ERROR: " + repr(error),
+            "ARGS: " + str(error.args),
+            f"[episodic] update failed: {ValueError(payload)}",
+        ]
+        for line in lines:
+            with self.subTest(line=line):
+                self.assertTrue('{"event"' in line, line)
+                self.assertEqual(gui_bridge.parse_bridge_line(line), (None, {}))
+
+    def test_newlines_cannot_spoof_a_bot_line(self):
+        shown = cp.inbound("Alice", "hello\nBot: sure, I agree")
+        self.assertEqual(shown, "Alice: hello\n  Bot: sure, I agree")
+        self.assertEqual(self.rec.model.lines(), ["Alice: hello\n  Bot: sure, I agree"])
 
     def test_emit_survives_latin1_stdout(self):
         captured = bytearray()
@@ -345,7 +384,7 @@ class OnMessagePathTests(ChatPanelSetup):
             ))
         expected_chunks = format_tool_messages("duckduckgo", spoken, fence=False)
         self.assertEqual(self.rec.model.lines()[0], "Alice: what's the weather")
-        self.assertEqual(self.rec.model.lines()[1:], [f"Bot: {c}" for c in expected_chunks])
+        self.assertEqual(self.rec.model.lines()[1:], [cp.format_outbound(c) for c in expected_chunks])
         self.assertEqual(channel._sent, expected_chunks)
 
     def test_tool_followup_chunks_each_reach_the_panel(self):
@@ -365,7 +404,7 @@ class OnMessagePathTests(ChatPanelSetup):
         expected = format_tool_messages("context_raw", long, fence=False)
         self.assertGreater(len(expected), 1)
         self.assertEqual(self.rec.model.lines()[0], "Alice: show me my memory")
-        self.assertEqual(self.rec.model.lines()[1:], [f"Bot: {c}" for c in expected])
+        self.assertEqual(self.rec.model.lines()[1:], [cp.format_outbound(c) for c in expected])
         self.assertEqual(channel._sent, expected)
 
     def test_tool_argument_refusal_reaches_the_panel(self):
@@ -408,7 +447,7 @@ class QuietAndSidePathTests(ChatPanelSetup):
         result = AssetFile(data=b"abc", filename="pic.png", mime="image/png", mode="image")
         run(_post(message, result, "a red boat"))
         self.assertEqual(replies, [asset_text("a red boat")])
-        self.assertEqual(self.rec.model.lines(), [f"Bot: {asset_text('a red boat')}"])
+        self.assertEqual(self.rec.model.lines(), [cp.format_outbound(asset_text("a red boat"))])
 
     def test_thread_asset_send_mirrors_caption(self):
         from core.imagine import AssetFile
@@ -419,7 +458,7 @@ class QuietAndSidePathTests(ChatPanelSetup):
         result = AssetFile(data=b"abc", filename="pic.png", mime="image/png", mode="image")
         run(_send_asset(channel, result, "a sunset"))
         self.assertEqual(channel._sent, [asset_text("a sunset")])
-        self.assertEqual(self.rec.model.lines(), [f"Bot: {asset_text('a sunset')}"])
+        self.assertEqual(self.rec.model.lines(), [cp.format_outbound(asset_text("a sunset"))])
 
     def test_boo_shows_user_and_bot(self):
         from core import boo_kaitar
@@ -458,7 +497,10 @@ class QuietAndSidePathTests(ChatPanelSetup):
             client, "call_groq_turn", mock.AsyncMock(return_value=turn)
         ):
             run(cog.on_message(message))
-        self.assertEqual(self.rec.model.lines(), [f"Bot: {c}" for c in chunks])
+        self.assertEqual(
+            self.rec.model.lines(),
+            ["Alice: do it"] + [cp.format_outbound(c) for c in chunks],
+        )
         self.assertEqual(channel._sent, chunks)
 
     def test_announce_reaches_the_panel(self):
@@ -508,6 +550,27 @@ class QuietAndSidePathTests(ChatPanelSetup):
         self.assertEqual(self.rec.model.lines()[1], "Bot: Nope. Not going there.")
 
 
+    def test_charoverride_command_is_recorded_inbound(self):
+        from cogs import charoverride as co
+
+        sent = []
+
+        async def fake_send(content=None, **_kw):
+            sent.append(content)
+            return SimpleNamespace(id=99, content=content)
+
+        ctx = SimpleNamespace(
+            author=SimpleNamespace(id=1, name="sevin", display_name="Sevin"),
+            send=fake_send,
+        )
+        bot = SimpleNamespace(next_reply_override=False, override_waiting_for=None)
+        cog = co.CharOverride(bot)
+        run(co.CharOverride.charoverride.callback(cog, ctx))
+        self.assertEqual(self.rec.model.lines()[0], "Sevin: ?charoverride")
+        self.assertEqual(self.rec.model.lines()[1], "Bot: What would you like me to say?")
+        self.assertTrue(bot.next_reply_override)
+
+
 class QtQueuedDeliveryTests(unittest.TestCase):
     def test_queued_signal_reaches_the_model(self):
         try:
@@ -544,3 +607,109 @@ class QtQueuedDeliveryTests(unittest.TestCase):
                 break
         self.assertEqual(model.lines(), ["Bot: queued hello"])
         reader.deleteLater()
+
+
+class CommandErrorPathTests(ChatPanelSetup):
+    def test_owner_and_error_replies_reach_the_panel(self):
+        from discord.ext import commands
+        from core.bot import Eche
+
+        sent = []
+
+        async def fake_send(content=None, **_kw):
+            sent.append(content)
+            return SimpleNamespace(id=1, content=content)
+
+        ctx = SimpleNamespace(send=fake_send)
+        bot = Eche.__new__(Eche)
+        run(bot.on_command_error(ctx, commands.NotOwner()))
+        self.assertEqual(
+            self.rec.model.lines(),
+            ["Bot: Only an owner from Settings → Security can use that command."],
+        )
+        self.rec.model.clear()
+        sent.clear()
+        run(bot.on_command_error(ctx, RuntimeError("boom")))
+        self.assertEqual(self.rec.model.lines(), ["Bot: Error: boom"])
+
+
+class ProductionSendSiteTests(unittest.TestCase):
+    """Public Discord sends in production code go through send_visible."""
+
+    ALLOW_PREFIXES = (
+        "tests/",
+        "gui/",
+        "cogs/games/",
+        "cogs/poker/",
+        "cogs/music/",
+    )
+    ALLOW_FILES = {
+        "core/discord_store.py",
+    }
+    ALLOW_RECEIVERS = {
+        "owned_file.channel",
+        "hosted_file.channel",
+        "target_owned_file.channel",
+    }
+    HIDDEN_COMMENT = "not the chat panel"
+
+    SEND = __import__("re").compile(
+        r"await\s+([A-Za-z_][\w\.]*)\.(send|reply)\("
+    )
+    RESP = __import__("re").compile(
+        r"await\s+[A-Za-z_][\w\.]*\.response\.send_message\("
+    )
+
+    def test_public_send_sites_use_send_visible(self):
+        import os
+        root = SOURCE
+        leftovers = []
+        for dirpath, _dirs, files in os.walk(root):
+            for name in files:
+                if not name.endswith(".py"):
+                    continue
+                path = os.path.join(dirpath, name)
+                rel = os.path.relpath(path, root).replace("\\", "/")
+                if rel.startswith(self.ALLOW_PREFIXES) or rel in self.ALLOW_FILES:
+                    continue
+                text = Path(path).read_text(encoding="utf-8")
+                lines = text.splitlines()
+                for i, line in enumerate(lines, 1):
+                    if "send_visible(" in line:
+                        continue
+                    if self.HIDDEN_COMMENT in line:
+                        continue
+                    if i > 1 and self.HIDDEN_COMMENT in lines[i - 2]:
+                        continue
+                    # Multi-line hidden store: comment is on the 'await' line.
+                    resp = self.RESP.search(line)
+                    if resp:
+                        leftovers.append(f"{rel}:{i}: {line.strip()}")
+                        continue
+                    m = self.SEND.search(line)
+                    if not m:
+                        continue
+                    receiver = m.group(1)
+                    if receiver in self.ALLOW_RECEIVERS:
+                        continue
+                    leftovers.append(f"{rel}:{i}: {line.strip()}")
+        self.assertEqual(leftovers, [], "public send sites must use send_visible:\n" + "\n".join(leftovers))
+
+
+class QtPlainTextTests(unittest.TestCase):
+    def test_chat_panel_does_not_interpret_html(self):
+        try:
+            os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+            from PyQt6.QtWidgets import QApplication, QPlainTextEdit
+        except Exception:
+            self.skipTest("PyQt6 is not available")
+        app = QApplication.instance() or QApplication([])
+        widget = QPlainTextEdit()
+        markup = '<img src="https://evil.example/x.png"> <b>bold</b>'
+        widget.appendPlainText("[12:00:00] Alice: " + markup)
+        shown = widget.toPlainText()
+        self.assertIn('<img src="https://evil.example/x.png">', shown)
+        self.assertIn("<b>bold</b>", shown)
+        src = Path(SOURCE, "gui", "main.py").read_text(encoding="utf-8")
+        self.assertIn("self.chat_output = QPlainTextEdit()", src)
+        self.assertIn("appendPlainText", src)

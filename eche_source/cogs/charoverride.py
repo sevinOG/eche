@@ -21,7 +21,8 @@ class CharOverride(commands.Cog):
     @commands.command(name="charoverride")
     @commands.is_owner()
     async def charoverride(self, ctx):
-        from core.chat_panel import send_visible
+        from core.chat_panel import author_label, inbound, send_visible
+        inbound(author_label(getattr(ctx, "author", None)), "?charoverride")
         msg = await send_visible(ctx, "What would you like me to say?")
 
         self.bot.next_reply_override = True
@@ -45,10 +46,11 @@ class CharOverride(commands.Cog):
 
         user_text = message.content
         from core.blocklist import REFUSAL, is_blocked, note
+        from core.chat_panel import author_label, inbound, send_visible
 
+        inbound(author_label(getattr(message, "author", None)), user_text or "")
         if is_blocked(user_text):
             note("override message")
-            from core.chat_panel import send_visible
             await send_visible(message.channel, REFUSAL)
             self.bot.next_reply_override = False
             self.bot.override_waiting_for = None

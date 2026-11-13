@@ -11,6 +11,7 @@ import math
 import tempfile
 from core.paths import find_ffmpeg
 from core.ffmpeg_fetch import ensure_ffmpeg
+from core.chat_panel import send_visible
 
 
 class Convert(commands.Cog):
@@ -109,16 +110,16 @@ class Convert(commands.Cog):
 
         # Validate mode
         if mode != "gif":
-            return await ctx.send("Usage: `?convert gif <1-24>`")
+            return await send_visible(ctx, "Usage: `?convert gif <1-24>`")
 
         # Validate frame count
         if frames is None or not (1 <= frames <= 30):
-            return await ctx.send("Frame count must be between **1 and 30**.")
+            return await send_visible(ctx, "Frame count must be between **1 and 30**.")
 
         # Get attachment from reply or own message
         attachment, error = await self.get_target_attachment(ctx)
         if error:
-            return await ctx.send(error)
+            return await send_visible(ctx, error)
 
         # Create temp directory
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -132,15 +133,13 @@ class Convert(commands.Cog):
             # Get total frames
             total_frames = await self.get_frame_count(input_path)
             if not total_frames:
-                return await ctx.send("Couldn't read video/GIF frame count.")
+                return await send_visible(ctx, "Couldn't read video/GIF frame count.")
 
             # Compute frame interval
             interval = max(1, math.floor(total_frames / frames))
 
-            await ctx.send(
-                f"Converting **{attachment.filename}** → GIF\n"
-                f"Extracting **{frames}** frames (interval: {interval})…"
-            )
+            await send_visible(ctx, f"Converting **{attachment.filename}** → GIF\n"
+                f"Extracting **{frames}** frames (interval: {interval})…")
 
             # ---------------------------------------------------------
             # Step 1: Generate palette
@@ -152,7 +151,7 @@ class Convert(commands.Cog):
             ]
             code, _, _ = await self.run_ffmpeg(palette_args)
             if code != 0:
-                return await ctx.send("Palette generation failed.")
+                return await send_visible(ctx, "Palette generation failed.")
 
             # ---------------------------------------------------------
             # Step 2: Generate GIF using palette
@@ -166,13 +165,11 @@ class Convert(commands.Cog):
             ]
             code, _, _ = await self.run_ffmpeg(gif_args)
             if code != 0:
-                return await ctx.send("GIF conversion failed.")
+                return await send_visible(ctx, "GIF conversion failed.")
 
             # Send GIF
-            await ctx.send(
-                f"Here’s your **{frames}-frame GIF**:",
-                file=discord.File(output_path, filename="converted.gif")
-            )
+            await send_visible(ctx, f"Here’s your **{frames}-frame GIF**:",
+                file=discord.File(output_path, filename="converted.gif"))
 
 
 async def setup(bot):

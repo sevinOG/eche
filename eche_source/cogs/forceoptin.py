@@ -4,6 +4,7 @@ import discord
 from discord.ext import commands
 from core.opt_in_manager import opt_in, ensure_user_category, load_opted_in, save_opted_in
 import os
+from core.chat_panel import send_visible
 
 
 class ForceOptIn(commands.Cog):
@@ -26,7 +27,7 @@ class ForceOptIn(commands.Cog):
             from core.home_id import home_server_id_from_env
             guild = self.bot.get_guild(home_server_id_from_env())
             if guild is None:
-                return await ctx.send("❌ HOME_SERVER_ID is invalid or the bot is not in that server.")
+                return await send_visible(ctx, "❌ HOME_SERVER_ID is invalid or the bot is not in that server.")
 
             from core.discord_store import list_user_ids
 
@@ -43,13 +44,13 @@ class ForceOptIn(commands.Cog):
 
             save_opted_in(opted_in)
 
-            return await ctx.send(f"✅ Bulk opt‑in complete. Added **{added}** users to opted_in.json.")
+            return await send_visible(ctx, f"✅ Bulk opt‑in complete. Added **{added}** users to opted_in.json.")
 
         # ---------------------------------------------------------
         # SINGLE USER MODE — member provided
         # ---------------------------------------------------------
         if member.bot:
-            return await ctx.send("Bots cannot be opted in.")
+            return await send_visible(ctx, "Bots cannot be opted in.")
 
         # Perform opt‑in using the centralized manager
         await opt_in(self.bot, member)
@@ -57,7 +58,7 @@ class ForceOptIn(commands.Cog):
         # Ensure their user channel, context pins, and bank thread exist
         await ensure_user_category(self.bot, member)
 
-        await ctx.send(f"✅ Forced opt‑in completed for **{member}**.")
+        await send_visible(ctx, f"✅ Forced opt‑in completed for **{member}**.")
 
 
 async def setup(bot):

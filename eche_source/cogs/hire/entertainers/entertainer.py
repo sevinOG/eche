@@ -6,6 +6,7 @@ import uuid
 
 from cogs.economy.bank import Bank
 from .entertainer_manager import register_entertainer_batch
+from core.chat_panel import send_visible
 
 
 class Entertainers(commands.Cog):
@@ -17,24 +18,22 @@ class Entertainers(commands.Cog):
     async def entertainers(self, ctx, amount: str = None):
 
         if amount is None:
-            return await ctx.send("Usage: `?entertainers <amount>`")
+            return await send_visible(ctx, "Usage: `?entertainers <amount>`")
 
         try:
             amount = float(amount)
         except:
-            return await ctx.send("❌ Amount must be a number.")
+            return await send_visible(ctx, "❌ Amount must be a number.")
 
         if amount < 10000:
-            return await ctx.send("❌ Minimum purchase is 10,000 coins (1 entertainer).")
+            return await send_visible(ctx, "❌ Minimum purchase is 10,000 coins (1 entertainer).")
 
         units = int(amount // 10000)
         cost = units * 10000
 
         bal = await self.bank.load_bank(ctx.author)
         if bal < cost:
-            return await ctx.send(
-                f"❌ You need **{cost} coins** but only have **{bal}**."
-            )
+            return await send_visible(ctx, f"❌ You need **{cost} coins** but only have **{bal}**.")
 
         bal -= cost
         await self.bank.save_bank(ctx.author, bal)
@@ -44,21 +43,19 @@ class Entertainers(commands.Cog):
         home_id = home_server_id_from_env()
         home_guild = self.bot.get_guild(home_id)
         if home_guild is None:
-            return await ctx.send("❌ HOME_SERVER_ID invalid.")
+            return await send_visible(ctx, "❌ HOME_SERVER_ID invalid.")
 
         from core.discord_store import THREAD_WORKERS, ensure_user_thread, user_channel
 
         if user_channel(home_guild, ctx.author.id) is None:
-            return await ctx.send(
-                f"❌ You are not opted in on the home server.\n"
-                f"Use `?forceoptin {ctx.author.mention}` there."
-            )
+            return await send_visible(ctx, f"❌ You are not opted in on the home server.\n"
+                f"Use `?forceoptin {ctx.author.mention}` there.")
 
         workers_channel = await ensure_user_thread(
             home_guild, ctx.author.id, THREAD_WORKERS, ctx.author.name
         )
         if workers_channel is None:
-            return await ctx.send("❌ Could not open your workers thread.")
+            return await send_visible(ctx, "❌ Could not open your workers thread.")
 
         batch_id = str(uuid.uuid4())
         created_at = datetime.utcnow()
@@ -80,7 +77,7 @@ class Entertainers(commands.Cog):
             f"Ticks remaining: 4\n"
         )
 
-        msg = await workers_channel.send(content)
+        msg = await send_visible(workers_channel, content)
         await msg.pin()
 
         register_entertainer_batch(
@@ -95,11 +92,9 @@ class Entertainers(commands.Cog):
             invoke_channel_id=invoke_channel_id,
         )
 
-        await ctx.send(
-            f"🎉 <@{ctx.author.id}> hired **{units} entertainers!**\n"
+        await send_visible(ctx, f"🎉 <@{ctx.author.id}> hired **{units} entertainers!**\n"
             f"They will update you every 15 minutes.\n"
-            f"Batch ID: `{batch_id}`"
-        )
+            f"Batch ID: `{batch_id}`")
 
 
 async def setup(bot):
