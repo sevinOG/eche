@@ -22,11 +22,9 @@ SECRET_KEYS = (
     "openrouter_api_key",  # OPENROUTER_API_KEY
     "us_access_token",   # US_ACCESS_TOKEN (Unsplash)
     "us_secret_token",   # US_SECRET_TOKEN (Unsplash)
+    "xai_api_key",       # stored encrypted; read via load_all only, not ENV_MAP
 )
 
-# Leftover Imagine keys (xai_api_key, asset_owner_only, tool_asset) in an
-# older settings or secrets file are ignored: they are not in these lists,
-# not mapped into the environment, and are not shown in Settings.
 PUBLIC_KEYS = (
     "home_server_id",
     "groq_model",          # active model → GROQ_MODEL env (for client.py)
@@ -75,6 +73,9 @@ PUBLIC_KEYS = (
     "local_history_turns",          # desktop chat turns sent; blank uses 20
     "blocked_words",                # extra hard-blocked words, one per line or comma (core/blocklist.py)
     "memory_mask_slurs",            # "0" stops masking slurs in memory pins. Blank stays on.
+    "asset_enabled",                # "1" turns ?asset on. Blank or missing stays OFF.
+    "asset_owner_only",             # "1" limits ?asset to the owner once it is enabled.
+    "tool_asset",                   # "0" leaves the asset tool out of the prompt. Blank stays on.
 )
 
 # Map settings key -> environment variable used by the bot

@@ -26,6 +26,10 @@ TOOL_LINES = {
     "ban": "ban: only when an owner explicitly asks to ban one member.",
     "timeout": "timeout: only when an owner gives a duration, such as 10m or 1h.",
     "mute": "mute: only when an owner asks to server-mute someone in voice.",
+    "asset": (
+        "asset: make a picture or a video when they ask for one. "
+        "prompt is their wording, copied through. kind is image or video when they named one."
+    ),
 }
 
 _CLOSER = "When one of these fits, call it. That call is the reply."
@@ -52,11 +56,33 @@ _STYLE = (
     "Then quote what it found, or say it found nothing.\n"
     "Never rewrite, soften, or coach anyone so a prompt will pass a filter. "
     "If they ask for a plan to get around one, refuse and give no tips.\n"
-    "You cannot make pictures or videos. If they ask, say so. "
-    "Do not claim you generated one.\n"
+)
+_STYLE_TAIL = (
     "You send one message per turn. If they ask for something in several messages, "
     "put it in one message or offer a thread. Do not start a 1/N series."
 )
+_PICTURES_OFF = (
+    "You cannot make pictures or videos. If they ask, say so. "
+    "Do not claim you generated one.\n"
+)
+_PICTURES_ON = (
+    "You can make pictures or videos with the asset tool when it is offered. "
+    "If generation is off or refused, say so. Do not claim you generated one.\n"
+)
+
+
+def _pictures_line() -> str:
+    try:
+        from core.asset_safety import asset_enabled
+        if asset_enabled():
+            return _PICTURES_ON
+    except Exception:
+        pass
+    return _PICTURES_OFF
+
+
+def _style() -> str:
+    return _STYLE + _pictures_line() + _STYLE_TAIL
 _THREAD_OFFER = (
     "When the answer needs more and they did not ask for a thread, ask once to open one."
 )
@@ -165,7 +191,7 @@ def system_text(
     if shape:
         parts.append(shape)
     if job in ("channel", "plain", "lookup"):
-        parts.append(_STYLE)
+        parts.append(_style())
     if job == "channel":
         catalog = tool_catalog(tools)
         if catalog:

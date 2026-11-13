@@ -1,7 +1,7 @@
 # tests/test_no_media_gen.py
-# Fails if image or video generation is reintroduced: no Imagine client,
-# no generation endpoints or hostnames in production source, no generation
-# tool in the registry, and leftover config keys must not be loaded.
+# On this branch, only the official Grok Imagine / xAI backend may exist,
+# and only through the asset choke point. Every other generator stays
+# banned. ?flash stays deleted. ?image (Unsplash) is unchanged.
 from __future__ import annotations
 
 import ast
@@ -56,6 +56,16 @@ _ENDPOINT_NEEDLES = (
     "comfyui",
 )
 
+# Official Imagine choke-point modules. Endpoints and names may appear here
+# only. Every other production file is still scanned for generation markers.
+_OFFICIAL_IMAGINE = {
+    ROOT / "core" / "imagine.py",
+    ROOT / "core" / "asset_safety.py",
+    ROOT / "core" / "tools_asset.py",
+    ROOT / "core" / "asset_message.py",
+    ROOT / "cogs" / "asset.py",
+}
+
 # Module names may appear in the denylist and the load-time scanner.
 _MODULE_NEEDLES = (
     "core.imagine",
@@ -71,9 +81,20 @@ _MODULE_NAME_OK = {
     ROOT / "core" / "denied_modules.py",
     ROOT / "core" / "media_scan.py",
     ROOT / "core" / "app_update.py",
+    ROOT / "core" / "bot.py",
+    ROOT / "cogs" / "events" / "on_message.py",
+    ROOT / "core" / "tools.py",
+    ROOT / "core" / "prompt_text.py",
+    ROOT / "core" / "secrets.py",
+    ROOT / "gui" / "widgets" / "settingswindow.py",
+    ROOT / "gui" / "widgets" / "settings_help.py",
+    *_OFFICIAL_IMAGINE,
 }
 _ENDPOINT_OK = {
     ROOT / "core" / "media_scan.py",
+    ROOT / "core" / "secrets.py",
+    ROOT / "gui" / "widgets" / "settings_help.py",
+    *_OFFICIAL_IMAGINE,
 }
 # The minors matcher still recognizes a leftover "?asset …" prompt. That is
 # not a generation client.
@@ -109,32 +130,37 @@ def _import_fails(name: str) -> bool:
 
 
 class NoMediaGenerationTests(unittest.TestCase):
-    def test_generation_modules_are_gone(self):
+    def test_only_official_imagine_modules_exist(self):
         for name in (
             "core.imagine",
             "core.tools_asset",
             "core.asset_message",
+            "core.asset_safety",
             "cogs.asset",
-            "cogs.flash",
         ):
-            self.assertTrue(_import_fails(name), f"{name} should not be importable")
+            self.assertFalse(_import_fails(name), f"{name} must be importable on this branch")
+        self.assertTrue(_import_fails("cogs.flash"), "cogs.flash should not be importable")
 
-    def test_tool_registry_has_no_asset(self):
-        # Import side-effect modules so every remaining tool is registered.
+    def test_tool_registry_has_only_official_asset(self):
         from core import tools  # noqa: F401
         from core import tools_admin, tools_context, tools_duckduckgo, tools_thread  # noqa: F401
+        import core.tools_asset  # noqa: F401
 
-        self.assertNotIn("asset", tools.registered_names())
-        self.assertNotIn("asset", {name for name, _ in tools.PROMPT_TOOLS})
+        self.assertIn("asset", tools.registered_names())
+        self.assertIn("asset", {name for name, _ in tools.PROMPT_TOOLS})
+        self.assertNotIn("flash", tools.registered_names())
+        self.assertNotIn("image_gen", tools.registered_names())
 
-    def test_config_maps_drop_imagine_keys(self):
+    def test_config_maps_include_imagine_keys(self):
         from core import secrets
 
-        self.assertNotIn("xai_api_key", secrets.SECRET_KEYS)
+        # Config only: never export XAI_API_KEY through ENV_MAP / apply_to_environ.
+        self.assertIn("xai_api_key", secrets.SECRET_KEYS)
         self.assertNotIn("XAI_API_KEY", secrets.ENV_MAP.values())
         self.assertNotIn("xai_api_key", secrets.ENV_MAP)
-        self.assertNotIn("tool_asset", secrets.PUBLIC_KEYS)
-        self.assertNotIn("asset_owner_only", secrets.PUBLIC_KEYS)
+        self.assertIn("tool_asset", secrets.PUBLIC_KEYS)
+        self.assertIn("asset_owner_only", secrets.PUBLIC_KEYS)
+        self.assertIn("asset_enabled", secrets.PUBLIC_KEYS)
 
     def test_generation_modules_include_flash(self):
         self.assertTrue(_import_fails("cogs.flash"), "cogs.flash should not be importable")
@@ -143,7 +169,7 @@ class NoMediaGenerationTests(unittest.TestCase):
         src = (ROOT / "core" / "bot.py").read_text(encoding="utf-8")
         self.assertNotIn('"cogs.flash"', src)
         self.assertNotIn("'cogs.flash'", src)
-        self.assertNotIn('"cogs.asset"', src)
+        self.assertIn('"cogs.asset"', src)
 
     def test_production_source_has_no_generation_endpoints(self):
         hits = []
@@ -170,6 +196,8 @@ class NoMediaGenerationTests(unittest.TestCase):
                 tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
             except SyntaxError:
                 continue
+            if path in _MODULE_NAME_OK or path in _OFFICIAL_IMAGINE:
+                continue
             for node in ast.walk(tree):
                 if isinstance(node, ast.Import):
                     for alias in node.names:
@@ -178,9 +206,9 @@ class NoMediaGenerationTests(unittest.TestCase):
                 elif isinstance(node, ast.ImportFrom):
                     mod = node.module or ""
                     names = {a.name for a in node.names}
-                    if mod in {"core.imagine", "core.tools_asset", "core.asset_message", "cogs.asset"}:
+                    if mod in {"core.imagine", "core.tools_asset", "core.asset_message", "core.asset_safety", "cogs.asset"}:
                         found.append(f"{path.relative_to(ROOT)} from {mod}")
-                    if "imagine" in names or "tools_asset" in names or "asset_message" in names:
+                    if "imagine" in names or "tools_asset" in names or "asset_message" in names or "asset_safety" in names:
                         if mod in {"core", "cogs", ""}:
                             found.append(f"{path.relative_to(ROOT)} from {mod} import {names}")
         self.assertEqual(found, [], "generation imports found in production source")
@@ -439,6 +467,30 @@ class NoMediaGenerationTests(unittest.TestCase):
                 0.2,
             )
             self.assertFalse(is_image_model_id(again["model"]), again["model"])
+
+    def test_media_scan_allows_official_imagine_only(self):
+        from core.media_scan import is_official_imagine_module, module_is_blocked
+
+        for name in (
+            "cogs.asset",
+            "core.imagine",
+            "core.tools_asset",
+            "core.asset_message",
+            "core.asset_safety",
+        ):
+            self.assertTrue(is_official_imagine_module(name), name)
+            self.assertEqual(module_is_blocked(name, source_root=ROOT), "")
+        self.assertFalse(is_official_imagine_module("cogs.flash"))
+        with tempfile.TemporaryDirectory(prefix="eche-scan-") as raw:
+            root = Path(raw)
+            (root / "cogs").mkdir()
+            sneak = root / "cogs" / "sneaky.py"
+            sneak.write_text(
+                "import requests\nrequests.post('https://api.x.ai/v1/images/generations')\n",
+                encoding="utf-8",
+            )
+            reason = module_is_blocked("cogs.sneaky", source_root=root)
+            self.assertIn("generation marker", reason)
 
     def test_runtime_urls_do_not_build_generation_paths(self):
         fragments = (

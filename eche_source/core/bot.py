@@ -496,6 +496,7 @@ class Eche(commands.Bot):
             "cogs.music.music",
             "cogs.charoverride",
             "cogs.image_search",
+            "cogs.asset",
             "cogs.convert",
             "cogs.hire.lawyer.lawyer",
             "cogs.economy.bank",

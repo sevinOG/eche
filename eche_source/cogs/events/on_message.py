@@ -29,6 +29,7 @@ import core.tools_context  # noqa: F401  registers context_raw
 import core.tools_duckduckgo  # noqa: F401  registers duckduckgo
 import core.tools_thread  # noqa: F401  registers thread
 import core.tools_admin  # noqa: F401  registers mute, timeout, kick, ban
+import core.tools_asset  # noqa: F401  registers asset
 from core.admin_tools import admin_injection, admin_tools_enabled, author_is_owner
 from core.tools import (
     ToolContext,

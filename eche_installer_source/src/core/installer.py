@@ -299,11 +299,7 @@ class Installer:
                 # Fallback: unlink only the known tombstone names.
                 self.log(f"Purge via app_update failed ({exc}); using built-in list")
                 for rel in (
-                    "cogs/asset.py",
                     "cogs/flash.py",
-                    "core/imagine.py",
-                    "core/tools_asset.py",
-                    "core/asset_message.py",
                 ):
                     path = dest / rel
                     try:

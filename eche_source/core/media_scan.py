@@ -438,12 +438,35 @@ def module_source_path(module: str, source_root: str | Path | None = None) -> Pa
     return None
 
 
+# Official Imagine choke-point modules. Only this backend may live here.
+# Every other generator stays banned, including leftover or user-dropped files.
+OFFICIAL_IMAGINE_MODULES = frozenset({
+    "cogs.asset",
+    "core.imagine",
+    "core.tools_asset",
+    "core.asset_message",
+    "core.asset_safety",
+})
+
+
+def is_official_imagine_module(module: str) -> bool:
+    from core.denied_modules import normalize_module
+
+    text = normalize_module(module)
+    if text in OFFICIAL_IMAGINE_MODULES:
+        return True
+    leaf = text.rsplit(".", 1)[-1] if text else ""
+    return any(item.endswith("." + leaf) or item == leaf for item in OFFICIAL_IMAGINE_MODULES)
+
+
 def module_is_blocked(module: str, source_root: str | Path | None = None) -> str:
     """Why this module must not load, or '' if it is fine."""
     from core.denied_modules import is_denied_module
 
     if is_denied_module(module):
         return "denied media module"
+    if is_official_imagine_module(module):
+        return ""
     path = module_source_path(module, source_root)
     if path is None:
         return ""

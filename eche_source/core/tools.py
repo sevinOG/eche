@@ -115,6 +115,7 @@ PROMPT_TOOLS = (
     ("duckduckgo", "Lookup"),
     ("thread", "Thread"),
     ("context_raw", "Own context"),
+    ("asset", "Asset"),
 )
 
 
@@ -134,6 +135,13 @@ def _offered(tool: Tool, *, public_on: bool, speaker_is_owner: bool, admin_enabl
         return False
     if tool.access != ACCESS_OWNER and not tool_prompt_enabled(tool.name):
         return False
+    if tool.name == "asset":
+        try:
+            from core.asset_safety import asset_enabled
+            if not asset_enabled():
+                return False
+        except Exception:
+            return False
     return _admin_visible(tool, speaker_is_owner=speaker_is_owner, admin_enabled=admin_enabled)
 
 

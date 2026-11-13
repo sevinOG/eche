@@ -56,6 +56,23 @@ FIELD_HELP: dict[str, tuple[str, str]] = {
         "A second secret Unsplash sometimes uses. Treat it like a password. "
         "Most simple searches only need the Access Token.",
     ),
+    "xai_api_key": (
+        "xAI API key",
+        "### What is this?\n"
+        "The key for Grok Imagine, the only backend ?asset uses. "
+        "It is stored encrypted with your other secrets.\n\n"
+        "### Do I need it?\n"
+        "Yes, if you turn ?asset on. There is no fallback generator. "
+        "A missing key fails closed with an owner-facing message.\n\n"
+        "If this key may have been used before the removal, revoke it at the xAI console and paste a new one.",
+    ),
+    "asset_enabled": (
+        "Enable ?asset",
+        "### Kill switch\n"
+        "Off by default. Only an owner can turn ?asset on in Settings → Media. "
+        "While it is off, the command, the asset tool, and any generation request are refused.\n\n"
+        "**Owner only** is a second, optional restriction once generation is on.",
+    ),
     "prompt_tools": (
         "Tools in the prompt",
         "### What these boxes do\n"

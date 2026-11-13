@@ -41,11 +41,7 @@ _CODE_SUFFIXES = {".py", ".pyc", ".pyo", ".pyd", ".pyw"}
 # deleted from an existing install. User-dropped cogs (cogs/utils, cogs/games
 # extras, and anything else not on this list) are never deleted.
 REMOVED_PROGRAM_FILES = (
-    "cogs/asset.py",
     "cogs/flash.py",
-    "core/imagine.py",
-    "core/tools_asset.py",
-    "core/asset_message.py",
 )
 
 

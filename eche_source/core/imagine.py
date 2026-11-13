@@ -1,0 +1,965 @@
+# core/imagine.py
+# Grok Imagine for ?asset and the asset tool.
+# The host is fixed. A prompt cannot point this at another server.
+# The API key is read when a request runs and is not written to the log.
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import json
+import re
+import urllib.error
+import urllib.parse
+import urllib.request
+from dataclasses import dataclass
+
+API = "https://api.x.ai/v1"
+IMAGE_MODEL = "grok-imagine-image-2.0"
+VIDEO_MODEL = "grok-imagine-video-1.5-lite"
+VIDEO_EDIT_MODEL = "grok-imagine-video"
+MAX_PROMPT = 2000
+MAX_SECONDS = 8
+DEFAULT_SECONDS = 6
+MAX_BYTES = 8_000_000
+VIDEO_WAIT_SECONDS = 8 * 60
+_POLL_SECONDS = 5
+
+_IMAGE_ASPECTS = (
+    "19.5:9",
+    "9:19.5",
+    "16:9",
+    "9:16",
+    "21:9",
+    "20:9",
+    "9:20",
+    "4:3",
+    "3:4",
+    "3:2",
+    "2:3",
+    "2:1",
+    "1:2",
+    "5:2",
+    "1:1",
+)
+_VIDEO_ASPECTS = (
+    "16:9",
+    "9:16",
+    "21:9",
+    "4:3",
+    "3:4",
+    "3:2",
+    "2:3",
+    "5:2",
+    "1:1",
+)
+_VIDEO_WORDS = ("video", "clip", "animation", "animate", "movie", "gif")
+# clip and movie are kind words only when they lead the prompt.
+# "a paper clip" and "a movie poster" stay pictures.
+_VIDEO_BODY = ("video", "animation", "animate", "gif")
+_IMAGE_WORDS = ("image", "picture", "photo", "drawing")
+_AUDIO_WORDS = ("song", "audio", "sound", "voiceover", "music")
+_SECONDS = re.compile(
+    r"\b(\d{1,2})\s*(?:s|sec|secs|second|seconds)\b",
+    re.IGNORECASE,
+)
+
+_IMAGE_MIME = {
+    "image/jpeg": "asset.jpg",
+    "image/jpg": "asset.jpg",
+    "image/png": "asset.png",
+    "image/webp": "asset.webp",
+    "image/gif": "asset.gif",
+}
+_VIDEO_MIME = {
+    "video/mp4": "asset.mp4",
+    "video/webm": "asset.webm",
+    "video/quicktime": "asset.mov",
+    "video/mpeg": "asset.mpeg",
+}
+_SUFFIX_MIME = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+    ".mp4": "video/mp4",
+    ".webm": "video/webm",
+    ".mov": "video/quicktime",
+    ".mpeg": "video/mpeg",
+    ".mpg": "video/mpeg",
+}
+
+
+@dataclass
+class SourceMedia:
+    data: bytes
+    mime: str
+
+    @property
+    def kind(self) -> str:
+        if self.mime in _VIDEO_MIME:
+            return "video"
+        return "image"
+
+
+@dataclass
+class AssetPlan:
+    mode: str
+    prompt: str
+    seconds: int = DEFAULT_SECONDS
+    aspect: str = ""
+    source: SourceMedia | None = None
+
+
+@dataclass
+class AssetFile:
+    data: bytes
+    filename: str
+    mime: str
+    mode: str
+
+
+class ImagineError(Exception):
+    def __init__(self, text: str):
+        super().__init__(text)
+        self.text = text
+
+
+def api_key() -> str:
+    """xAI key from config only. No fallback to any other generator or key."""
+    try:
+        from core.secrets import load_all
+        return str(load_all().get("xai_api_key") or "").strip()
+    except Exception:
+        return ""
+
+
+def _flag(stored) -> bool:
+    return str(stored or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def asset_audience() -> str:
+    """all, unless Owner only is on in config. No environment side channel."""
+    owner_only = False
+    try:
+        from core.secrets import load_all
+        owner_only = _flag(load_all().get("asset_owner_only"))
+    except Exception:
+        owner_only = False
+    return "owner" if owner_only else "all"
+
+
+def speaker_allowed(is_owner: bool) -> bool:
+    from core.asset_safety import asset_enabled
+
+    if not asset_enabled():
+        return False
+    if asset_audience() == "owner":
+        return bool(is_owner)
+    return True
+
+
+def refusal(is_owner: bool) -> str:
+    from core.asset_safety import KILL_SWITCH_OFF, asset_enabled
+
+    if not asset_enabled():
+        return KILL_SWITCH_OFF
+    del is_owner
+    return "Only the owner can ask for assets."
+
+
+def check_prompt(text: str, *, user_id=None, channel_id=None) -> None:
+    """Hard block for every picture or video prompt, before any API call.
+
+    Only the minors list in core/blocklist.py (plus Settings → Blocked words)
+    refuses here, plus a close rewrite of a recent minors refusal, and a
+    request for help getting around a filter. Crude or offensive prompts
+    still go through.
+    """
+    from core.blocklist import REFUSAL, is_blocked, note
+    from core.guardrails import BYPASS_REFUSAL, asks_to_bypass_filter
+
+    if asks_to_bypass_filter(text):
+        note("asset prompt bypass")
+        raise ImagineError(BYPASS_REFUSAL)
+    if is_blocked(text, user_id=user_id, channel_id=channel_id):
+        note("asset prompt")
+        raise ImagineError(REFUSAL)
+
+
+# Text fields Imagine may send back. Urls and binary are skipped.
+_REPLY_TEXT_KEYS = frozenset({
+    "prompt",
+    "revised_prompt",
+    "rewritten_prompt",
+    "enhanced_prompt",
+    "caption",
+    "text",
+    "description",
+    "title",
+    "alt",
+    "alt_text",
+})
+
+
+def _payload_texts(payload) -> list[str]:
+    """Captions or rewritten prompts in an Imagine reply."""
+    found: list[str] = []
+
+    def walk(obj) -> None:
+        if isinstance(obj, dict):
+            for key, value in obj.items():
+                name = str(key).casefold()
+                if name in ("url", "b64_json", "request_id"):
+                    continue
+                if name in _REPLY_TEXT_KEYS and isinstance(value, str) and value.strip():
+                    found.append(value)
+                else:
+                    walk(value)
+        elif isinstance(obj, list):
+            for item in obj:
+                walk(item)
+
+    walk(payload)
+    return found
+
+
+def _strip_footer(text: str) -> str:
+    try:
+        from core.safety import SAFETY_FOOTER
+        footer = SAFETY_FOOTER
+    except Exception:
+        return text
+    if not text:
+        return text
+    if text.endswith(footer):
+        return text[: -len(footer)].rstrip()
+    return text.replace(footer, " ").strip()
+
+
+def check_payload(payload) -> None:
+    """Refuse a finished file whose caption or rewritten prompt is blocked."""
+    from core.blocklist import REFUSAL, is_blocked, note
+
+    for text in _payload_texts(payload):
+        if is_blocked(_strip_footer(text)):
+            note("asset reply")
+            raise ImagineError(REFUSAL)
+
+
+def mime_for(content_type: str, filename: str) -> str:
+    raw = (content_type or "").split(";", 1)[0].strip().lower()
+    if raw in _IMAGE_MIME or raw in _VIDEO_MIME:
+        return "image/jpeg" if raw == "image/jpg" else raw
+    suffix = ""
+    name = (filename or "").lower()
+    dot = name.rfind(".")
+    if dot >= 0:
+        suffix = name[dot:]
+    return _SUFFIX_MIME.get(suffix, "")
+
+
+def filename_for(mime: str, fallback: str = "asset.bin") -> str:
+    return _IMAGE_MIME.get(mime) or _VIDEO_MIME.get(mime) or fallback
+
+
+def _words(text: str) -> str:
+    return " ".join((text or "").split())
+
+
+def _leading_kind(text: str) -> tuple[str, str]:
+    parts = text.split(None, 1)
+    if not parts:
+        return "", ""
+    head = parts[0].casefold().strip(".,:;")
+    rest = parts[1] if len(parts) > 1 else ""
+    if head in _VIDEO_WORDS:
+        return "video", rest
+    if head in _IMAGE_WORDS:
+        return "image", rest
+    return "", text
+
+
+def _has_word(text: str, words: tuple[str, ...]) -> bool:
+    folded = f" {text.casefold()} "
+    return any(f" {word} " in folded for word in words)
+
+
+def _aspect(text: str, allowed: tuple[str, ...]) -> str:
+    folded = text.casefold()
+    for ratio in allowed:
+        token = re.escape(ratio.casefold())
+        if re.search(rf"(?<![\d.]){token}(?![\d.])", folded):
+            return ratio
+    return ""
+
+
+def _seconds(text: str) -> int:
+    match = _SECONDS.search(text or "")
+    if not match:
+        return DEFAULT_SECONDS
+    try:
+        value = int(match.group(1))
+    except ValueError:
+        return DEFAULT_SECONDS
+    if value < 1:
+        return 1
+    if value > MAX_SECONDS:
+        return MAX_SECONDS
+    return value
+
+
+_ASSET_MAKE = re.compile(
+    r"\b(?:make|generate|create|draw|animate|film|render)\b"
+    r"(?:\s+(?!threads?\b)\w+){0,10}\s+"
+    r"(?:\d+\s*-?\s*)?(?:part\s+)?"
+    r"(?:videos?|animations?|gifs?|images?|pictures?|photos?|drawings?)\b",
+    re.IGNORECASE,
+)
+_ASSET_NEAR_THREAD = re.compile(
+    r"\b(?:videos?|animations?|gifs?|images?|pictures?|photos?|drawings?)\b"
+    r"(?:\s+\w+){0,6}\s+(?:in\s+(?:a\s+)?)?threads?\b"
+    r"|"
+    r"\bthreads?\b\s+(?:of|for|with)\s+"
+    r"(?:\d+\s*-?\s*)?(?:part\s+)?"
+    r"(?:videos?|animations?|gifs?|images?|pictures?|photos?|drawings?)\b",
+    re.IGNORECASE,
+)
+_ASSET_PARTS = re.compile(
+    r"\b(?:multi-?part|\d+\s*-?\s*parts?)\b(?:\s+\w+){0,6}\s+"
+    r"(?:videos?|animations?|gifs?|images?|pictures?|photos?|drawings?)\b"
+    r"|"
+    r"\b(?:videos?|animations?|gifs?|images?|pictures?|photos?|drawings?)\b"
+    r"(?:\s+\w+){0,4}\s+(?:multi-?part|\d+\s*-?\s*parts?)\b",
+    re.IGNORECASE,
+)
+_MEDIA_VIDEO = ("video", "videos", "animation", "animations", "animate", "gif", "gifs")
+_MEDIA_IMAGE = (
+    "image", "images", "picture", "pictures", "photo", "photos", "drawing", "drawings",
+)
+_PART_MARK = re.compile(r"(?i)\bpart\s+\d+\b\s*[:.)-]?\s*")
+_PLAN_NOISE = re.compile(
+    r"(?i)^(?:explain this in depth|stay on that explanation|do not add a different topic)\b"
+)
+_SHOT_BULLET = re.compile(r"^(?:[-*•]\s+|\d+[.)]\s+)")
+
+
+def asset_thread_request(text: str) -> bool:
+    """True when a thread should post generated pictures or videos."""
+    raw = " ".join((text or "").split())
+    if not raw:
+        return False
+    return bool(
+        _ASSET_MAKE.search(raw)
+        or _ASSET_NEAR_THREAD.search(raw)
+        or _ASSET_PARTS.search(raw)
+    )
+
+
+def asset_thread_kind(text: str) -> str:
+    """video or image for that thread. Empty when it is not an asset thread."""
+    if not asset_thread_request(text):
+        return ""
+    folded = f" {(text or '').casefold()} "
+    if any(f" {word} " in folded for word in _MEDIA_VIDEO):
+        return "video"
+    if any(f" {word} " in folded for word in _MEDIA_IMAGE):
+        return "image"
+    return ""
+
+
+def _shot_line(line: str) -> str:
+    bare = _SHOT_BULLET.sub("", " ".join((line or "").split())).strip(" .,;:-")
+    if not bare or _PLAN_NOISE.match(bare) or len(bare) < 8:
+        return ""
+    return bare
+
+
+def _part_shots(text: str) -> list[str]:
+    raw = text or ""
+    if not _PART_MARK.search(raw):
+        return []
+    shots = [shot for shot in (_shot_line(bit) for bit in _PART_MARK.split(raw)) if shot]
+    if len(shots) >= 2 and asset_thread_request(shots[0]):
+        rest = _ASSET_MAKE.sub(" ", shots[0])
+        rest = re.sub(r"(?i)\b(?:in\s+(?:a\s+)?)?threads?\b", " ", rest)
+        rest = re.sub(
+            r"(?i)\b(?:multi-?part|\d+\s*-?\s*parts?|videos?|pictures?|images?|of|a|the|in)\b",
+            " ",
+            rest,
+        )
+        if len([word for word in rest.split() if len(word) > 2]) < 3:
+            shots = shots[1:]
+    return shots
+
+
+def asset_shot_lines(plan: str, source: str, limit: int = 8) -> list[str]:
+    """One prompt per file. A story plan is not a prompt."""
+    cap = max(1, int(limit))
+    parts = _part_shots(source) or _part_shots(plan)
+    if len(parts) >= 2:
+        return parts[:cap]
+    lines: list[str] = []
+    seen: set[str] = set()
+    for line in (plan or "").splitlines():
+        shot = _shot_line(line)
+        if not shot:
+            continue
+        key = shot.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        lines.append(shot)
+    if len(lines) >= 2:
+        return lines[:cap]
+    one = _shot_line(source) or (lines[0] if lines else "")
+    return [one] if one else []
+
+
+_SOURCE_MARK = re.compile(
+    r"(?:"
+    r"\bimage\s*\d+\b|"
+    r"\bcharacter\s*lock\b|"
+    r"\breference\s*(?:image|photo|picture|frame)\b|"
+    r"\b(?:this|that|the)\s+(?:image|picture|photo|frame)\b|"
+    r"\bimg\s*\d+\b"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _needs_source(text: str) -> bool:
+    """True when the prompt points at an attached frame that is not present."""
+    return bool(_SOURCE_MARK.search(text or ""))
+
+
+def plan_asset(text: str, *, kind: str = "", source: SourceMedia | None = None) -> AssetPlan:
+    """Decide image, video, edit, or image-to-video. Raises ImagineError when the ask is not one of those."""
+    raw = _words(text)
+    asked, body = _leading_kind(raw)
+    explicit = (kind or "").strip().casefold()
+    if explicit in ("image", "video"):
+        asked = explicit
+    elif not asked:
+        if _has_word(raw, _VIDEO_BODY):
+            asked = "video"
+        elif _has_word(raw, _IMAGE_WORDS):
+            asked = "image"
+    prompt = _words(body if asked and body != raw else raw)
+    if explicit in ("image", "video") and asked == explicit:
+        # A tool kind is not part of the prompt. A leading kind word was already removed.
+        prompt = _words(raw)
+        lead, rest = _leading_kind(raw)
+        if lead == explicit:
+            prompt = _words(rest)
+    if not prompt and source is None:
+        raise ImagineError("Say what to make. `?asset a red paper boat`")
+    if not prompt and source is not None:
+        raise ImagineError("Say what to change.")
+    if len(prompt) > MAX_PROMPT:
+        prompt = prompt[:MAX_PROMPT].rstrip()
+    if source is None and _needs_source(raw):
+        raise ImagineError(
+            "Attach or reply to the picture that prompt uses (Image 1 / character lock), then ask again."
+        )
+    visual = asked in ("image", "video") or _has_word(prompt, _VIDEO_WORDS + _IMAGE_WORDS)
+    if source is None and not visual and _has_word(prompt, _AUDIO_WORDS):
+        raise ImagineError(
+            "Imagine makes a picture or a video. Say which, and what it should show."
+        )
+    if not asked:
+        asked = "video" if source is not None and source.kind == "video" else "image"
+    if asked == "video":
+        if source is not None and source.kind == "video":
+            mode = "video_edit"
+        elif source is not None and source.kind == "image":
+            mode = "image_video"
+        else:
+            mode = "video"
+        aspects = _VIDEO_ASPECTS
+    else:
+        if source is not None and source.kind == "video":
+            raise ImagineError(
+                "That file is a video. Ask for a video, or attach a picture."
+            )
+        if source is not None and source.kind == "image":
+            mode = "image_edit"
+        else:
+            mode = "image"
+        aspects = _IMAGE_ASPECTS
+    return AssetPlan(
+        mode=mode,
+        prompt=prompt,
+        seconds=_seconds(raw) if mode in ("video", "image_video") else DEFAULT_SECONDS,
+        aspect=_aspect(raw, aspects),
+        source=source if mode != "image" else None,
+    )
+
+
+def _data_uri(source: SourceMedia) -> str:
+    encoded = base64.b64encode(source.data).decode("ascii")
+    return f"data:{source.mime};base64,{encoded}"
+
+
+def request_for(plan: AssetPlan, prepared=None) -> tuple[str, dict]:
+    """POST path and JSON body. No network.
+
+    `prepared` is the choke-point result: the sent prompt already has the
+    adult rewrite and the safety footer last. The matcher must not run on
+    that sent text (the footer names blocked categories).
+    """
+    prompt = getattr(prepared, "sent_prompt", None) or getattr(plan, "prompt", "") or ""
+    negative = getattr(prepared, "negative_prompt", None) or ""
+    if plan.mode == "image":
+        body: dict = {"model": IMAGE_MODEL, "prompt": prompt}
+        if plan.aspect:
+            body["aspect_ratio"] = plan.aspect
+        if negative:
+            body["negative_prompt"] = negative
+        return "/images/generations", body
+    if plan.mode == "image_edit":
+        body = {
+            "model": IMAGE_MODEL,
+            "prompt": prompt,
+            "image": {"url": _data_uri(plan.source), "type": "image_url"},
+        }
+        if plan.aspect:
+            body["aspect_ratio"] = plan.aspect
+        if negative:
+            body["negative_prompt"] = negative
+        return "/images/edits", body
+    if plan.mode == "video_edit":
+        body = {
+            "model": VIDEO_EDIT_MODEL,
+            "prompt": prompt,
+            "video": {"url": _data_uri(plan.source)},
+        }
+        if negative:
+            body["negative_prompt"] = negative
+        return "/videos/edits", body
+    body = {
+        "model": VIDEO_MODEL,
+        "prompt": prompt,
+        "duration": plan.seconds,
+        "resolution": "480p",
+    }
+    if plan.aspect:
+        body["aspect_ratio"] = plan.aspect
+    if plan.mode == "image_video":
+        body["image"] = {"url": _data_uri(plan.source)}
+    if negative:
+        body["negative_prompt"] = negative
+    return "/videos/generations", body
+
+
+_FILTERED = "That one was filtered."
+_UNAVAILABLE = "Image generation is unavailable right now."
+_FILTER_MARKERS = (
+    "content moderation",
+    "respect_moderation",
+    "filtered by moderation",
+    "did not respect moderation",
+    "moderation rules",
+)
+_BILLING_MARKERS = (
+    "used all available credits",
+    "monthly spending limit",
+    "spending limit",
+    "credit hold",
+    "purchase more",
+    "insufficient credits",
+    "out of credits",
+    "billing",
+    "payment required",
+    "payment failed",
+    "quota",
+    "your team",
+)
+
+
+def _moderation_message(message: str) -> bool:
+    folded = (message or "").casefold()
+    return any(marker in folded for marker in _FILTER_MARKERS)
+
+
+def _error_text(payload: dict, status: int) -> str:
+    err = payload.get("error") if isinstance(payload, dict) else None
+    message = ""
+    if isinstance(err, dict):
+        message = str(err.get("message") or err.get("code") or "")
+    elif isinstance(err, str):
+        message = err
+    message = " ".join(message.split())
+    if _moderation_message(message):
+        return _FILTERED
+    folded = message.casefold()
+    if any(marker in folded for marker in _BILLING_MARKERS):
+        return _UNAVAILABLE
+    # Never pass provider text through. It can include a team id.
+    if status >= 400 or message:
+        return _UNAVAILABLE
+    return f"Imagine returned {status}."
+
+
+def _filtered(payload: dict) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    if payload.get("respect_moderation") is False:
+        return True
+    video = payload.get("video")
+    if isinstance(video, dict) and video.get("respect_moderation") is False:
+        return True
+    data = payload.get("data")
+    # An empty batch is how Imagine reports a full moderation block on HTTP 200.
+    if isinstance(data, list) and not data:
+        return True
+    if isinstance(data, list):
+        for item in data:
+            if isinstance(item, dict) and item.get("respect_moderation") is False:
+                return True
+    return False
+
+
+def image_url(payload: dict) -> str:
+    if _filtered(payload):
+        raise ImagineError(_FILTERED)
+    check_payload(payload)
+    data = payload.get("data") if isinstance(payload, dict) else None
+    item = data[0] if isinstance(data, list) and data else {}
+    if not isinstance(item, dict):
+        item = {}
+    url = str(item.get("url") or "").strip()
+    if url:
+        return url
+    raw = item.get("b64_json") or item.get("image")
+    if isinstance(raw, str) and raw.strip():
+        return "b64:" + raw.strip()
+    raise ImagineError("Imagine did not return an image.")
+
+
+def video_start_id(payload: dict) -> str:
+    if not isinstance(payload, dict):
+        raise ImagineError("Imagine did not start the video.")
+    check_payload(payload)
+    request_id = str(payload.get("request_id") or "").strip()
+    if request_id:
+        return request_id
+    raise ImagineError(_error_text(payload, 200))
+
+
+def video_poll(payload: dict) -> tuple[str, str]:
+    """pending, done plus a url, failed, or expired."""
+    if not isinstance(payload, dict):
+        return "failed", "Imagine did not finish the video."
+    status = str(payload.get("status") or "").strip().lower()
+    if status in ("", "pending"):
+        return "pending", ""
+    if status == "done":
+        if _filtered(payload):
+            raise ImagineError(_FILTERED)
+        check_payload(payload)
+        video = payload.get("video") if isinstance(payload.get("video"), dict) else {}
+        url = str(video.get("url") or "").strip()
+        if not url:
+            raise ImagineError("Imagine did not return a video.")
+        return "done", url
+    if status == "expired":
+        return "expired", "That video request expired."
+    err = payload.get("error")
+    if isinstance(err, dict):
+        return "failed", _error_text(payload, 200)
+    return "failed", "Imagine did not finish the video."
+
+
+_last_http_ids: dict[str, str] = {}
+
+
+def last_http_ids() -> dict[str, str]:
+    return dict(_last_http_ids)
+
+
+def _store_http_ids(headers=None, payload=None, status: int = 0) -> None:
+    del status
+    req_id = ""
+    resp_id = ""
+    if headers is not None:
+        try:
+            get = headers.get
+            req_id = str(get("x-request-id") or get("X-Request-Id") or "").strip()
+            resp_id = str(get("x-groq-id") or "").strip()
+        except Exception:
+            pass
+    if isinstance(payload, dict):
+        req_id = req_id or str(payload.get("request_id") or "").strip()
+        resp_id = resp_id or str(payload.get("id") or payload.get("response_id") or "").strip()
+    _last_http_ids.clear()
+    if req_id:
+        _last_http_ids["request_id"] = req_id
+    if resp_id:
+        _last_http_ids["response_id"] = resp_id
+
+
+def http_json(method: str, url: str, key: str, body: dict | None = None, timeout: int = 120) -> tuple[int, dict]:
+    # The choke point already checked the user prompt. The body prompt
+    # includes the safety footer and must not be re-run through the matcher.
+    data = None
+    headers = {
+        "Authorization": f"Bearer {key}",
+        "Accept": "application/json",
+        "User-Agent": "Eche/2.1.0",
+    }
+    if body is not None:
+        data = json.dumps(body).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    resp_headers = None
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            status = getattr(resp, "status", 200) or 200
+            raw = resp.read()
+            resp_headers = getattr(resp, "headers", None)
+    except urllib.error.HTTPError as exc:
+        status = exc.code
+        raw = exc.read()
+        resp_headers = getattr(exc, "headers", None)
+    except Exception as exc:
+        raise ImagineError("Could not reach Imagine.") from exc
+    try:
+        payload = json.loads(raw.decode("utf-8") or "{}")
+    except Exception:
+        payload = {}
+    if status >= 400:
+        raise ImagineError(_error_text(payload if isinstance(payload, dict) else {}, status))
+    if not isinstance(payload, dict):
+        raise ImagineError("Imagine returned an unexpected response.")
+    _store_http_ids(resp_headers, payload, status)
+    check_payload(payload)
+    return status, payload
+
+
+def _host_name(url: str) -> str:
+    return (urllib.parse.urlsplit(url or "").hostname or "").casefold().rstrip(".")
+
+
+def _xai_host(host: str) -> bool:
+    name = (host or "").casefold().rstrip(".")
+    return name == "x.ai" or name.endswith(".x.ai")
+
+
+def _check_download_url(url: str, previous_host: str = "") -> str:
+    """https on an x.ai host. A redirect has to stay on that same host."""
+    parts = urllib.parse.urlsplit(url or "")
+    host = (parts.hostname or "").casefold().rstrip(".")
+    if parts.scheme != "https" or not _xai_host(host) or parts.username or parts.password:
+        raise ImagineError("Imagine returned a file from a server I will not use.")
+    prior = (previous_host or "").casefold().rstrip(".")
+    if prior and host != prior:
+        raise ImagineError("Imagine returned a file from a server I will not use.")
+    return url
+
+
+class _StayOnHost(urllib.request.HTTPRedirectHandler):
+    """Follow a redirect only when it stays on the same https x.ai host."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        _check_download_url(newurl, previous_host=_host_name(req.full_url))
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _sniff_image_mime(data: bytes) -> str:
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if len(data) >= 12 and data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+        return "image/webp"
+    return ""
+
+
+def _sniff_media_mime(data: bytes) -> str:
+    """Prefer container magic over a wrong Content-Type header."""
+    image = _sniff_image_mime(data)
+    if image:
+        return image
+    if len(data) >= 12 and data[4:8] == b"ftyp":
+        return "video/mp4"
+    if data.startswith(b"\x1a\x45\xdf\xa3"):
+        return "video/webm"
+    return ""
+
+
+def http_bytes(url: str, limit: int = MAX_BYTES, timeout: int = 120) -> tuple[bytes, str]:
+    """Download one finished file. Only https on an x.ai host, or a b64: image."""
+    if url.startswith("b64:"):
+        raw = url[4:]
+        if len(raw) > ((limit + 2) // 3) * 4 + 8:
+            raise ImagineError("That file is too big to attach.")
+        try:
+            data = base64.b64decode(raw, validate=False)
+        except Exception as exc:
+            raise ImagineError("Imagine returned an image I could not read.") from exc
+        if not data:
+            raise ImagineError("Imagine returned an image I could not read.")
+        if len(data) > limit:
+            raise ImagineError("That file is too big to attach.")
+        mime = _sniff_image_mime(data) or "image/jpeg"
+        return data, mime
+    _check_download_url(url)
+    req = urllib.request.Request(url, headers={"User-Agent": "Eche/2.1.0"})
+    opener = urllib.request.build_opener(_StayOnHost)
+    try:
+        with opener.open(req, timeout=timeout) as resp:
+            final = resp.geturl()
+            _check_download_url(final, previous_host=_host_name(url))
+            mime = (resp.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+            chunks = []
+            total = 0
+            while True:
+                piece = resp.read(64 * 1024)
+                if not piece:
+                    break
+                total += len(piece)
+                if total > limit:
+                    return b"", mime
+                chunks.append(piece)
+    except ImagineError:
+        raise
+    except Exception as exc:
+        raise ImagineError("Could not download the finished file.") from exc
+    return b"".join(chunks), mime
+
+
+def refuse_speaker(is_owner: bool, *, user_id=None, guild_id=None, channel_id=None) -> str | None:
+    """Audit and return a refusal if the kill switch or owner-only gate applies."""
+    from core.asset_safety import KILL_SWITCH_OFF, _audit, asset_enabled
+
+    ids = dict(user_id=user_id, guild_id=guild_id, channel_id=channel_id)
+    if speaker_allowed(is_owner):
+        return None
+    if not asset_enabled():
+        _audit("refusal", category="kill-switch", **ids)
+        return KILL_SWITCH_OFF
+    _audit("refusal", category="owner-only", **ids)
+    return refusal(is_owner)
+
+
+async def run_asset(
+    plan: AssetPlan,
+    key: str,
+    *,
+    prepared=None,
+    user_id=None,
+    guild_id=None,
+    channel_id=None,
+) -> AssetFile:
+    """Make one asset through the fail-closed choke point.
+
+    Always returns a classified file, or raises. A blocked prompt is not
+    retried. A blocked or unchecked file is not returned, and a download
+    URL is never handed to the caller in place of bytes.
+    """
+    from core.asset_safety import (
+        KILL_SWITCH_OFF,
+        MISSING_KEY,
+        asset_enabled,
+        check_generated_media,
+        prepare_generation,
+        _audit,
+    )
+
+    ids = dict(user_id=user_id, guild_id=guild_id, channel_id=channel_id)
+    if not asset_enabled():
+        _audit("refusal", category="kill-switch", **ids)
+        raise ImagineError(KILL_SWITCH_OFF)
+    if not key:
+        _audit("refusal", category="missing-key", **ids)
+        raise ImagineError(MISSING_KEY)
+    if prepared is None:
+        prepared = await prepare_generation(
+            getattr(plan, "prompt", "") or "",
+            user_id=user_id,
+            guild_id=guild_id,
+            channel_id=channel_id,
+        )
+    path, body = request_for(plan, prepared)
+    timeout = 180 if plan.mode.startswith("video") or plan.mode == "image_video" else 120
+
+    def _post():
+        return http_json("POST", API + path, key, body, timeout=timeout)
+
+    try:
+        _status, payload = await asyncio.to_thread(_post)
+        if plan.mode in ("image", "image_edit"):
+            url = image_url(payload)
+        else:
+            request_id = video_start_id(payload)
+            deadline = asyncio.get_running_loop().time() + VIDEO_WAIT_SECONDS
+            url = ""
+            while True:
+                def _poll(rid=request_id):
+                    return http_json("GET", f"{API}/videos/{rid}", key, None, timeout=60)
+
+                _status, polled = await asyncio.to_thread(_poll)
+                state, found = video_poll(polled)
+                if state == "done":
+                    url = found
+                    break
+                if state in ("failed", "expired"):
+                    raise ImagineError(found or "Imagine did not finish the video.")
+                if asyncio.get_running_loop().time() >= deadline:
+                    raise ImagineError("That video took too long. Try a shorter one.")
+                await asyncio.sleep(_POLL_SECONDS)
+        data, mime = await asyncio.to_thread(http_bytes, url)
+    except ImagineError as exc:
+        _audit(
+            "error",
+            category="backend",
+            footer_hash=prepared.footer_hash,
+            error_type=type(exc).__name__,
+            **ids,
+        )
+        raise
+    except Exception as exc:
+        _audit(
+            "error",
+            category="backend",
+            footer_hash=prepared.footer_hash,
+            error_type=type(exc).__name__,
+            **ids,
+        )
+        raise ImagineError("I couldn't make that.") from exc
+    if not data:
+        # A URL we cannot download cannot be classified. Fail closed.
+        _audit("refusal", category="unreadable-output", footer_hash=prepared.footer_hash, **ids)
+        from core.asset_safety import OUTPUT_UNCHECKED
+        raise ImagineError(OUTPUT_UNCHECKED)
+    sniffed = _sniff_media_mime(data)
+    if sniffed:
+        mime = sniffed
+    elif not mime or mime == "application/octet-stream":
+        mime = "video/mp4" if "video" in plan.mode else "image/jpeg"
+    name = filename_for(mime)
+    if name == "asset.bin":
+        name = "asset.mp4" if "video" in plan.mode else "asset.jpg"
+    http_ids = last_http_ids()
+    await check_generated_media(
+        data,
+        mime,
+        footer_hash=prepared.footer_hash,
+        user_id=user_id,
+        guild_id=guild_id,
+        channel_id=channel_id,
+        request_id=http_ids.get("request_id", ""),
+        response_id=http_ids.get("response_id", ""),
+    )
+    _audit(
+        "success",
+        footer_hash=prepared.footer_hash,
+        request_id=http_ids.get("request_id", ""),
+        response_id=http_ids.get("response_id", ""),
+        **ids,
+    )
+    return AssetFile(data=data, filename=name, mime=mime, mode=plan.mode)

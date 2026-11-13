@@ -546,6 +546,31 @@ class SettingsWindow(QWidget):
             "Optional photo search via Unsplash (free developer keys).",
             body,
         ))
+        asset_body = QVBoxLayout()
+        asset_body.setSpacing(12)
+        asset_body.addLayout(self._field_block(
+            "xAI API key",
+            "Required for ?asset. There is no fallback generator.",
+            secret=True, key="xai_api_key", help_key="xai_api_key",
+        ))
+        self.asset_enabled_box = QCheckBox("Enable ?asset")
+        self.asset_enabled_box.setObjectName("asset_enabled")
+        self.asset_enabled_box.setToolTip(
+            "Off by default. Only an owner can turn asset generation on."
+        )
+        self.asset_owner_only_box = QCheckBox("Owner only")
+        self.asset_owner_only_box.setObjectName("asset_owner_only")
+        self.asset_owner_only_box.setToolTip(
+            "Once ?asset is on, only the owner may use it."
+        )
+        asset_body.addWidget(self.asset_enabled_box)
+        asset_body.addWidget(self.asset_owner_only_box)
+        asset_body.addWidget(self._info_button("asset_enabled"))
+        layout.addWidget(self._card(
+            "Asset generation",
+            "Grok Imagine via xAI. Off until an owner enables it. No other generator is used.",
+            asset_body,
+        ))
         layout.addStretch(1)
         return page
 
@@ -1568,6 +1593,14 @@ class SettingsWindow(QWidget):
             self.security_admin_box.blockSignals(True)
             self.security_admin_box.setChecked(flag_on(self.data.get("admin_tools"), ""))
             self.security_admin_box.blockSignals(False)
+        if hasattr(self, "asset_enabled_box"):
+            from core.tools import prompt_choice
+            self.asset_enabled_box.setChecked(
+                prompt_choice(self.data.get("asset_enabled"), default=False)
+            )
+            self.asset_owner_only_box.setChecked(
+                prompt_choice(self.data.get("asset_owner_only"), default=False)
+            )
         if hasattr(self, "_prompt_tool_boxes"):
             from core.tools import prompt_choice
             for name, box in self._prompt_tool_boxes.items():
@@ -1832,6 +1865,9 @@ class SettingsWindow(QWidget):
             except Exception:
                 pass
             payload["admin_tools"] = admin
+        if hasattr(self, "asset_enabled_box"):
+            payload["asset_enabled"] = "1" if self.asset_enabled_box.isChecked() else "0"
+            payload["asset_owner_only"] = "1" if self.asset_owner_only_box.isChecked() else "0"
         if hasattr(self, "_prompt_tool_boxes"):
             for name, box in self._prompt_tool_boxes.items():
                 payload[f"tool_{name}"] = "1" if box.isChecked() else "0"

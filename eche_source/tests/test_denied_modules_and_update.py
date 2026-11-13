@@ -29,16 +29,17 @@ from core.media_scan import module_is_blocked  # noqa: E402
 
 class DeniedModuleTests(unittest.TestCase):
     def test_known_media_modules_are_denied(self):
+        for name in ("cogs.flash", "flash"):
+            self.assertTrue(is_denied_module(name), name)
         for name in (
             "cogs.asset",
-            "cogs.flash",
             "core.imagine",
             "core.tools_asset",
             "core.asset_message",
+            "core.asset_safety",
             "asset",
-            "flash",
         ):
-            self.assertTrue(is_denied_module(name), name)
+            self.assertFalse(is_denied_module(name), name)
         self.assertFalse(is_denied_module("cogs.image_search"))
         self.assertFalse(is_denied_module("cogs.help.help"))
         self.assertFalse(is_denied_module("core.bot"))
@@ -107,13 +108,12 @@ class UpdaterPurgeTests(unittest.TestCase):
 
     def test_purge_deletes_stale_code_only(self):
         removed = purge_removed_program_files(self.stage, self.target)
-        self.assertEqual(
-            set(removed),
-            {"cogs/asset.py", "cogs/flash.py", "core/imagine.py"},
-        )
-        self.assertFalse((self.target / "cogs" / "asset.py").exists())
+        self.assertEqual(set(removed), {"cogs/flash.py"})
+        # Official Imagine files are no longer tombstoned; leftovers stay
+        # until a later copy from the stage replaces them.
+        self.assertTrue((self.target / "cogs" / "asset.py").exists())
         self.assertFalse((self.target / "cogs" / "flash.py").exists())
-        self.assertFalse((self.target / "core" / "imagine.py").exists())
+        self.assertTrue((self.target / "core" / "imagine.py").exists())
         self.assertTrue((self.target / "core" / "bot.py").exists())
         self.assertTrue((self.target / "cogs" / "help.py").exists())
         self.assertTrue((self.target / "settings.json").exists())
@@ -138,7 +138,7 @@ class UpdaterPurgeTests(unittest.TestCase):
             (self.target / "cogs" / "games" / "mygame.py").read_text(encoding="utf-8"),
             "# user game\n",
         )
-        self.assertFalse((self.target / "cogs" / "asset.py").exists())
+        self.assertTrue((self.target / "cogs" / "asset.py").exists())
 
     def test_user_dropped_cog_survives_reinstall(self):
         # Reinstall copies the new tree over the existing folder, then
@@ -161,40 +161,40 @@ class UpdaterPurgeTests(unittest.TestCase):
         inst._purge_removed_program_files(self.stage, self.target)
         self.assertTrue((self.target / "cogs" / "utils.py").exists())
         self.assertTrue((self.target / "cogs" / "games" / "mygame.py").exists())
-        self.assertFalse((self.target / "cogs" / "asset.py").exists())
+        self.assertTrue((self.target / "cogs" / "asset.py").exists())
         self.assertFalse((self.target / "cogs" / "flash.py").exists())
-        self.assertFalse((self.target / "core" / "imagine.py").exists())
+        self.assertTrue((self.target / "core" / "imagine.py").exists())
         self.assertTrue(any("Removed stale program file" in line for line in logs))
 
     def test_purge_uses_normcase(self):
         src = (SOURCE / "core" / "app_update.py").read_text(encoding="utf-8")
         self.assertIn("os.path.normcase", src)
-        # Simulate Windows case folding: Asset.py is the same tombstone.
+        # Simulate Windows case folding: Flash.py is the same tombstone.
         original = os.path.normcase
 
         def folded(value):
             return original(value).lower().replace("\\", "/")
 
-        asset = self.target / "cogs" / "Asset.py"
-        if not asset.exists():
-            (self.target / "cogs" / "asset.py").replace(asset)
+        flash = self.target / "cogs" / "Flash.py"
+        if not flash.exists():
+            (self.target / "cogs" / "flash.py").replace(flash)
         with mock.patch("os.path.normcase", side_effect=folded):
             removed = purge_removed_program_files(self.stage, self.target)
         removed_norm = {os.path.normcase(item).lower().replace("\\", "/") for item in removed}
-        self.assertIn("cogs/asset.py", removed_norm)
-        self.assertFalse(asset.exists())
-        self.assertFalse((self.target / "cogs" / "asset.py").exists())
+        self.assertIn("cogs/flash.py", removed_norm)
+        self.assertFalse(flash.exists())
+        self.assertFalse((self.target / "cogs" / "flash.py").exists())
 
     def test_purge_skips_symlinks_and_outside_targets(self):
         outside = self.root / "outside"
         outside.mkdir()
         victim = outside / "secret.py"
         victim.write_text("keep me\n", encoding="utf-8")
-        stale = self.target / "cogs" / "asset.py"
+        stale = self.target / "cogs" / "flash.py"
         stale.unlink()
         stale.symlink_to(victim)
         removed = purge_removed_program_files(self.stage, self.target)
-        self.assertNotIn("cogs/asset.py", removed)
+        self.assertNotIn("cogs/flash.py", removed)
         self.assertTrue(victim.exists())
         self.assertEqual(victim.read_text(encoding="utf-8"), "keep me\n")
         self.assertTrue(stale.is_symlink())

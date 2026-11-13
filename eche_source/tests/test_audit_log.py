@@ -360,6 +360,8 @@ REVIEWED_ENTRYPOINTS = {
     "on_save_clicked": "Unifier builder source write",
     "_save": "economy bank record save",
     "check_for_updates": "settings check-for-updates",
+    "run_asset": "official Imagine generation",
+    "prepare_generation": "asset choke-point prompt check",
 }
 
 
@@ -1252,6 +1254,8 @@ class AuditCompletenessTests(AuditLogTests):
         discovered = discover_background_tasks()
         if extra_discovered:
             discovered = set(discovered) | set(extra_discovered)
+        # Asset choke-point entry points are not task loops; still require probes.
+        discovered = set(discovered) | {"run_asset", "prepare_generation"}
         slots = discover_qt_slots()
         if extra_slots:
             slots = set(slots) | set(extra_slots)
@@ -1946,6 +1950,60 @@ class AuditCompletenessTests(AuditLogTests):
                     pass
             if len(_records(self.audit)) <= before:
                 gaps.append("_on_local_clear")
+
+            before = len(_records(self.audit))
+            from core.asset_safety import prepare_generation
+            with mock.patch("core.classifier.classify_async", new=mock.AsyncMock(return_value="")), \
+                 mock.patch("core.blocklist.is_blocked", return_value=False), \
+                 mock.patch("core.guardrails.asks_to_bypass_filter", return_value=False):
+                try:
+                    await prepare_generation(
+                        "a red paper boat",
+                        user_id=11,
+                        guild_id=22,
+                        channel_id=33,
+                    )
+                except Exception:
+                    pass
+            if len(_records(self.audit)) <= before:
+                gaps.append("prepare_generation")
+            else:
+                blob = " ".join(str(r) for r in _records(self.audit)[before:])
+                if "a red paper boat" in blob:
+                    gaps.append("prepare_generation:prompt-logged")
+
+            before = len(_records(self.audit))
+            import base64
+            from core.imagine import AssetPlan, run_asset
+            from core.asset_safety import PreparedPrompt
+            jpeg = b"\xff\xd8\xff" + b"\x00" * 32
+            prepared = PreparedPrompt(
+                user_prompt="a red paper boat",
+                sent_prompt="adult rule\n\na red paper boat\n\nfooter",
+                negative_prompt="child",
+                footer_hash="deadbeef",
+            )
+            payload = {"data": [{"url": "b64:" + base64.b64encode(jpeg).decode("ascii")}]}
+            with mock.patch("core.asset_safety.asset_enabled", return_value=True), \
+                 mock.patch("core.imagine.http_json", return_value=(200, payload)), \
+                 mock.patch("core.asset_safety.check_generated_media", new=mock.AsyncMock()):
+                try:
+                    await run_asset(
+                        AssetPlan(mode="image", prompt="a red paper boat"),
+                        "sk-test-key",
+                        prepared=prepared,
+                        user_id=11,
+                        guild_id=22,
+                        channel_id=33,
+                    )
+                except Exception:
+                    pass
+            if len(_records(self.audit)) <= before:
+                gaps.append("run_asset")
+            else:
+                blob = " ".join(str(r) for r in _records(self.audit)[before:])
+                if "a red paper boat" in blob or "sk-test-key" in blob:
+                    gaps.append("run_asset:prompt-or-key-logged")
 
             return gaps
 
