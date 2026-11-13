@@ -707,6 +707,13 @@ def note(where: str) -> None:
     extra = f", footer sha256={digest}" if digest else ""
     line = f"Blocked ({where}){extra}."
     try:
+        from core.audit import block as audit_block
+
+        audit_block(where, footer_hash=digest)
+        return
+    except Exception:
+        pass
+    try:
         from core.gui_bridge import log
 
         log(line, channel="chat")

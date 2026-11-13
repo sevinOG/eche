@@ -255,14 +255,34 @@ class Eche(commands.Bot):
             return
 
         # Process commands normally
+        try:
+            from core.audit import bind_from_message
+            bind_from_message(message)
+        except Exception:
+            pass
         await self.process_commands(message)
 
     # ---------------------------------------------------------
     # ⭐ UPDATED ERROR HANDLER — IGNORE UNKNOWN COMMANDS
     # ---------------------------------------------------------
+    async def on_command_completion(self, ctx):
+        try:
+            from core.audit import command_from_ctx
+            command_from_ctx(ctx, "success")
+        except Exception:
+            pass
+
     async def on_command_error(self, ctx, error):
         if isinstance(error, commands.CommandNotFound):
             return
+        try:
+            from core.audit import command_from_ctx
+            if isinstance(error, (commands.NotOwner, commands.CheckFailure, commands.MissingPermissions)):
+                command_from_ctx(ctx, "refusal")
+            else:
+                command_from_ctx(ctx, "error", error_type=type(error).__name__)
+        except Exception:
+            pass
         if isinstance(error, commands.NotOwner):
             try:
                 await ctx.send("Only an owner from Settings → Security can use that command.")

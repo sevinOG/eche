@@ -1195,6 +1195,14 @@ def _openai_from_native(data: dict) -> dict:
     }
 
 
+def _audit_http(response=None, payload=None, *, outcome: str = "") -> None:
+    try:
+        from core.audit import api_from_http
+        api_from_http(_provider_label() or "llm", response, payload, outcome=outcome)
+    except Exception:
+        pass
+
+
 def _sync_post(url: str, payload: dict, headers: dict, timeout: int = 45) -> dict:
     visible = int(payload.get("max_tokens") or 256)
     stage = 0
@@ -1205,6 +1213,7 @@ def _sync_post(url: str, payload: dict, headers: dict, timeout: int = 45) -> dic
                 send_url, json=body, headers=headers, timeout=timeout
             )
         except Exception as e:
+            _audit_http(outcome="error")
             return {"error": _format_transport_error(e, send_url)}
 
         if response.status_code != 200:
@@ -1224,6 +1233,7 @@ def _sync_post(url: str, payload: dict, headers: dict, timeout: int = 45) -> dic
             )
             nxt = _after_http_error(payload, visible, stage, err)
             if nxt is None:
+                _audit_http(response, outcome="error")
                 return {"error": err}
             stage = nxt
             continue
@@ -1242,7 +1252,9 @@ def _sync_post(url: str, payload: dict, headers: dict, timeout: int = 45) -> dic
         nxt = _after_http_ok(payload, visible, stage, data)
         if nxt is None:
             if isinstance(data, dict) and data.get("error") and not data.get("choices"):
+                _audit_http(response, data, outcome="error")
                 return {"error": _error_text(data.get("error"))}
+            _audit_http(response, data, outcome="success")
             return data
         stage = nxt
     return {"error": f"{_provider_label()} request failed. model=`{payload.get('model', '?')}`"}
@@ -1263,10 +1275,12 @@ async def _async_post(url: str, payload: dict, headers: dict, timeout: int = 45)
         try:
             timeout_cfg = aiohttp.ClientTimeout(total=timeout)
             send_url, body = _ollama_request(url, payload)
+            http_resp = None
             async with aiohttp.ClientSession(timeout=timeout_cfg) as session:
                 async with session.post(
                     send_url, json=body, headers=headers
                 ) as resp:
+                    http_resp = resp
                     text = await resp.text()
                     if resp.status != 200:
                         if (
@@ -1285,6 +1299,7 @@ async def _async_post(url: str, payload: dict, headers: dict, timeout: int = 45)
                         )
                         nxt = _after_http_error(payload, visible, stage, err)
                         if nxt is None:
+                            _audit_http(http_resp, outcome="error")
                             return {"error": err}
                         stage = nxt
                         continue
@@ -1298,6 +1313,7 @@ async def _async_post(url: str, payload: dict, headers: dict, timeout: int = 45)
                             )
                         }
         except Exception as e:
+            _audit_http(outcome="error")
             return {"error": _format_transport_error(e, send_url)}
         data = _openai_from_native(data)
         if payload.get("_reasoning") != "off":
@@ -1305,7 +1321,9 @@ async def _async_post(url: str, payload: dict, headers: dict, timeout: int = 45)
         nxt = _after_http_ok(payload, visible, stage, data)
         if nxt is None:
             if isinstance(data, dict) and data.get("error") and not data.get("choices"):
+                _audit_http(http_resp, data, outcome="error")
                 return {"error": _error_text(data.get("error"))}
+            _audit_http(http_resp, data, outcome="success")
             return data
         stage = nxt
     return {"error": f"{_provider_label()} request failed. model=`{payload.get('model', '?')}`"}
@@ -1995,6 +2013,10 @@ async def _groq_sdk_call(
 
     async def _create(kw: dict) -> str | dict:
         completion = await client.chat.completions.create(**kw)
+        try:
+            _audit_http(completion, getattr(completion, "id", None), outcome="success")
+        except Exception:
+            pass
         if kw.get("stream"):
             parts: list[str] = []
             async for chunk in completion:

@@ -292,6 +292,11 @@ class OnMessage(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
+        try:
+            from core.audit import bind_from_message
+            bind_from_message(message)
+        except Exception:
+            pass
 
         # This bot's own posts mention it when the dealer wins a hand.
         # A reply to that post would mention it again, so ignore them here.

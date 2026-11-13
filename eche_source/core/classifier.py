@@ -150,12 +150,28 @@ def _post(messages: list) -> str:
     try:
         with urllib.request.urlopen(req, timeout=CLASSIFIER_TIMEOUT) as resp:
             raw = resp.read()
+            http_resp = resp
     except Exception as exc:
+        try:
+            from core.audit import api as audit_api
+            audit_api("classifier", outcome="error")
+        except Exception:
+            pass
         raise RuntimeError(f"classifier request failed: {type(exc).__name__}") from exc
     try:
         payload = json.loads(raw.decode("utf-8"))
+        try:
+            from core.audit import api_from_http
+            api_from_http("classifier", http_resp, payload, outcome="success")
+        except Exception:
+            pass
         return str(payload["choices"][0]["message"]["content"] or "")
     except Exception as exc:
+        try:
+            from core.audit import api_from_http
+            api_from_http("classifier", http_resp, outcome="error")
+        except Exception:
+            pass
         raise RuntimeError("classifier response unreadable") from exc
 
 

@@ -188,24 +188,38 @@ def specs_for(*, speaker_is_owner: bool, admin_enabled: bool = False) -> list[di
     return specs
 
 
+def _audit_tool(name: str, outcome: str, ctx: ToolContext | None, **extra) -> None:
+    try:
+        from core.audit import tool as audit_tool
+        message = getattr(ctx, "message", None) if ctx is not None else None
+        audit_tool(name or "", outcome, ctx=ctx, message=message, **extra)
+    except Exception:
+        pass
+
+
 async def execute(name: str, arguments: dict | None, ctx: ToolContext) -> ToolResult:
     """Run one tool. Unknown tools and owner tools from non-owners do not run."""
     tool = _resolve(name or "")
     if tool is None:
+        _audit_tool(name or "", "error", ctx)
         return ToolResult(name=name or "", ran=False)
 
     if tool.access != ACCESS_OWNER and not default_tools_enabled():
+        _audit_tool(tool.name, "refusal", ctx)
         return ToolResult(name=tool.name, ran=False)
     if tool.access != ACCESS_OWNER and not tool_prompt_enabled(tool.name):
+        _audit_tool(tool.name, "refusal", ctx)
         return ToolResult(name=tool.name, ran=False)
 
     if tool.access == ACCESS_OWNER:
         try:
             from core.admin_tools import admin_tools_enabled
             if not admin_tools_enabled():
+                _audit_tool(tool.name, "refusal", ctx)
                 return ToolResult(name=tool.name, ran=False)
         except Exception as e:
             dprint(f"[tools] admin toggle check failed for {tool.name}: {e}")
+            _audit_tool(tool.name, "error", ctx)
             return ToolResult(name=tool.name, ran=False)
         allowed = False
         try:
@@ -215,18 +229,21 @@ async def execute(name: str, arguments: dict | None, ctx: ToolContext) -> ToolRe
             dprint(f"[tools] owner check failed for {tool.name}: {e}")
             allowed = False
         if not allowed:
+            _audit_tool(tool.name, "refusal", ctx)
             return ToolResult(name=tool.name, ran=False)
 
     try:
         result = await tool.handler(ctx, arguments or {})
     except Exception as e:
         dprint(f"[tools] {tool.name} failed: {e}")
+        _audit_tool(tool.name, "error", ctx)
         return ToolResult(name=tool.name, text="I couldn't finish that.", ran=True)
 
     if result is None:
         result = ToolResult(text="")
     result.name = tool.name
     result.ran = True
+    _audit_tool(tool.name, "success", ctx)
     return result
 
 

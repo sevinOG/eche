@@ -56,6 +56,7 @@ _MODULE_NAME_OK = {
 # not a generation client.
 _MODULE_NEEDLE_OK = {
     ROOT / "core" / "blocklist.py": {"?asset"},
+    ROOT / "core" / "audit.py": {"?asset"},
 }
 
 # Comments in secrets.py may name dropped keys so leftover install files

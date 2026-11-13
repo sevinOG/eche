@@ -198,10 +198,25 @@ class ImageSearch(commands.Cog):
                     if resp.status != 200:
                         text = await resp.text()
                         dprint(f">>> [unsplash_multi] ERROR BODY: {text}")
+                        try:
+                            from core.audit import api_from_http
+                            api_from_http("unsplash", resp, outcome="error")
+                        except Exception:
+                            pass
                         return None
                     data = await resp.json()
+                    try:
+                        from core.audit import api_from_http
+                        api_from_http("unsplash", resp, data, outcome="success")
+                    except Exception:
+                        pass
         except Exception as e:
             dprint(f">>> [unsplash_multi] Connection error: {e}")
+            try:
+                from core.audit import api as audit_api
+                audit_api("unsplash", outcome="error")
+            except Exception:
+                pass
             raise
 
         results = data.get("results", [])
