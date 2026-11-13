@@ -294,8 +294,9 @@ class Eche(commands.Bot):
 
     async def close(self):
         try:
-            from core.audit import safe_activity
+            from core.audit import safe_activity, close as close_audit
             safe_activity("shutdown", outcome="success")
+            close_audit()
         except Exception:
             pass
         await super().close()

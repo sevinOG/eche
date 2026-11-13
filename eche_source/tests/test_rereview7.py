@@ -103,7 +103,7 @@ class OutputPath(Base):
         self.assertNotEqual(raw, REFUSAL)
         self.assertIn("small clear answer", raw.lower())
 
-    def test_call_groq_refuses_when_the_output_check_says_yes(self):
+    def test_call_groq_does_not_use_the_model_output_check(self):
         import core.client as client
         from core.blocklist import REFUSAL
 
@@ -112,6 +112,21 @@ class OutputPath(Base):
 
         with mock.patch("urllib.request.urlopen", side_effect=_dispatch(child="YES")), \
              mock.patch.object(client, "_provider_backend", return_value="cloud"), \
+             mock.patch.object(client, "_groq_sdk_call", side_effect=fake_sdk):
+            reply, _thoughts = asyncio.run(client.call_groq("hello there, this is a normal user message."))
+            raw = asyncio.run(client.call_groq_raw("hello there, this is a normal user message."))
+        self.assertNotEqual(reply, REFUSAL)
+        self.assertIn("small clear answer", reply.lower())
+        self.assertNotEqual(raw, REFUSAL)
+
+    def test_call_groq_refuses_when_the_keyword_filter_blocks_the_reply(self):
+        import core.client as client
+        from core.blocklist import REFUSAL
+
+        async def fake_sdk(*a, **k):
+            return {"content": "A 12-year-old girl walked into the room."}
+
+        with mock.patch.object(client, "_provider_backend", return_value="cloud"), \
              mock.patch.object(client, "_groq_sdk_call", side_effect=fake_sdk):
             reply, _thoughts = asyncio.run(client.call_groq("hello there, this is a normal user message."))
             raw = asyncio.run(client.call_groq_raw("hello there, this is a normal user message."))

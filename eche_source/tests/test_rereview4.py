@@ -6,7 +6,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from core import classifier as C, client
-from tests.checker_fixtures import patch_legacy_checker_settings
+from tests.checker_fixtures import patch_legacy_checker_settings, start_image_path_classifier, stop_image_path_classifier
 from core.safety import SAFETY_FOOTER, USER_GUARD, MinorsBlocked
 
 SHA = "66e2062573080eb6f55015acabf38fc33848fbfa8d450a2821918196b464d7f1"
@@ -51,8 +51,9 @@ class StaleAndWindow(unittest.TestCase):
     def setUp(self):
         C.allow_in_tests(False); C.clear_cache()
         self._legacy = patch_legacy_checker_settings(); self._legacy.start()
+        self._images = start_image_path_classifier()
     def tearDown(self):
-        self._legacy.stop(); C.allow_in_tests(True); C.clear_cache()
+        stop_image_path_classifier(self._images); self._legacy.stop(); C.allow_in_tests(True); C.clear_cache()
 
     def _run(self, msgs, markers):
         with mock.patch.dict(os.environ, {"GROQ_API_KEY": "gsk_x"}), \

@@ -13,9 +13,12 @@
 
 from __future__ import annotations
 
+import atexit
+import asyncio
 import contextvars
 import json
 import os
+import queue
 import re
 import threading
 import time
@@ -35,7 +38,11 @@ AUDIT_MAX_BYTES = 5 * 1024 * 1024
 AUDIT_MAX_ARCHIVES = 8
 AUDIT_MAX_ARCHIVE_BYTES = 20 * 1024 * 1024
 
-_lock = threading.Lock()
+_lock = threading.RLock()
+_acl_done: set[str] = set()
+_write_queue: queue.Queue = queue.Queue()
+_writer_thread: threading.Thread | None = None
+_writer_lock = threading.Lock()
 _bound: contextvars.ContextVar[dict[str, Any]] = contextvars.ContextVar(
     "eche_audit_ids", default={}
 )
@@ -185,11 +192,38 @@ def _now() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
+def _running_loop() -> bool:
+    try:
+        asyncio.get_running_loop()
+        return True
+    except RuntimeError:
+        return False
+
+
+def _path_key(path: str) -> str:
+    return os.path.abspath(path)
+
+
+def _apply_acl_once(path: str, *, alert: bool = True, force: bool = False) -> None:
+    """Apply the ACL at most once per path until rotate or a forced retry."""
+    key = _path_key(path)
+    with _lock:
+        if not force and key in _acl_done:
+            return
+        _apply_acl(path, alert=alert)
+        _acl_done.add(key)
+
+
+def _forget_acl(path: str) -> None:
+    with _lock:
+        _acl_done.discard(_path_key(path))
+
+
 def _ensure_log_dir(path: str) -> None:
     folder = os.path.dirname(path)
     if folder:
         os.makedirs(folder, exist_ok=True)
-        _apply_acl(folder)
+        _apply_acl_once(folder)
 
 
 def audit_path() -> str:
@@ -197,7 +231,8 @@ def audit_path() -> str:
 
     root = ensure_user_layout()
     path = os.path.join(root, AUDIT_RELATIVE)
-    _ensure_log_dir(path)
+    if not _running_loop():
+        _ensure_log_dir(path)
     return path
 
 
@@ -206,7 +241,8 @@ def _fallback_path() -> str:
     from core.paths import ensure_user_layout
     root = ensure_user_layout()
     path = os.path.join(root, AUDIT_FALLBACK_RELATIVE)
-    _ensure_log_dir(path)
+    if not _running_loop():
+        _ensure_log_dir(path)
     return path
 
 
@@ -214,7 +250,8 @@ def _alert_path() -> str:
     from core.paths import ensure_user_layout
     root = ensure_user_layout()
     path = os.path.join(root, AUDIT_ALERT_RELATIVE)
-    _ensure_log_dir(path)
+    if not _running_loop():
+        _ensure_log_dir(path)
     return path
 
 
@@ -309,7 +346,8 @@ def _rewrite_safety_only(path: str) -> None:
             fh.flush()
             os.fsync(fh.fileno())
         os.replace(tmp, path)
-        _apply_acl(path)
+        _forget_acl(path)
+        _apply_acl_once(path, force=True)
     except OSError:
         try:
             os.remove(tmp)
@@ -355,17 +393,20 @@ def _rotate_if_needed(path: str) -> None:
         n += 1
         dest = f"{path}.{stamp}-{n}"
     os.rename(path, dest)
-    _apply_acl(dest)
+    _forget_acl(path)
+    _apply_acl_once(dest, force=True)
     _prune_archives(os.path.dirname(path) or ".")
 
 
 def _write_once(path: str, line: str) -> None:
     _ensure_log_dir(path)
+    created = not os.path.isfile(path)
     with open(path, "a", encoding="utf-8") as fh:
         fh.write(line + "\n")
         fh.flush()
         os.fsync(fh.fileno())
-    _apply_acl(path)
+    # ACL once, when the file is first created (or not yet cached).
+    _apply_acl_once(path, force=created)
 
 
 def _append_line(path: str, line: str, *, safety: bool, rotate: bool = True, retries: int = 3) -> None:
@@ -391,6 +432,84 @@ def _append_line(path: str, line: str, *, safety: bool, rotate: bool = True, ret
     raise last
 
 
+def _writer_main() -> None:
+    while True:
+        item = _write_queue.get()
+        kind = item[0]
+        if kind == "stop":
+            ev = item[1] if len(item) > 1 else None
+            if ev is not None:
+                ev.set()
+            return
+        if kind == "flush":
+            item[1].set()
+            continue
+        _path, line, safety, rotate = item[1], item[2], item[3], item[4]
+        try:
+            _append_line(_path, line, safety=safety, rotate=rotate)
+        except Exception as exc:
+            failed = exc
+            if safety:
+                try:
+                    _append_line(_fallback_path(), line, safety=True, rotate=True)
+                    failed = None
+                except Exception as fallback_exc:
+                    failed = fallback_exc
+            if failed is not None:
+                _alert_write_failure(failed, safety=safety)
+
+
+def _ensure_writer() -> None:
+    global _writer_thread
+    with _writer_lock:
+        if _writer_thread is not None and _writer_thread.is_alive():
+            return
+        thread = threading.Thread(
+            target=_writer_main, name="eche-audit-writer", daemon=True
+        )
+        _writer_thread = thread
+        thread.start()
+
+
+def _enqueue_line(path: str, line: str, *, safety: bool, rotate: bool = True) -> None:
+    _ensure_writer()
+    _write_queue.put(("write", path, line, safety, rotate))
+
+
+def flush(timeout: float | None = 120.0) -> None:
+    """Block until every queued line has been written (or the writer is idle)."""
+    thread = _writer_thread
+    if thread is None or not thread.is_alive():
+        return
+    ev = threading.Event()
+    _write_queue.put(("flush", ev))
+    if not ev.wait(None if timeout is None else timeout):
+        _alert_write_failure(TimeoutError("audit flush timed out"), safety=True)
+
+
+def close() -> None:
+    """Flush queued lines and stop the background writer. Safe to call again."""
+    flush()
+    thread = _writer_thread
+    if thread is None or not thread.is_alive():
+        return
+    ev = threading.Event()
+    _write_queue.put(("stop", ev))
+    ev.wait(30)
+    thread.join(30)
+
+
+def _write_line(path: str, line: str, *, safety: bool, rotate: bool = True) -> None:
+    """Write now, or hand the line to the background writer when on the loop."""
+    if _running_loop():
+        _enqueue_line(path, line, safety=safety, rotate=rotate)
+        return
+    _append_line(path, line, safety=safety, rotate=rotate)
+
+
+atexit.register(close)
+
+
 def _alert_write_failure(exc: Exception, *, safety: bool) -> None:
     global _write_alerted
     kind = "Safety audit" if safety else "Audit"
@@ -413,6 +532,10 @@ def _alert_write_failure(exc: Exception, *, safety: bool) -> None:
 
 def iter_records(path: str | None = None):
     """Yield parsed audit records, skipping a torn last line."""
+    try:
+        flush()
+    except Exception:
+        pass
     target = path or audit_path()
     try:
         with open(target, "r", encoding="utf-8") as fh:
@@ -515,7 +638,11 @@ def record(event: str, *, safety: bool = False, **fields) -> dict:
     line = json.dumps(rec, ensure_ascii=False, separators=(",", ":"))
     write_error: Exception | None = None
     try:
-        _append_line(audit_path(), line, safety=is_safety)
+        if _running_loop():
+            # Fallback and alerts run on the writer thread so the loop stays free.
+            _enqueue_line(audit_path(), line, safety=is_safety)
+        else:
+            _append_line(audit_path(), line, safety=is_safety)
     except Exception as exc:
         write_error = exc
         if is_safety:
