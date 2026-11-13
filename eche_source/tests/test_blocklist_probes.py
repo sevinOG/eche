@@ -412,7 +412,6 @@ class Probe6Coverage(unittest.TestCase):
         # R12-19 removed this child-character phrase from the allow-list.
         no_longer_benign = {
             "Tiny Tim from A Christmas Carol is a classic",
-            "Christopher Robin Milne biography",
         }
         missed = []
         fps = []

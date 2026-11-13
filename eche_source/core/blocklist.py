@@ -142,7 +142,6 @@ BLOCKED_WORDS = (
     "幼女", "萝莉", "未成年", "児童", "女子小学生",
     "elfling", "elflings",
     "randoseru",
-    "pinocchio",
     "cherub", "cherubs", "cherubim",
     # Swahili / Indonesian (Latin script, whole words)
     "mtoto", "watoto", "msichana", "msichana mdogo",
@@ -187,6 +186,9 @@ SEXUAL_WORDS = (
     "rule 34", "r34", "lemon fic", "h-scene", "hscene", "moans",
     "seggs", "ero", "rated r", "nsfw-ish", "nsfwish",
     "choke me", "choke me daddy",
+    "bdsm", "pegging", "bend over",
+    "ride me", "nothing underneath", "sit on my face",
+    "wet and ready", "daddy",
     "netflix and chill", "netflix & chill",
     "under the covers", "under the blanket", "under blanket",
     "between her thighs", "her body", "lick",
@@ -717,7 +719,10 @@ _STORYBOOK_RE = re.compile(
     r"|ramona\s+quimby"
     r"|junie\s+b\.?\s*jones"
     r"|tinker\s*bell"
-    r"|pinocchio"
+    r"|pinocchio|pinocio|pinochio|pinoccio"
+    r"|(?<![\w])pipi(?![\w])"
+    r"|porridge\s+thief"
+    r"|gingerbread\s+house\s+siblings"
     r")(?![\w])",
     re.IGNORECASE,
 )
@@ -740,7 +745,13 @@ _STORYBOOK_ALLOW_RE = re.compile(
     r"dorothy\s+parker|"
     r"tiny\s+tim(?:\s+the)?\s+ukulele|"
     r"gretel\s+killeen|"
-    r"alice\s+from\s+accounting"
+    r"alice\s+from\s+accounting|"
+    r"matilda(?:['’]?s)?\s+(?:the\s+)?musical|"
+    r"pinocchio\s+(?:movie|film|book)\s+review|"
+    r"narnia\s+books|"
+    r"roald\s+dahl\s+wrote\s+matilda|"
+    r"matilda\s+by\s+roald\s+dahl|"
+    r"christopher\s+robin\s+milne(?:\s+biography)?"
     r")(?![\w])"
 )
 
@@ -856,7 +867,7 @@ _ALICE_CUES_RE = re.compile(
     r"wndrlnd|dodgson['’]?s\s+child\s+friend)"
 )
 
-_SEXUAL_EMOJI_RE = re.compile(r"[😏🍆💦🍑👅🥵🔥😈🫦🍒💋🔞🥴]")
+_SEXUAL_EMOJI_RE = re.compile(r"[😏🍆💦🍑👅🥵🔥😈🫦🍒💋🔞🥴🍌🥒🌮🌶]|🌶️")
 
 _HEX_TOKEN_RE = re.compile(r"(?<![\w])(?:0x)?([0-9a-f]{6,})(?![\w])", re.IGNORECASE)
 _B64_TOKEN_RE = re.compile(r"(?<![\w])([A-Za-z0-9+/]{8,}={0,2})(?![\w])")
@@ -1508,9 +1519,12 @@ def _search_flex(regex: re.Pattern, flex: re.Pattern, text: str):
 
 _STORYBOOK_FUZZY_BASES = (
     "goldilocks", "gretel", "heidi", "pippi", "matilda",
-    "mathilda", "matilde", "matylda", "dorothy", "coraline",
+    "mathilda", "matilde", "matylda", "coraline",
     "mowgli", "pinocchio", "pevensie", "narnia", "quimby",
     "wormwood", "beauregarde", "ingalls",
+)
+_STORYBOOK_CONTEXT_FUZZY_BASES = (
+    "dorothy",
 )
 _STORYBOOK_FUZZY_STOP = frozenset({
     "windy", "bendy", "weedy", "trendy", "newly",
@@ -1523,19 +1537,28 @@ _STORYBOOK_FUZZY_STOP = frozenset({
 _STORYBOOK_FUZZY_TOKEN_RE = re.compile(r"(?<![a-z0-9])[a-z][a-z0-9]{4,}(?![a-z0-9])", re.I)
 
 
-def _fuzzy_storybook_name(blob: str) -> str:
-    """Edit-distance 1 from a storybook name, tokens of 5+ letters, with a stoplist."""
+def _fuzzy_storybook_name_in(blob: str, bases) -> str:
+    """Edit-distance 1 from the given storybook names, tokens of 5+ letters."""
     for token in _STORYBOOK_FUZZY_TOKEN_RE.findall(blob or ""):
         word = token.lower()
         if word in _STORYBOOK_FUZZY_STOP:
             continue
-        for base in _STORYBOOK_FUZZY_BASES:
+        for base in bases:
             if _edit_distance_at_most(word, base, 1):
                 return token
     return ""
 
 
-_ALLOW_MAX_REMAINDER_WORDS = 8
+def _fuzzy_storybook_name(blob: str) -> str:
+    """Edit-distance 1 from a storybook name, tokens of 5+ letters, with a stoplist."""
+    return _fuzzy_storybook_name_in(blob, _STORYBOOK_FUZZY_BASES)
+
+
+_ALLOW_MAX_REMAINDER_WORDS = 6
+_BODY_CUE_RE = re.compile(
+    r"(?i)(?<![\w])(?:bod(?:y|ies)|figure|waist|chest|breasts?|hips?|"
+    r"thighs?|skin|lips?|cleavage|nude|naked)(?![\w])"
+)
 _IMEAN_RE = re.compile(r"(?i)\bi\s+mean\b|\bthe\s+\w+\s+one\b")
 _CHILD_CUE_RE = re.compile(
     r"(?i)(?<![\w])(?:kids?|child(?:ren)?|minors?|boy|girl|infant|toddler|"
@@ -1555,6 +1578,8 @@ def _allow_list_ok(original: str, remainder: str, candidates) -> bool:
     if _underage_age_hit(inspect):
         return False
     if any(_CHILD_CUE_RE.search(x or "") for x in inspect):
+        return False
+    if any(_BODY_CUE_RE.search(x or "") for x in inspect):
         return False
     if any(_IMEAN_RE.search(x or "") for x in inspect):
         return False
@@ -1699,6 +1724,20 @@ def match_info(text: str, *, force_context: bool = False) -> tuple[str, str]:
             return "alice", "context"
         if any(_WENDY_SEXUAL_RE.search(c) for c in alice_sources):
             return "wendy", "context"
+        if any(
+            re.search(r"(?i)(?<![\w])(?:dorothy|dottie)(?![\w])", c or "")
+            or _fuzzy_storybook_name_in(c, _STORYBOOK_CONTEXT_FUZZY_BASES)
+            for c in alice_sources
+        ):
+            return "dorothy", "context"
+        if any(
+            re.search(
+                r"(?i)(?<![\w])(?:alis|aliss|alise|ailce|aliec|alcie|alisu)(?![\w])",
+                c or "",
+            )
+            for c in alice_checked
+        ):
+            return "alice", "context"
     for candidate in list(candidates) + [text or ""]:
         hit = _HOGWARTS_FIRST_YEAR_RE.search(candidate) or _AGE_TAGGED_CANON_RE.search(candidate)
         if hit:

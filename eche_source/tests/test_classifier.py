@@ -320,8 +320,11 @@ class ChildCheckFailClosedTests(unittest.TestCase):
             self.assertEqual(classifier.child_check_model(), "meta-llama/llama-3.1-8b-instruct")
         self.assertNotIn("xai", classifier.CHILD_CHECK_DEFAULT_GROQ.lower())
         self.assertNotIn("xai", classifier.CHILD_CHECK_DEFAULT_OPENROUTER.lower())
+        with mock.patch.dict(os.environ, {"CHILD_CHECK_MODEL": "meta-llama/llama-guard-4-12b"}):
+            self.assertEqual(classifier.child_check_model(), "llama-3.1-8b-instant")
         with mock.patch.dict(os.environ, {"CHILD_CHECK_MODEL": "meta-llama/llama-3.1-8b-instruct"}):
-            self.assertEqual(classifier.child_check_model(), "meta-llama/llama-3.1-8b-instruct")
+            with mock.patch.object(classifier, "_endpoint", return_value=("k", classifier.GROQ_URL)):
+                self.assertEqual(classifier.child_check_model(), "llama-3.1-8b-instant")
 
     def test_yes_blocks_and_no_allows(self):
         with mock.patch.object(classifier, "_endpoint", return_value=("k", classifier.GROQ_URL)), \
