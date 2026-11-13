@@ -369,3 +369,12 @@ class MaskToggleTests(TempRoot):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DorothyTypoTests(unittest.TestCase):
+    def test_dorthy_from_oz_wet_blocks(self):
+        from core.blocklist import is_blocked
+        # Typo of Dorothy plus "wet" (which is not itself a sexual cue).
+        self.assertTrue(is_blocked("Dorthy from Oz, wet"))
+        self.assertTrue(is_blocked("Dorothey from the Wizard of Oz"))
+        self.assertTrue(is_blocked("Doroty Gale"))
