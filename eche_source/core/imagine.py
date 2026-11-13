@@ -176,6 +176,53 @@ def check_prompt(text: str) -> None:
         raise ImagineError(REFUSAL)
 
 
+# Text fields Imagine may send back. Urls and binary are skipped.
+_REPLY_TEXT_KEYS = frozenset({
+    "prompt",
+    "revised_prompt",
+    "rewritten_prompt",
+    "enhanced_prompt",
+    "caption",
+    "text",
+    "description",
+    "title",
+    "alt",
+    "alt_text",
+})
+
+
+def _payload_texts(payload) -> list[str]:
+    """Captions or rewritten prompts in an Imagine reply."""
+    found: list[str] = []
+
+    def walk(obj) -> None:
+        if isinstance(obj, dict):
+            for key, value in obj.items():
+                name = str(key).casefold()
+                if name in ("url", "b64_json", "request_id"):
+                    continue
+                if name in _REPLY_TEXT_KEYS and isinstance(value, str) and value.strip():
+                    found.append(value)
+                else:
+                    walk(value)
+        elif isinstance(obj, list):
+            for item in obj:
+                walk(item)
+
+    walk(payload)
+    return found
+
+
+def check_payload(payload) -> None:
+    """Refuse a finished file whose caption or rewritten prompt is blocked."""
+    from core.blocklist import REFUSAL, is_blocked, note
+
+    for text in _payload_texts(payload):
+        if is_blocked(text):
+            note("asset reply")
+            raise ImagineError(REFUSAL)
+
+
 def mime_for(content_type: str, filename: str) -> str:
     raw = (content_type or "").split(";", 1)[0].strip().lower()
     if raw in _IMAGE_MIME or raw in _VIDEO_MIME:
@@ -433,6 +480,7 @@ def _data_uri(source: SourceMedia) -> str:
 
 def request_for(plan: AssetPlan) -> tuple[str, dict]:
     """POST path and JSON body. No network."""
+    check_prompt(getattr(plan, "prompt", "") or "")
     if plan.mode == "image":
         body: dict = {"model": IMAGE_MODEL, "prompt": plan.prompt}
         if plan.aspect:
@@ -520,6 +568,7 @@ def _filtered(payload: dict) -> bool:
 def image_url(payload: dict) -> str:
     if _filtered(payload):
         raise ImagineError(_FILTERED)
+    check_payload(payload)
     data = payload.get("data") if isinstance(payload, dict) else None
     item = data[0] if isinstance(data, list) and data else {}
     if not isinstance(item, dict):
@@ -536,6 +585,7 @@ def image_url(payload: dict) -> str:
 def video_start_id(payload: dict) -> str:
     if not isinstance(payload, dict):
         raise ImagineError("Imagine did not start the video.")
+    check_payload(payload)
     request_id = str(payload.get("request_id") or "").strip()
     if request_id:
         return request_id
@@ -552,6 +602,7 @@ def video_poll(payload: dict) -> tuple[str, str]:
     if status == "done":
         if _filtered(payload):
             raise ImagineError(_FILTERED)
+        check_payload(payload)
         video = payload.get("video") if isinstance(payload.get("video"), dict) else {}
         url = str(video.get("url") or "").strip()
         if not url:
@@ -566,6 +617,8 @@ def video_poll(payload: dict) -> tuple[str, str]:
 
 
 def http_json(method: str, url: str, key: str, body: dict | None = None, timeout: int = 120) -> tuple[int, dict]:
+    if isinstance(body, dict):
+        check_prompt(str(body.get("prompt") or ""))
     data = None
     headers = {
         "Authorization": f"Bearer {key}",
@@ -593,6 +646,7 @@ def http_json(method: str, url: str, key: str, body: dict | None = None, timeout
         raise ImagineError(_error_text(payload if isinstance(payload, dict) else {}, status))
     if not isinstance(payload, dict):
         raise ImagineError("Imagine returned an unexpected response.")
+    check_payload(payload)
     return status, payload
 
 

@@ -24,6 +24,8 @@ BLOCKED_WORDS = (
     "child", "children", "childs",
     "minor", "minors",
     "underage", "under age", "underaged",
+    "teen", "teens", "teenager", "teenagers", "teenage", "teenaged",
+    "teen age", "teen aged",
     "preteen", "preteens", "pre teen", "pre teens",
     "toddler", "toddlers",
     "infant", "infants",
@@ -32,6 +34,12 @@ BLOCKED_WORDS = (
     "loli", "lolis", "lolicon",
     "shota", "shotas", "shotacon",
     "jailbait",
+    "csam", "csem",
+    "grooming", "groomer", "groomers",
+    "pedo", "pedos",
+    "pedophile", "pedophiles", "pedophilia",
+    "paedophile", "paedophiles", "paedophilia",
+    "child exploitation", "child sexual exploitation",
 )
 
 # "baby" is only blocked when the same message is sexual.
@@ -75,10 +83,14 @@ def _words_re(entries) -> re.Pattern | None:
 _BLOCKED_RE = _words_re(BLOCKED_WORDS)
 _BABY_RE = _words_re(BABY_WORDS)
 _SEXUAL_RE = _words_re(SEXUAL_WORDS)
-# 0-17 as digits or words, next to year-old / years old / yo / y/o / y.o.
+# 0-17 as digits or words, next to year-old / years old / years of age /
+# yo / y/o / y.o., or after aged / age / age of.
+_AGE_NUM = r"(?:1[0-7]|[0-9]|" + "|".join(_NUMBER_WORDS) + r")"
 _AGE_RE = re.compile(
-    r"(?<![\w.])(?:1[0-7]|[0-9]|" + "|".join(_NUMBER_WORDS) + r")"
-    r"[\s\-_]*(?:(?:years?|yrs?)[\s\-_]*olds?|y\s*/\s*o|y\.o\.?|yo)(?![\w/])",
+    r"(?<![\w.])" + _AGE_NUM + r"[\s\-_]*"
+    r"(?:(?:years?|yrs?)[\s\-_]*(?:olds?|of[\s\-_]*age)|y\s*/\s*o|y\.o\.?|yo)"
+    r"(?![\w/])"
+    r"|(?<![\w])(?:aged|age)[\s\-_]*:?[\s\-_]*(?:of[\s\-_]*)?" + _AGE_NUM + r"(?![\w])",
     re.IGNORECASE,
 )
 
