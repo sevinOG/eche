@@ -340,3 +340,7 @@
 Ⲧ	t	coptic tau cap
 ⲏ	h	coptic eta
 Ⲏ	h	coptic eta cap
+๐	o	thai-digit
+ƒ	f	florin
+ꮩ	v	cherokee-lookalike
+ꓜ	m	lisu-lookalike
