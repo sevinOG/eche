@@ -882,6 +882,24 @@ def _verdict_to_check(
         # Only skip when every reported category is ignored. An unsafe
         # verdict with no category is still a block (fail closed).
         if ignored and cats and all(cat in ignored for cat in cats):
+            try:
+                from core.audit import record
+                from core.asset_safety import read_asset_mode
+
+                snap = read_asset_mode(observe=False)
+                record(
+                    "asset",
+                    outcome="success",
+                    category="s12-ignored",
+                    ignored=",".join(sorted(cats)),
+                    adult="1" if snap.adult else "0",
+                    approval="1" if snap.approval else "0",
+                    safety=True,
+                )
+            except Exception:
+                # A failed s12-ignored audit must not let the output through.
+                if not tests_are_allowing():
+                    return "classifier-error"
             return ""
         return "classifier-unsafe"
     return ""

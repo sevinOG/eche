@@ -14,14 +14,20 @@ from core.asset_safety import (
     APPROVAL_OFF_GUILD_CAP,
     APPROVAL_OFF_USER_CAP,
     ADULT_OUTPUT_IGNORE_LG4,
+    AssetMode,
     adult_output_ignore_lg4,
     asset_adult_enabled,
     asset_approval_enabled,
     asset_approval_stored,
     channel_is_age_restricted,
+    confirm_asset_delivery,
     hourly_caps,
     owner_only_required,
+    parse_safety_flag,
+    read_asset_mode,
+    reset_observed_asset_mode,
     video_allowed,
+    _mode_from_store,
 )
 from core.classifier import (
     AGE_VISION_ADULT_PROMPT,
@@ -74,22 +80,26 @@ class ToggleDefaultsTests(unittest.TestCase):
 
 class CouplingTests(unittest.TestCase):
     def test_runtime_18_plus_forces_approval_on(self):
-        with mock.patch("core.asset_safety.asset_adult_enabled", return_value=True), \
-             mock.patch("core.asset_safety.asset_approval_stored", return_value=False):
-            self.assertTrue(asset_approval_enabled())
-            self.assertTrue(video_allowed())
-            self.assertTrue(owner_only_required())
-            self.assertEqual(hourly_caps(), (10, 30))
-            self.assertEqual(adult_output_ignore_lg4(), frozenset({"S12"}))
+        mode, _invalid = _mode_from_store({
+            "asset_adult_enabled": "1",
+            "asset_approval_enabled": "0",
+        })
+        self.assertTrue(asset_approval_enabled(mode))
+        self.assertTrue(video_allowed(mode))
+        self.assertTrue(owner_only_required(mode))
+        self.assertEqual(hourly_caps(mode), (10, 30))
+        self.assertEqual(adult_output_ignore_lg4(mode), frozenset({"S12"}))
 
     def test_approval_off_lowers_caps_and_disables_video(self):
-        with mock.patch("core.asset_safety.asset_adult_enabled", return_value=False), \
-             mock.patch("core.asset_safety.asset_approval_stored", return_value=False):
-            self.assertFalse(asset_approval_enabled())
-            self.assertFalse(video_allowed())
-            self.assertTrue(owner_only_required())
-            self.assertEqual(hourly_caps(), (APPROVAL_OFF_USER_CAP, APPROVAL_OFF_GUILD_CAP))
-            self.assertEqual(hourly_caps(), (3, 10))
+        mode, _invalid = _mode_from_store({
+            "asset_adult_enabled": "0",
+            "asset_approval_enabled": "0",
+        })
+        self.assertFalse(asset_approval_enabled(mode))
+        self.assertFalse(video_allowed(mode))
+        self.assertTrue(owner_only_required(mode))
+        self.assertEqual(hourly_caps(mode), (APPROVAL_OFF_USER_CAP, APPROVAL_OFF_GUILD_CAP))
+        self.assertEqual(hourly_caps(mode), (3, 10))
 
     def test_save_time_18_plus_forces_approval_and_owner_only(self):
         out = couple_asset_toggles({
@@ -148,40 +158,36 @@ class CouplingTests(unittest.TestCase):
 
 class GateTests(unittest.TestCase):
     def test_18_plus_is_refused_outside_age_restricted_channels_and_in_dms(self):
-        with mock.patch("core.asset_safety.asset_enabled", return_value=True), \
-             mock.patch("core.asset_safety.asset_adult_enabled", return_value=True), \
-             mock.patch("core.asset_safety.asset_approval_enabled", return_value=True), \
-             mock.patch("core.imagine.speaker_allowed", return_value=True), \
+        mode = AssetMode(enabled=True, adult=True, approval=True, owner_only=True, user_cap=10, guild_cap=30, video=True)
+        with mock.patch("core.imagine.speaker_allowed", return_value=True), \
              mock.patch("core.asset_limits.is_locked", return_value=False), \
              mock.patch("core.asset_limits.rate_refusal", return_value=None), \
              mock.patch("core.asset_safety._audit"):
             self.assertEqual(
-                refuse_speaker(True, guild_id=1, channel_id=2, nsfw=False),
+                refuse_speaker(True, guild_id=1, channel_id=2, nsfw=False, asset_mode=mode),
                 ADULT_CHANNEL_REFUSAL,
             )
             self.assertIsNone(
-                refuse_speaker(True, guild_id=1, channel_id=2, nsfw=True),
+                refuse_speaker(True, guild_id=1, channel_id=2, nsfw=True, asset_mode=mode),
             )
             from core.asset_limits import DM_REFUSAL
             self.assertEqual(
-                refuse_speaker(True, guild_id=None, channel_id=2, nsfw=True),
+                refuse_speaker(True, guild_id=None, channel_id=2, nsfw=True, asset_mode=mode),
                 DM_REFUSAL,
             )
             self.assertEqual(
-                refuse_speaker(True, guild_id=1, channel=_Channel(False)),
+                refuse_speaker(True, guild_id=1, channel=_Channel(False), asset_mode=mode),
                 ADULT_CHANNEL_REFUSAL,
             )
             self.assertIsNone(
-                refuse_speaker(True, guild_id=1, channel=_Channel(True)),
+                refuse_speaker(True, guild_id=1, channel=_Channel(True), asset_mode=mode),
             )
 
     def test_18_plus_is_owner_only_even_if_audience_is_open(self):
-        with mock.patch("core.asset_safety.asset_enabled", return_value=True), \
-             mock.patch("core.asset_safety.asset_adult_enabled", return_value=True), \
-             mock.patch("core.imagine.asset_audience", return_value="all"):
-            from core.imagine import speaker_allowed
-            self.assertTrue(speaker_allowed(True))
-            self.assertFalse(speaker_allowed(False))
+        mode = AssetMode(enabled=True, adult=True, approval=True, owner_only=True, user_cap=10, guild_cap=30, video=True)
+        from core.imagine import speaker_allowed
+        self.assertTrue(speaker_allowed(True, mode))
+        self.assertFalse(speaker_allowed(False, mode))
 
     def test_approval_off_refuses_video(self):
         with mock.patch("core.asset_safety.video_allowed", return_value=False):
@@ -219,6 +225,27 @@ class AdultFilterTests(unittest.TestCase):
             "chibi style portrait of an adult",
             "a stylized oil painting of two adults",
             "a doll standing on a shelf",
+            "a kawaii cafe mascot holding a teacup",
+            "portrait of a waifu at sunset",
+            "hentai ink study of two adults",
+            "2D side-view of a market street",
+            "a 3D render of a mountain cabin",
+            "pixar-style kitchen interior",
+            "ghibli hills under a blue sky",
+            "an illustrated botanical poster",
+            "a charcoal drawing of a bridge",
+            "manhwa panel of a rainy street",
+            "a vtuber model sheet",
+            "claymation table scene",
+            "an animated title card",
+            "a mannequin in a shop window",
+            "PVC figure on a desk",
+            "cel shading on a motorcycle",
+            "a shortstack adventurer in armor",
+            "in the style of a coastal studio",
+            "a アニメ street at night",
+            "一幅動漫 poster on the wall",
+            "Zeichentrick backdrop of a town",
         ]
         real = [
             "a photorealistic portrait of a celebrity",
@@ -229,6 +256,8 @@ class AdultFilterTests(unittest.TestCase):
             "a couple kissing",
             "a toaster on a counter",
             "a tall woman in a red dress",
+            "a coastal lifestyle magazine cover",
+            "a new hairstyle in a salon chair",
         ]
         for text in stylized + real:
             self.assertTrue(media_prompt_blocked(text, adult=True), text)
@@ -249,15 +278,18 @@ class AdultFilterTests(unittest.TestCase):
 class ClassifierIgnoreTests(unittest.TestCase):
     def test_s12_only_is_ignored_s4_and_empty_are_not(self):
         ignore = frozenset({"S12"})
-        self.assertEqual(_verdict_to_check("unsafe\nS12", ignore_categories=ignore), "")
-        self.assertEqual(_verdict_to_check("unsafe\nS4", ignore_categories=ignore), "classifier-unsafe")
-        self.assertEqual(
-            _verdict_to_check("unsafe\nS12 S4", ignore_categories=ignore),
-            "classifier-unsafe",
-        )
-        self.assertEqual(_verdict_to_check("unsafe", ignore_categories=ignore), "classifier-unsafe")
-        self.assertEqual(_verdict_to_check("unsafe\nS12"), "classifier-unsafe")
-        self.assertEqual(_verdict_to_check("safe", ignore_categories=ignore), "")
+        with mock.patch("core.audit.record"), mock.patch(
+            "core.asset_safety.read_asset_mode", return_value=_adult_mode()
+        ):
+            self.assertEqual(_verdict_to_check("unsafe\nS12", ignore_categories=ignore), "")
+            self.assertEqual(_verdict_to_check("unsafe\nS4", ignore_categories=ignore), "classifier-unsafe")
+            self.assertEqual(
+                _verdict_to_check("unsafe\nS12 S4", ignore_categories=ignore),
+                "classifier-unsafe",
+            )
+            self.assertEqual(_verdict_to_check("unsafe", ignore_categories=ignore), "classifier-unsafe")
+            self.assertEqual(_verdict_to_check("unsafe\nS12"), "classifier-unsafe")
+            self.assertEqual(_verdict_to_check("safe", ignore_categories=ignore), "")
         self.assertEqual(lg4_categories("unsafe\nS12, S4"), ["S12", "S4"])
 
     def test_adult_vision_prompt_is_stricter(self):
@@ -277,3 +309,239 @@ class ClassifierIgnoreTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _adult_mode(**overrides):
+    fields = dict(
+        enabled=True,
+        adult=True,
+        approval=True,
+        owner_only=True,
+        user_cap=10,
+        guild_cap=30,
+        video=True,
+    )
+    fields.update(overrides)
+    return AssetMode(**fields)
+
+
+class SafetyFlagParseTests(unittest.TestCase):
+    def test_only_explicit_tokens_disable_default_on_flags(self):
+        for raw in ("0", "false", "NO", "Off"):
+            value, invalid = parse_safety_flag(raw, default=True)
+            self.assertFalse(value, raw)
+            self.assertFalse(invalid, raw)
+        for raw in ("1", "true", "yes", "on"):
+            value, invalid = parse_safety_flag(raw, default=True)
+            self.assertTrue(value, raw)
+            self.assertFalse(invalid, raw)
+        for raw in ("", None):
+            value, invalid = parse_safety_flag(raw, default=True)
+            self.assertTrue(value)
+            self.assertFalse(invalid)
+        for raw in ("enabled", "2", "maybe", "sure"):
+            value, invalid = parse_safety_flag(raw, default=True)
+            self.assertTrue(value, raw)
+            self.assertTrue(invalid, raw)
+
+
+class FileBackedToggleTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory(prefix="eche-toggles-")
+        self.root = self._tmp.name
+        reset_observed_asset_mode()
+
+    def tearDown(self):
+        reset_observed_asset_mode()
+        self._tmp.cleanup()
+
+    def _save(self, **flags):
+        from core.secrets import save_all
+        with mock.patch("core.audit.safe_activity"):
+            save_all(flags, root=self.root)
+        reset_observed_asset_mode()
+
+    def test_invalid_approval_and_owner_only_keep_the_safe_value_and_are_audited(self):
+        from core.secrets import load_all, save_all
+
+        recorded = []
+
+        def fake_record(kind, **fields):
+            recorded.append((kind, fields))
+
+        with mock.patch("core.audit.record", side_effect=fake_record), \
+             mock.patch("core.audit.safe_activity"), \
+             mock.patch("core.secrets._notify_asset_toggle_owners"):
+            save_all({
+                "asset_approval_enabled": "enabled",
+                "asset_owner_only": "maybe",
+            }, root=self.root)
+        cfg = load_all(self.root)
+        self.assertEqual(cfg.get("asset_approval_enabled"), "1")
+        self.assertEqual(cfg.get("asset_owner_only"), "1")
+        keys = {fields.get("key") for kind, fields in recorded if kind == "settings-invalid"}
+        self.assertIn("asset_approval_enabled", keys)
+        self.assertIn("asset_owner_only", keys)
+
+    def test_failed_audit_reverts_the_save(self):
+        from core.secrets import load_all, save_all
+
+        with mock.patch("core.audit.safe_activity"), \
+             mock.patch("core.audit.record"), \
+             mock.patch("core.secrets._notify_asset_toggle_owners"):
+            save_all({"asset_adult_enabled": "0", "asset_approval_enabled": "1"}, root=self.root)
+        self.assertEqual(load_all(self.root).get("asset_adult_enabled"), "0")
+
+        def boom(*_a, **_k):
+            raise OSError("disk full")
+
+        with mock.patch("core.audit.record", side_effect=boom), \
+             mock.patch("core.audit.safe_activity", side_effect=boom), \
+             mock.patch("core.secrets._notify_asset_toggle_owners"):
+            with self.assertRaises(OSError):
+                save_all({"asset_adult_enabled": "1"}, root=self.root)
+        self.assertEqual(load_all(self.root).get("asset_adult_enabled"), "0")
+
+    def test_save_log_uses_normalised_values(self):
+        from core.secrets import save_all
+
+        recorded = {}
+
+        def fake_record(kind, **fields):
+            if kind == "settings-save":
+                recorded.update(fields)
+
+        with mock.patch("core.audit.record", side_effect=fake_record), \
+             mock.patch("core.audit.safe_activity"), \
+             mock.patch("core.secrets._notify_asset_toggle_owners"):
+            save_all({"asset_enabled": "yes", "asset_owner_only": "true"}, root=self.root)
+        self.assertEqual(recorded.get("asset_enabled_old"), "0")
+        self.assertEqual(recorded.get("asset_enabled_new"), "1")
+        self.assertEqual(recorded.get("asset_owner_only_old"), "1")
+        self.assertEqual(recorded.get("asset_owner_only_new"), "1")
+
+    def test_hand_edit_is_observed_and_dms_from_the_bot_process(self):
+        from core.secrets import _save_public
+
+        self._save(asset_adult_enabled="0", asset_approval_enabled="1")
+        first = read_asset_mode(self.root)
+        self.assertFalse(first.adult)
+        # A hand edit writes the file without going through save_all.
+        from pathlib import Path
+        path = Path(self.root) / "config" / "settings.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data["asset_adult_enabled"] = "1"
+        path.write_text(json.dumps(data), encoding="utf-8")
+        sent = []
+
+        def fake_notify(lines):
+            sent.append("\n".join(lines))
+
+        with mock.patch("core.secrets._notify_asset_toggle_owners", side_effect=fake_notify), \
+             mock.patch("core.audit.record"):
+            later = read_asset_mode(self.root)
+        self.assertTrue(later.adult)
+        self.assertTrue(any("18+" in text for text in sent))
+
+    def test_mode_change_between_output_check_and_review_aborts(self):
+        from core.imagine import ImagineError
+        from core.asset_safety import MODE_CHANGED_REFUSAL
+
+        self._save(
+            asset_enabled="1",
+            asset_adult_enabled="1",
+            asset_approval_enabled="1",
+        )
+        start = read_asset_mode(self.root)
+        self.assertTrue(start.adult)
+        # Flip 18+ off after the output check, before review.
+        self._save(
+            asset_enabled="1",
+            asset_adult_enabled="0",
+            asset_approval_enabled="1",
+        )
+        reset_observed_asset_mode(start)
+        with self.assertRaises(ImagineError) as err:
+            confirm_asset_delivery(start, _Channel(True), guild_id=1, channel_id=2)
+        self.assertEqual(err.exception.text, MODE_CHANGED_REFUSAL)
+
+    def test_nsfw_channel_flip_aborts_before_review(self):
+        from core.imagine import ImagineError
+        from core.asset_safety import CHANNEL_CHANGED_REFUSAL
+
+        mode = _adult_mode()
+        with mock.patch("core.asset_safety.read_asset_mode", return_value=mode), \
+             mock.patch("core.asset_safety._audit"):
+            with self.assertRaises(ImagineError) as err:
+                confirm_asset_delivery(mode, _Channel(False), guild_id=1, channel_id=2)
+        self.assertEqual(err.exception.text, CHANNEL_CHANGED_REFUSAL)
+
+    def test_review_message_includes_age_restricted(self):
+        from core.asset_review import _review_message
+
+        text = _review_message(user_id=1, guild_id=2, channel_id=3, age_restricted=True)
+        self.assertIn("age-restricted: yes", text)
+        text = _review_message(age_restricted=False)
+        self.assertIn("age-restricted: no", text)
+
+
+class S12IgnoredAuditTests(unittest.TestCase):
+    def test_s12_only_pass_writes_an_audit_line(self):
+        recorded = []
+
+        def fake_record(kind, **fields):
+            recorded.append((kind, fields))
+
+        mode = _adult_mode()
+        with mock.patch("core.audit.record", side_effect=fake_record), \
+             mock.patch("core.asset_safety.read_asset_mode", return_value=mode):
+            self.assertEqual(_verdict_to_check("unsafe\nS12", ignore_categories=frozenset({"S12"})), "")
+        matches = [fields for kind, fields in recorded if fields.get("category") == "s12-ignored"]
+        self.assertTrue(matches)
+        self.assertEqual(matches[0].get("adult"), "1")
+        self.assertEqual(matches[0].get("approval"), "1")
+
+    def test_failed_s12_audit_fails_closed(self):
+        def boom(*_a, **_k):
+            raise OSError("log failed")
+
+        with mock.patch("core.audit.record", side_effect=boom), \
+             mock.patch("core.classifier.tests_are_allowing", return_value=False), \
+             mock.patch("core.asset_safety.read_asset_mode", return_value=_adult_mode()):
+            self.assertEqual(
+                _verdict_to_check("unsafe\nS12", ignore_categories=frozenset({"S12"})),
+                "classifier-error",
+            )
+
+
+class LimitsIsolationTests(unittest.TestCase):
+    def test_source_tree_is_not_left_with_asset_limits(self):
+        from pathlib import Path
+
+        stray = Path(__file__).resolve().parent.parent / "config" / "asset_limits.json"
+        if stray.is_file():
+            stray.unlink()
+        self.assertFalse(stray.is_file())
+
+
+class AdultRuleTests(unittest.TestCase):
+    def test_18_plus_sent_prompt_uses_the_stricter_preamble(self):
+        from core.asset_safety import ADULT_RULE, ADULT_RULE_STRICT, build_sent_prompt
+
+        default_sent, _digest = build_sent_prompt("a red paper boat", adult=False)
+        adult_sent, _digest = build_sent_prompt("a red paper boat", adult=True)
+        self.assertIn(ADULT_RULE, default_sent)
+        self.assertNotIn(ADULT_RULE_STRICT, default_sent)
+        self.assertIn(ADULT_RULE_STRICT, adult_sent)
+        self.assertIn("25 years or older", adult_sent)
+        from core.safety import SAFETY_FOOTER
+        self.assertTrue(adult_sent.endswith(SAFETY_FOOTER))
+        self.assertEqual(footer_sha256(), FOOTER_HASH)
+
+
+class HelpCopyTests(unittest.TestCase):
+    def test_18_plus_help_mentions_non_nsfw_refusal(self):
+        from gui.widgets.settings_help import FIELD_HELP
+
+        body = FIELD_HELP["asset_adult_enabled"][1] + FIELD_HELP["asset_enabled"][1]
+        self.assertIn("non-NSFW", body)

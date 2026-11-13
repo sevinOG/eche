@@ -813,11 +813,39 @@ def _is_despaced_copy(raw: str, form: str) -> bool:
 # 18+ only: stylized media and real or identifiable people are blocked
 # in addition to every ordinary minors check.
 _ADULT_STYLE_RE = re.compile(
-    r"(?is)\b(?:"
-    r"anime|manga|cartoon(?:s|ish)?|toon(?:s)?|chibi|moe|"
-    r"dolls?|figurines?|stylized|stylised|cel[\s\-]?shaded|"
-    r"webtoon|comic[\s\-]?book|comic[\s\-]?style"
+    r"(?isx)"
+    r"(?:"
+    # Requesting a named studio or style transfer.
+    r"\bin\s+the\s+style\s+of\b"
+    r"|\b(?:pixar|ghibli|disney|dreamworks|studio\s+ghibli)(?:[\s\-]?style)?\b"
+    # Hyphenated "foo-style" (lifestyle / hairstyle / freestyle are one word).
+    r"|(?<![a-z0-9])(?!life|hair|free|life\b)[a-z0-9]+-style\b"
+    r"|"
+    r"\b(?:"
+    r"anime|manga|cartoon(?:s|ish|y)?|toon(?:s|y)?|chibi|moe|"
+    r"dolls?|figurines?|stylized|stylised|"
+    r"cel[\s\-]?shad(?:ed|ing)|"
+    r"webtoon|manhwa|manhua|"
+    r"comic(?:s|[\s\-]?book|[\s\-]?style)?|"
+    r"kawaii|waifu|hentai|"
+    r"2[\s\-]?d|3[\s\-]?d[\s\-]+render|"
+    r"illustrated|illustration|drawing|drawings|"
+    r"vtuber|v[\s\-]?tuber|"
+    r"claymation|stop[\s\-]?motion|"
+    r"animated|animation|"
+    r"mannequin|pvc[\s\-]?figure|pvc\s+fig|"
+    r"shortstack|short[\s\-]?stack"
     r")\b"
+    # Nine-language style families (EN above, plus JA, ZH, KO, DE, FR, ES, PT, IT).
+    r"|アニメ|マンガ|漫画|かわいい|二次元|三次元|フィギュア|イラスト|同人|萌え|ちび"
+    r"|動漫|动漫|卡通|插画|插畫|手绘|手繪"
+    r"|만화|애니|웹툰|그림체"
+    r"|Zeichentrick|Zeichnung"
+    r"|dessin(?:s)?\s+anim[ée]s?|bande\s+dessin[ée]e|illustr[ée]s?"
+    r"|dibujo(?:s)?\s+animado(?:s)?|historieta(?:s)?|ilustrad[oa]s?"
+    r"|desenho(?:s)?\s+animado(?:s)?|ilustrad[oa]s?"
+    r"|cartone(?:s)?\s+animat[oi]|fumett[oi]|illustrat[oi]"
+    r")"
 )
 _ADULT_REAL_PERSON_RE = re.compile(
     r"(?is)(?:"

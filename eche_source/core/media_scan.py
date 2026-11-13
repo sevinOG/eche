@@ -588,6 +588,9 @@ OFFICIAL_IMAGINE_MODULES = frozenset({
     "core.asset_review",
     "core.asset_limits",
     "core.media_scan",
+    "core.classifier",
+    "core.secrets",
+    "core.tools",
 })
 
 _OFFICIAL_MANIFEST_NAME = "official_imagine.sha256"
@@ -601,6 +604,9 @@ _OFFICIAL_MODULE_FILES = {
     "core.asset_review": "core/asset_review.py",
     "core.asset_limits": "core/asset_limits.py",
     "core.media_scan": "core/media_scan.py",
+    "core.classifier": "core/classifier.py",
+    "core.secrets": "core/secrets.py",
+    "core.tools": "core/tools.py",
 }
 
 

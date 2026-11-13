@@ -619,7 +619,9 @@ class SettingsWindow(QWidget):
         self.asset_adult_box.setObjectName("asset_adult_enabled")
         self.asset_adult_box.setToolTip(
             "Off by default. Owner-only, and only in Discord age-restricted channels. "
-            "Turns owner approval on and keeps every minors check."
+            "Turns owner approval on and keeps every minors check. "
+            "While 18+ is on, ?asset is refused in every channel that is not "
+            "age-restricted, including ordinary SFW requests."
         )
         self.asset_approval_box = QCheckBox("Require owner approval")
         self.asset_approval_box.setObjectName("asset_approval_enabled")

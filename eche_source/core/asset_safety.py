@@ -29,6 +29,18 @@ ADULT_RULE = (
     "All characters are adults 21 years or older. "
     "Do not depict children, minors, or anyone who looks under 21."
 )
+ADULT_RULE_STRICT = (
+    "All characters are clearly mature adults, 25 years or older, with adult "
+    "proportions, and look like a non-stylized, non-identifiable person. "
+    "Do not depict children, minors, anyone who looks under 21, stylized, "
+    "illustrated, anime, cartoon, or identifiable people."
+)
+MODE_CHANGED_REFUSAL = (
+    "The asset safety settings changed during this request, so it was not posted."
+)
+CHANNEL_CHANGED_REFUSAL = (
+    "18+ asset generation is only available in age-restricted channels."
+)
 OUTPUT_CLASSIFY_TEXT = (
     "Classify this generated media for sexual or other content involving "
     "minors, child-coded characters, or any listed safety category."
@@ -61,68 +73,276 @@ class PreparedPrompt:
     footer_hash: str
 
 
-def asset_enabled() -> bool:
+
+# Explicit disable tokens for default-ON safety flags (approval, owner-only).
+_DISABLE_TOKENS = frozenset({"0", "false", "no", "off"})
+_ENABLE_TOKENS = frozenset({"1", "true", "yes", "on"})
+
+_LAST_SEEN_MODE = None
+_LAST_INVALID: set[str] = set()
+
+
+def parse_safety_flag(stored, *, default: bool) -> tuple[bool, bool]:
+    """Return (value, invalid).
+
+    Default-ON flags (approval, owner-only) turn off only for an explicit
+    0/false/no/off. Anything unrecognised keeps the safe default.
+    Default-OFF flags turn on only for an explicit 1/true/yes/on.
+    """
+    text = str(stored if stored is not None else "").strip().lower()
+    if not text:
+        return default, False
+    if text in _DISABLE_TOKENS:
+        return False, False
+    if text in _ENABLE_TOKENS:
+        return True, False
+    return default, True
+
+
+@dataclass(frozen=True)
+class AssetMode:
+    """One immutable snapshot of the asset safety toggles for a request."""
+
+    enabled: bool
+    adult: bool
+    approval: bool
+    owner_only: bool
+    user_cap: int
+    guild_cap: int
+    video: bool
+
+
+def _mode_from_store(store: dict | None, *, pins_ok: bool = True) -> tuple[AssetMode, list[tuple[str, str]]]:
+    data = store or {}
+    enabled, en_bad = parse_safety_flag(data.get("asset_enabled"), default=False)
+    if not pins_ok:
+        enabled = False
+    adult, ad_bad = parse_safety_flag(data.get("asset_adult_enabled"), default=False)
+    approval, ap_bad = parse_safety_flag(data.get("asset_approval_enabled"), default=True)
+    owner, ow_bad = parse_safety_flag(data.get("asset_owner_only"), default=True)
+    if adult:
+        approval = True
+        owner = True
+    elif not approval:
+        adult = False
+        owner = True
+    if approval:
+        user_cap, guild_cap = 10, 30
+        try:
+            from core.asset_limits import GUILD_HOURLY_CAP, USER_HOURLY_CAP
+            user_cap, guild_cap = USER_HOURLY_CAP, GUILD_HOURLY_CAP
+        except Exception:
+            pass
+        video = True
+    else:
+        user_cap, guild_cap = APPROVAL_OFF_USER_CAP, APPROVAL_OFF_GUILD_CAP
+        video = False
+    invalid = []
+    if en_bad:
+        invalid.append(("asset_enabled", str(data.get("asset_enabled") or "")))
+    if ad_bad:
+        invalid.append(("asset_adult_enabled", str(data.get("asset_adult_enabled") or "")))
+    if ap_bad:
+        invalid.append(("asset_approval_enabled", str(data.get("asset_approval_enabled") or "")))
+    if ow_bad:
+        invalid.append(("asset_owner_only", str(data.get("asset_owner_only") or "")))
+    mode = AssetMode(
+        enabled=enabled,
+        adult=adult,
+        approval=approval,
+        owner_only=owner,
+        user_cap=user_cap,
+        guild_cap=guild_cap,
+        video=video,
+    )
+    return mode, invalid
+
+
+def _notify_mode_change(previous: AssetMode, current: AssetMode) -> None:
+    lines = ["An ?asset safety toggle changed."]
+    if previous.adult != current.adult:
+        lines.append(f"18+ mode changed from {int(previous.adult)} to {int(current.adult)}.")
+    if previous.approval != current.approval:
+        lines.append(f"Owner approval changed from {int(previous.approval)} to {int(current.approval)}.")
+    if previous.owner_only != current.owner_only:
+        lines.append(f"Owner only changed from {int(previous.owner_only)} to {int(current.owner_only)}.")
+    if previous.enabled != current.enabled:
+        lines.append(f"Asset generation changed from {int(previous.enabled)} to {int(current.enabled)}.")
+    try:
+        from core.audit import record
+        record(
+            "asset-toggles",
+            outcome="success",
+            adult_old="1" if previous.adult else "0",
+            adult_new="1" if current.adult else "0",
+            approval_old="1" if previous.approval else "0",
+            approval_new="1" if current.approval else "0",
+            owner_only_old="1" if previous.owner_only else "0",
+            owner_only_new="1" if current.owner_only else "0",
+            enabled_old="1" if previous.enabled else "0",
+            enabled_new="1" if current.enabled else "0",
+        )
+    except Exception:
+        pass
+    try:
+        from core.secrets import _notify_asset_toggle_owners
+        _notify_asset_toggle_owners(lines)
+    except Exception:
+        pass
+
+
+def _note_invalid_settings(invalid: list[tuple[str, str]]) -> None:
+    global _LAST_INVALID
+    current = {key for key, _raw in invalid}
+    for key, raw in invalid:
+        if key in _LAST_INVALID:
+            continue
+        try:
+            from core.audit import record
+            record("settings-invalid", outcome="error", key=key, value=raw, safety=True)
+        except Exception:
+            pass
+    _LAST_INVALID = current
+
+
+def observe_asset_mode(mode: AssetMode) -> AssetMode:
+    """Compare to the last mode the bot saw. Audit and DM owners on a change."""
+    global _LAST_SEEN_MODE
+    previous = _LAST_SEEN_MODE
+    _LAST_SEEN_MODE = mode
+    if previous is not None and previous != mode:
+        _notify_mode_change(previous, mode)
+    return mode
+
+
+def reset_observed_asset_mode(mode: AssetMode | None = None) -> None:
+    """Tests only: clear or seed the last-seen snapshot."""
+    global _LAST_SEEN_MODE, _LAST_INVALID
+    _LAST_SEEN_MODE = mode
+    _LAST_INVALID = set()
+
+
+def read_asset_mode(root: str | None = None, *, observe: bool = True) -> AssetMode:
+    """Read one immutable snapshot from settings.json."""
+    pins_ok = True
+    try:
+        from core.media_scan import official_pins_ok
+        pins_ok = not official_pins_ok()
+    except Exception:
+        pins_ok = False
+    store: dict = {}
+    try:
+        from core.secrets import load_all
+        store = load_all(root) or {}
+    except Exception:
+        store = {}
+    mode, invalid = _mode_from_store(store, pins_ok=pins_ok)
+    if invalid:
+        _note_invalid_settings(invalid)
+    if observe:
+        observe_asset_mode(mode)
+    return mode
+
+
+def confirm_asset_delivery(
+    mode: AssetMode,
+    channel=None,
+    *,
+    nsfw: bool | None = None,
+    user_id=None,
+    guild_id=None,
+    channel_id=None,
+    request_id: str = "",
+    response_id: str = "",
+) -> AssetMode:
+    """Re-read toggles and the NSFW gate before a review DM or a post. Abort on change."""
+    from core.imagine import ImagineError
+
+    ids = dict(
+        user_id=user_id,
+        guild_id=guild_id,
+        channel_id=channel_id,
+        request_id=request_id,
+        response_id=response_id,
+    )
+    latest = read_asset_mode()
+    if latest != mode:
+        _audit("refusal", category="asset-mode-changed", mode=latest, **ids)
+        raise ImagineError(MODE_CHANGED_REFUSAL)
+    if mode.adult and not channel_is_age_restricted(channel, nsfw=nsfw):
+        _audit("refusal", category="adult-channel-changed", mode=latest, **ids)
+        raise ImagineError(CHANNEL_CHANGED_REFUSAL)
+    return latest
+
+
+def _live_mode() -> AssetMode:
+    """Best-effort flags from public_value, for call sites without a snapshot."""
+    pins_ok = True
+    try:
+        from core.media_scan import official_pins_ok
+        pins_ok = not official_pins_ok()
+    except Exception:
+        pins_ok = False
+    store = {}
+    try:
+        from core.secrets import public_value
+        for key in (
+            "asset_enabled",
+            "asset_adult_enabled",
+            "asset_approval_enabled",
+            "asset_owner_only",
+        ):
+            store[key] = public_value(key)
+    except Exception:
+        store = {}
+    mode, _invalid = _mode_from_store(store, pins_ok=pins_ok)
+    return mode
+
+
+def asset_enabled(mode: AssetMode | None = None) -> bool:
     """Owner kill switch. Blank or missing is OFF.
 
     Any official pin failure also returns False, so the LLM asset tool
     (which already consults this function) is disabled with ?asset.
     """
-    try:
-        from core.media_scan import official_pins_ok
-        if official_pins_ok():
-            return False
-    except Exception:
-        return False
-    try:
-        from core.secrets import public_value
-        from core.tools import prompt_choice
-
-        return prompt_choice(public_value("asset_enabled"), default=False)
-    except Exception:
-        return False
+    if mode is not None:
+        return mode.enabled
+    return _live_mode().enabled
 
 
-def _setting_flag(key: str, *, default: bool) -> bool:
-    try:
-        from core.secrets import public_value
-        from core.tools import prompt_choice
-
-        return prompt_choice(public_value(key), default=default)
-    except Exception:
-        return default
-
-
-def asset_adult_enabled() -> bool:
+def asset_adult_enabled(mode: AssetMode | None = None) -> bool:
     """Owner-only 18+ mode. Blank or missing is OFF."""
-    return _setting_flag("asset_adult_enabled", default=False)
+    if mode is not None:
+        return mode.adult
+    return _live_mode().adult
 
 
 def asset_approval_stored() -> bool:
-    """Stored approval toggle. Blank or missing is ON."""
-    return _setting_flag("asset_approval_enabled", default=True)
-
-
-def asset_approval_enabled() -> bool:
-    """Effective approval flag. 18+ forces this ON."""
-    if asset_adult_enabled():
-        return True
-    return asset_approval_stored()
-
-
-def approval_required() -> bool:
-    return asset_approval_enabled()
-
-
-def owner_only_required() -> bool:
-    """18+ and approval-off both require the owner, as does the default audience."""
-    if asset_adult_enabled() or not asset_approval_enabled():
-        return True
+    """Stored approval toggle before 18+ coupling. Blank or missing is ON."""
     try:
-        from core.imagine import asset_audience
-
-        return asset_audience() == "owner"
+        from core.secrets import public_value
+        value, _invalid = parse_safety_flag(public_value("asset_approval_enabled"), default=True)
+        return value
     except Exception:
         return True
+
+
+def asset_approval_enabled(mode: AssetMode | None = None) -> bool:
+    """Effective approval flag. 18+ forces this ON."""
+    if mode is not None:
+        return mode.approval
+    return _live_mode().approval
+
+
+def approval_required(mode: AssetMode | None = None) -> bool:
+    return asset_approval_enabled(mode)
+
+
+def owner_only_required(mode: AssetMode | None = None) -> bool:
+    """18+ and approval-off both require the owner, as does the default audience."""
+    if mode is not None:
+        return mode.owner_only
+    return _live_mode().owner_only
 
 
 # Lower caps while approval is off (and therefore while 18+ is not on).
@@ -130,16 +350,15 @@ APPROVAL_OFF_USER_CAP = 3
 APPROVAL_OFF_GUILD_CAP = 10
 
 
-def hourly_caps() -> tuple[int, int]:
-    if not asset_approval_enabled():
-        return APPROVAL_OFF_USER_CAP, APPROVAL_OFF_GUILD_CAP
-    from core.asset_limits import GUILD_HOURLY_CAP, USER_HOURLY_CAP
-
-    return USER_HOURLY_CAP, GUILD_HOURLY_CAP
+def hourly_caps(mode: AssetMode | None = None) -> tuple[int, int]:
+    snap = mode if mode is not None else _live_mode()
+    return snap.user_cap, snap.guild_cap
 
 
-def video_allowed() -> bool:
-    return asset_approval_enabled()
+def video_allowed(mode: AssetMode | None = None) -> bool:
+    if mode is not None:
+        return mode.video
+    return _live_mode().video
 
 
 def channel_is_age_restricted(channel=None, *, nsfw: bool | None = None) -> bool:
@@ -162,17 +381,29 @@ def channel_is_age_restricted(channel=None, *, nsfw: bool | None = None) -> bool
 ADULT_OUTPUT_IGNORE_LG4 = frozenset({"S12"})
 
 
-def adult_output_ignore_lg4() -> frozenset[str] | None:
+def adult_output_ignore_lg4(mode: AssetMode | None = None) -> frozenset[str] | None:
     """S12 is ignored on generated-media checks only, and only in 18+ mode."""
-    if asset_adult_enabled():
+    if (mode.adult if mode is not None else asset_adult_enabled()):
         return ADULT_OUTPUT_IGNORE_LG4
     return None
 
 
-def require_enabled(**ids) -> None:
+def require_enabled(mode: AssetMode | None = None, **ids) -> None:
     """Re-check the kill switch. Used before each poll and before posting."""
     from core.imagine import ImagineError
 
+    if mode is not None and not mode.enabled:
+        _audit(
+            "refusal",
+            category="kill-switch",
+            mode=mode,
+            user_id=ids.get("user_id"),
+            guild_id=ids.get("guild_id"),
+            channel_id=ids.get("channel_id"),
+            request_id=ids.get("request_id") or "",
+            response_id=ids.get("response_id") or "",
+        )
+        raise ImagineError(KILL_SWITCH_OFF)
     if not asset_enabled():
         _audit(
             "refusal",
@@ -193,7 +424,7 @@ def footer_is_last(sent: str) -> bool:
     return text.endswith(SAFETY_FOOTER) and text.count(SAFETY_FOOTER) == 1
 
 
-def build_sent_prompt(user_prompt: str) -> tuple[str, str]:
+def build_sent_prompt(user_prompt: str, *, adult: bool = False) -> tuple[str, str]:
     """Adult-only rewrite, then the user prompt, then the footer last."""
     from core.safety import SAFETY_FOOTER, footer_sha256
 
@@ -201,7 +432,8 @@ def build_sent_prompt(user_prompt: str) -> tuple[str, str]:
     # Cap applies to the user prompt only. The footer must still come last.
     if len(body) > 2000:
         body = body[:2000].rstrip()
-    sent = f"{ADULT_RULE}\n\n{body}\n\n{SAFETY_FOOTER}"
+    rule = ADULT_RULE_STRICT if adult else ADULT_RULE
+    sent = f"{rule}\n\n{body}\n\n{SAFETY_FOOTER}"
     return sent, footer_sha256()
 
 
@@ -216,6 +448,7 @@ def _audit(
     guild_id=None,
     channel_id=None,
     error_type: str = "",
+    mode: AssetMode | None = None,
 ) -> None:
     try:
         from core.audit import record
@@ -223,9 +456,9 @@ def _audit(
 
         digest = footer_hash or footer_sha256()
         safety = outcome in {"refusal", "error", "blocked"} or bool(category)
+        snap = mode
         # Never include the prompt text, especially on blocks.
-        record(
-            "asset",
+        fields = dict(
             outcome=outcome,
             category=category,
             footer_hash=digest,
@@ -237,6 +470,10 @@ def _audit(
             channel_id=channel_id,
             safety=safety,
         )
+        if snap is not None:
+            fields["adult"] = "1" if snap.adult else "0"
+            fields["approval"] = "1" if snap.approval else "0"
+        record("asset", **fields)
     except Exception:
         pass
 
@@ -270,6 +507,7 @@ async def prepare_generation(
     user_id=None,
     guild_id=None,
     channel_id=None,
+    mode: AssetMode | None = None,
 ) -> PreparedPrompt:
     """Matcher, media filter, classifier (incl. child check), footer-last. Fail closed."""
     from core.asset_filter import media_prompt_blocked
@@ -279,25 +517,26 @@ async def prepare_generation(
     from core.imagine import ImagineError
 
     raw = (prompt or "").strip()
+    snap = mode if mode is not None else read_asset_mode()
     ids = dict(user_id=user_id, guild_id=guild_id, channel_id=channel_id)
 
     if asks_to_bypass_filter(raw):
         note("asset prompt bypass")
         _lock_on_block(user_id, "bypass")
-        _audit("refusal", category="bypass", **ids)
+        _audit("refusal", category="bypass", mode=snap, **ids)
         raise ImagineError(BYPASS_REFUSAL)
     if is_blocked(raw, user_id=user_id, channel_id=channel_id):
         note("asset prompt")
         _lock_on_block(user_id, "matcher")
-        _audit("refusal", category="matcher", **ids)
+        _audit("refusal", category="matcher", mode=snap, **ids)
         raise ImagineError(REFUSAL)
-    if media_prompt_blocked(raw, adult=asset_adult_enabled()):
+    if media_prompt_blocked(raw, adult=snap.adult):
         note("asset prompt media-filter")
         from core.asset_limits import note_media_filter_block
 
         if note_media_filter_block(user_id):
             _lock_on_block(user_id, "media-filter")
-        _audit("refusal", category="media-filter", **ids)
+        _audit("refusal", category="media-filter", mode=snap, **ids)
         raise ImagineError(REFUSAL)
 
     try:
@@ -307,14 +546,14 @@ async def prepare_generation(
     if verdict:
         note(f"asset-input-{verdict}")
         _lock_on_block(user_id, verdict)
-        _audit("refusal", category=verdict, **ids)
+        _audit("refusal", category=verdict, mode=snap, **ids)
         raise ImagineError(REFUSAL)
 
-    sent, digest = build_sent_prompt(raw)
+    sent, digest = build_sent_prompt(raw, adult=snap.adult)
     if not footer_is_last(sent):
-        _audit("error", category="footer-order", footer_hash=digest, **ids)
+        _audit("error", category="footer-order", footer_hash=digest, mode=snap, **ids)
         raise ImagineError("Safety rules could not be applied, so nothing was generated.")
-    _audit("success", footer_hash=digest, **ids)
+    _audit("success", footer_hash=digest, mode=snap, **ids)
     return PreparedPrompt(
         user_prompt=raw,
         sent_prompt=sent,
@@ -503,11 +742,13 @@ async def _classify_image(
     channel_id=None,
     request_id: str = "",
     response_id: str = "",
+    mode: AssetMode | None = None,
 ) -> None:
     from core.blocklist import note
     from core.classifier import age_vision_async, classify_async
     from core.imagine import ImagineError
 
+    snap = mode if mode is not None else read_asset_mode(observe=False)
     ids = dict(
         user_id=user_id,
         guild_id=guild_id,
@@ -515,6 +756,7 @@ async def _classify_image(
         footer_hash=footer_hash,
         request_id=request_id,
         response_id=response_id,
+        mode=snap,
     )
     part = _image_part(data, mime)
     if part is None:
@@ -524,7 +766,7 @@ async def _classify_image(
         verdict = await classify_async(
             OUTPUT_CLASSIFY_TEXT,
             images=[part],
-            ignore_lg4=adult_output_ignore_lg4(),
+            ignore_lg4=adult_output_ignore_lg4(snap),
         )
     except Exception:
         verdict = "classifier-error"
@@ -537,7 +779,7 @@ async def _classify_image(
         _audit("refusal", category=verdict, **ids)
         raise ImagineError(OUTPUT_REFUSAL)
     try:
-        age = await age_vision_async([part], adult=asset_adult_enabled())
+        age = await age_vision_async([part], adult=snap.adult)
     except Exception:
         age = "age-vision-error"
     if age:
@@ -556,10 +798,12 @@ async def check_generated_media(
     channel_id=None,
     request_id: str = "",
     response_id: str = "",
+    mode: AssetMode | None = None,
 ) -> None:
     """Classify one image, or every required frame. Fail closed. No retries."""
     from core.imagine import ImagineError
 
+    snap = mode if mode is not None else read_asset_mode(observe=False)
     ids = dict(
         user_id=user_id,
         guild_id=guild_id,
@@ -567,6 +811,7 @@ async def check_generated_media(
         footer_hash=footer_hash,
         request_id=request_id,
         response_id=response_id,
+        mode=snap,
     )
     kind = (mime or "").lower()
     needs_frames = "video" in kind or _is_animated_image(mime, data)
@@ -585,6 +830,7 @@ async def check_generated_media(
                 channel_id=channel_id,
                 request_id=request_id,
                 response_id=response_id,
+                mode=snap,
             )
         return
     await _classify_image(
@@ -596,4 +842,5 @@ async def check_generated_media(
         channel_id=channel_id,
         request_id=request_id,
         response_id=response_id,
+        mode=snap,
     )

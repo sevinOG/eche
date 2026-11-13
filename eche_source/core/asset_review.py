@@ -86,7 +86,14 @@ async def _reviewer_ids(bot) -> list[int]:
     return out
 
 
-def _review_message(*, user_id=None, guild_id=None, channel_id=None, prompt: str = "") -> str:
+def _review_message(
+    *,
+    user_id=None,
+    guild_id=None,
+    channel_id=None,
+    prompt: str = "",
+    age_restricted: bool | None = None,
+) -> str:
     lines = ["An asset is waiting for your approval before it is posted."]
     if user_id:
         lines.append(f"Requester: {user_id}")
@@ -94,6 +101,8 @@ def _review_message(*, user_id=None, guild_id=None, channel_id=None, prompt: str
         lines.append(f"Server: {guild_id}")
     if channel_id:
         lines.append(f"Channel: {channel_id}")
+    if age_restricted is not None:
+        lines.append(f"age-restricted: {'yes' if age_restricted else 'no'}")
     text = (prompt or "").strip()
     if text:
         shown = text if len(text) <= 400 else text[:399].rstrip() + "…"
@@ -112,6 +121,9 @@ async def require_owner_review(
     prompt: str = "",
     request_id: str = "",
     response_id: str = "",
+    asset_mode=None,
+    channel=None,
+    nsfw=None,
 ) -> AssetFile:
     """Hold the file until an owner approves it. Never posts by itself."""
     del origin
@@ -122,13 +134,23 @@ async def require_owner_review(
         request_id=request_id,
         response_id=response_id,
     )
+    from core.asset_safety import (
+        asset_approval_enabled,
+        channel_is_age_restricted,
+        confirm_asset_delivery,
+        read_asset_mode,
+    )
+
+    snap = asset_mode if asset_mode is not None else read_asset_mode()
+    confirm_asset_delivery(
+        snap, channel, nsfw=nsfw, user_id=user_id, guild_id=guild_id, channel_id=channel_id,
+        request_id=request_id, response_id=response_id,
+    )
     if not isinstance(result, AssetFile) or not result.data:
         _audit_review("unreachable", **ids)
         raise ImagineError(OWNER_REVIEW_FAILED)
     try:
-        from core.asset_safety import asset_approval_enabled
-
-        if not asset_approval_enabled():
+        if not asset_approval_enabled(snap):
             _audit_review("skipped", **ids)
             return result
     except Exception:
@@ -158,7 +180,11 @@ async def require_owner_review(
     fetch = getattr(bot, "fetch_user", None)
     sent = 0
     body = _review_message(
-        user_id=user_id, guild_id=guild_id, channel_id=channel_id, prompt=prompt
+        user_id=user_id,
+        guild_id=guild_id,
+        channel_id=channel_id,
+        prompt=prompt,
+        age_restricted=channel_is_age_restricted(channel, nsfw=nsfw),
     )
     decision: asyncio.Future[bool] = asyncio.get_event_loop().create_future()
     siblings: list = []

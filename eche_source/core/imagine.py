@@ -125,33 +125,35 @@ def _flag(stored) -> bool:
     return str(stored or "").strip().lower() in ("1", "true", "yes", "on")
 
 
-def asset_audience() -> str:
+def asset_audience(asset_mode=None) -> str:
     """owner, unless Owner only is explicitly turned off in config."""
+    if asset_mode is not None:
+        return "owner" if asset_mode.owner_only else "all"
     try:
+        from core.asset_safety import parse_safety_flag
         from core.secrets import public_value
 
         raw = public_value("asset_owner_only")
+        value, _invalid = parse_safety_flag(raw, default=True)
+        return "owner" if value else "all"
     except Exception:
         return "owner"
-    if raw is None or str(raw).strip() == "":
-        return "owner"
-    return "owner" if _flag(raw) else "all"
 
 
-def speaker_allowed(is_owner: bool) -> bool:
+def speaker_allowed(is_owner: bool, asset_mode=None) -> bool:
     from core.asset_safety import asset_enabled, owner_only_required
 
-    if not asset_enabled():
+    if not asset_enabled(asset_mode):
         return False
-    if owner_only_required():
+    if owner_only_required(asset_mode):
         return bool(is_owner)
     return True
 
 
-def refusal(is_owner: bool) -> str:
+def refusal(is_owner: bool, asset_mode=None) -> str:
     from core.asset_safety import KILL_SWITCH_OFF, asset_enabled
 
-    if not asset_enabled():
+    if not asset_enabled(asset_mode):
         return KILL_SWITCH_OFF
     del is_owner
     return "Only the owner can ask for assets."
@@ -422,7 +424,7 @@ def _needs_source(text: str) -> bool:
     return bool(_SOURCE_MARK.search(text or ""))
 
 
-def plan_asset(text: str, *, kind: str = "", source=None) -> AssetPlan:
+def plan_asset(text: str, *, kind: str = "", source=None, asset_mode=None) -> AssetPlan:
     """Decide image, video, edit, or image-to-video. Raises ImagineError when the ask is not one of those."""
     raw = _words(text)
     asked, body = _leading_kind(raw)
@@ -465,7 +467,7 @@ def plan_asset(text: str, *, kind: str = "", source=None) -> AssetPlan:
     if asked == "video":
         from core.asset_safety import video_allowed
 
-        if not video_allowed():
+        if not video_allowed(asset_mode):
             raise ImagineError(
                 "Video is not available while owner approval is off."
             )
@@ -800,8 +802,14 @@ def refuse_speaker(
     channel_id=None,
     channel=None,
     nsfw=None,
+    asset_mode=None,
+    out=None,
 ) -> str | None:
-    """Audit and return a refusal if a gate applies (kill switch, owner-only, DMs, lockout, caps)."""
+    """Audit and return a refusal if a gate applies (kill switch, owner-only, DMs, lockout, caps).
+
+    Reads one AssetMode snapshot when the caller does not pass one, and
+    stores it on out['mode'] so the rest of the request can reuse it.
+    """
     from core.asset_limits import (
         DM_REFUSAL,
         LOCKOUT_REFUSAL,
@@ -812,30 +820,32 @@ def refuse_speaker(
     from core.asset_safety import (
         KILL_SWITCH_OFF,
         _audit,
-        asset_adult_enabled,
-        asset_enabled,
         channel_is_age_restricted,
+        read_asset_mode,
     )
 
+    snap = asset_mode if asset_mode is not None else read_asset_mode()
+    if out is not None:
+        out["mode"] = snap
     ids = dict(user_id=user_id, guild_id=guild_id, channel_id=channel_id)
-    if not asset_enabled():
-        _audit("refusal", category="kill-switch", **ids)
+    if not snap.enabled:
+        _audit("refusal", category="kill-switch", mode=snap, **ids)
         return KILL_SWITCH_OFF
     if in_direct_message(guild_id):
-        _audit("refusal", category="dm-disabled", **ids)
+        _audit("refusal", category="dm-disabled", mode=snap, **ids)
         return DM_REFUSAL
-    if asset_adult_enabled() and not channel_is_age_restricted(channel, nsfw=nsfw):
-        _audit("refusal", category="adult-channel", **ids)
+    if snap.adult and not channel_is_age_restricted(channel, nsfw=nsfw):
+        _audit("refusal", category="adult-channel", mode=snap, **ids)
         return ADULT_CHANNEL_REFUSAL
-    if not speaker_allowed(is_owner):
-        _audit("refusal", category="owner-only", **ids)
-        return refusal(is_owner)
+    if not speaker_allowed(is_owner, snap):
+        _audit("refusal", category="owner-only", mode=snap, **ids)
+        return refusal(is_owner, snap)
     if is_locked(user_id):
-        _audit("refusal", category="lockout", **ids)
+        _audit("refusal", category="lockout", mode=snap, **ids)
         return LOCKOUT_REFUSAL
-    capped = rate_refusal(user_id, guild_id)
+    capped = rate_refusal(user_id, guild_id, caps=(snap.user_cap, snap.guild_cap))
     if capped:
-        _audit("refusal", category="rate-limit", **ids)
+        _audit("refusal", category="rate-limit", mode=snap, **ids)
         return capped
     return None
 
@@ -847,6 +857,7 @@ async def run_asset(
     user_id=None,
     guild_id=None,
     channel_id=None,
+    asset_mode=None,
 ) -> AssetFile:
     """Make one asset through the fail-closed choke point.
 
@@ -867,22 +878,26 @@ async def run_asset(
         _audit,
     )
 
+    from core.asset_safety import read_asset_mode
+
+    snap = asset_mode if asset_mode is not None else read_asset_mode()
     ids = dict(user_id=user_id, guild_id=guild_id, channel_id=channel_id)
-    if not asset_enabled():
-        _audit("refusal", category="kill-switch", **ids)
+    if not snap.enabled:
+        _audit("refusal", category="kill-switch", mode=snap, **ids)
         raise ImagineError(KILL_SWITCH_OFF)
     if not key:
-        _audit("refusal", category="missing-key", **ids)
+        _audit("refusal", category="missing-key", mode=snap, **ids)
         raise ImagineError(MISSING_KEY)
-    capped = reserve_use(user_id, guild_id)
+    capped = reserve_use(user_id, guild_id, caps=(snap.user_cap, snap.guild_cap))
     if capped:
-        _audit("refusal", category="rate-limit", **ids)
+        _audit("refusal", category="rate-limit", mode=snap, **ids)
         raise ImagineError(capped)
     prepared = await prepare_generation(
         getattr(plan, "prompt", "") or "",
         user_id=user_id,
         guild_id=guild_id,
         channel_id=channel_id,
+        mode=snap,
     )
     backend = get_backend()
     path, body = request_for(plan, prepared)
@@ -896,7 +911,7 @@ async def run_asset(
         posted = await asyncio.to_thread(_post)
         _status, payload = posted
         job_ids = posted.ids() if hasattr(posted, "ids") else {}
-        require_enabled(user_id=user_id, guild_id=guild_id, channel_id=channel_id)
+        require_enabled(snap, user_id=user_id, guild_id=guild_id, channel_id=channel_id)
         if plan.mode == "image":
             url = backend.image_url(payload)
         else:
@@ -904,7 +919,7 @@ async def run_asset(
             deadline = asyncio.get_running_loop().time() + VIDEO_WAIT_SECONDS
             url = ""
             while True:
-                require_enabled(user_id=user_id, guild_id=guild_id, channel_id=channel_id)
+                require_enabled(snap, user_id=user_id, guild_id=guild_id, channel_id=channel_id)
 
                 def _poll(rid=request_id):
                     return http_json("GET", f"{backend.api_base()}/videos/{rid}", key, None, timeout=60)
@@ -924,7 +939,7 @@ async def run_asset(
                 if asyncio.get_running_loop().time() >= deadline:
                     raise ImagineError("That video took too long. Try a shorter one.")
                 await asyncio.sleep(_POLL_SECONDS)
-        require_enabled(user_id=user_id, guild_id=guild_id, channel_id=channel_id)
+        require_enabled(snap, user_id=user_id, guild_id=guild_id, channel_id=channel_id)
         data, mime = await asyncio.to_thread(http_bytes, url)
     except ImagineError as exc:
         _audit(
@@ -932,6 +947,7 @@ async def run_asset(
             category="backend",
             footer_hash=prepared.footer_hash,
             error_type=type(exc).__name__,
+            mode=snap,
             **ids,
         )
         raise
@@ -941,12 +957,13 @@ async def run_asset(
             category="backend",
             footer_hash=prepared.footer_hash,
             error_type=type(exc).__name__,
+            mode=snap,
             **ids,
         )
         raise ImagineError("I couldn't make that.") from exc
     if not data:
         # A URL we cannot download cannot be classified. Fail closed.
-        _audit("refusal", category="unreadable-output", footer_hash=prepared.footer_hash, **ids)
+        _audit("refusal", category="unreadable-output", footer_hash=prepared.footer_hash, mode=snap, **ids)
         from core.asset_safety import OUTPUT_UNCHECKED
         raise ImagineError(OUTPUT_UNCHECKED)
     sniffed = _sniff_media_mime(data)
@@ -957,7 +974,7 @@ async def run_asset(
     name = filename_for(mime)
     if name == "asset.bin":
         name = "asset.mp4" if "video" in plan.mode else "asset.jpg"
-    require_enabled(user_id=user_id, guild_id=guild_id, channel_id=channel_id)
+    require_enabled(snap, user_id=user_id, guild_id=guild_id, channel_id=channel_id)
     await check_generated_media(
         data,
         mime,
@@ -967,13 +984,15 @@ async def run_asset(
         channel_id=channel_id,
         request_id=job_ids.get("request_id", ""),
         response_id=job_ids.get("response_id", ""),
+        mode=snap,
     )
-    require_enabled(user_id=user_id, guild_id=guild_id, channel_id=channel_id)
+    require_enabled(snap, user_id=user_id, guild_id=guild_id, channel_id=channel_id)
     _audit(
         "success",
         footer_hash=prepared.footer_hash,
         request_id=job_ids.get("request_id", ""),
         response_id=job_ids.get("response_id", ""),
+        mode=snap,
         **ids,
     )
     return AssetFile(data=data, filename=name, mime=mime, mode=plan.mode)

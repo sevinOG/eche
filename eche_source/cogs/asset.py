@@ -8,7 +8,7 @@ import discord
 from discord.ext import commands
 
 from core.asset_review import require_owner_review
-from core.asset_safety import KILL_SWITCH_OFF, require_enabled
+from core.asset_safety import KILL_SWITCH_OFF, confirm_asset_delivery, require_enabled
 from core.debuglog import dprint
 from core.imagine import AssetFile, ImagineError, api_key, plan_asset, refuse_speaker, run_asset
 from core.tools_asset import asset_text
@@ -35,15 +35,26 @@ class Asset(commands.Cog):
             guild_id=getattr(guild, "id", None),
             channel_id=getattr(channel, "id", None),
         )
-        blocked = refuse_speaker(is_owner, channel=channel, **ids)
+        gate = {}
+        blocked = refuse_speaker(is_owner, channel=channel, out=gate, **ids)
         if blocked:
             await ctx.reply(blocked, mention_author=False)
             return
+        mode = gate["mode"]
         try:
-            plan = plan_asset(prompt)
-            result = await run_asset(plan, api_key(), **ids)
-            result = await require_owner_review(result, bot=self.bot, origin=ctx, prompt=plan.prompt, **ids)
-            require_enabled(**ids)
+            plan = plan_asset(prompt, asset_mode=mode)
+            result = await run_asset(plan, api_key(), asset_mode=mode, **ids)
+            result = await require_owner_review(
+                result,
+                bot=self.bot,
+                origin=ctx,
+                prompt=plan.prompt,
+                asset_mode=mode,
+                channel=channel,
+                **ids,
+            )
+            confirm_asset_delivery(mode, channel, **ids)
+            require_enabled(mode, **ids)
         except ImagineError as exc:
             await ctx.reply(exc.text, mention_author=False)
             return
@@ -58,7 +69,8 @@ class Asset(commands.Cog):
         if len(caption) > 120:
             caption = caption[:119].rstrip() + "…"
         try:
-            require_enabled(**ids)
+            confirm_asset_delivery(mode, channel, **ids)
+            require_enabled(mode, **ids)
             file = discord.File(io.BytesIO(result.data), filename=result.filename)
             await ctx.reply(content=asset_text(caption), file=file, mention_author=False)
             from core.asset_review import audit_posted

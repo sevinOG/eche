@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 import threading
 import time
 from datetime import datetime, timezone
@@ -36,6 +37,18 @@ def _path(root: str | None = None) -> str:
             root = _user_root()
         except Exception:
             root = os.getcwd()
+    # Official tests must not leave asset_limits.json in the source tree.
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        try:
+            source = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+            if os.path.abspath(root) == source:
+                tmp = os.environ.get("ECHE_TEST_LIMITS_ROOT")
+                if not tmp:
+                    tmp = tempfile.mkdtemp(prefix="eche-limits-")
+                    os.environ["ECHE_TEST_LIMITS_ROOT"] = tmp
+                root = tmp
+        except Exception:
+            pass
     folder = os.path.join(root, "config")
     os.makedirs(folder, exist_ok=True)
     return os.path.join(folder, "asset_limits.json")
@@ -140,18 +153,21 @@ def lockout_until(user_id, *, root: str | None = None) -> str:
     return stamp.strftime("%Y-%m-%d %H:%M")
 
 
-def rate_refusal(user_id, guild_id, *, root: str | None = None) -> str | None:
+def rate_refusal(user_id, guild_id, *, root: str | None = None, caps: tuple[int, int] | None = None) -> str | None:
     """A refusal if the user or guild is over the hourly cap. Does not count."""
     try:
         data = _load(root)
     except LimitsCorrupt:
         return LIMITS_UNAVAILABLE
     now = _now()
-    try:
-        from core.asset_safety import hourly_caps
-        user_cap, guild_cap = hourly_caps()
-    except Exception:
-        user_cap, guild_cap = USER_HOURLY_CAP, GUILD_HOURLY_CAP
+    if caps is not None:
+        user_cap, guild_cap = caps
+    else:
+        try:
+            from core.asset_safety import hourly_caps
+            user_cap, guild_cap = hourly_caps()
+        except Exception:
+            user_cap, guild_cap = USER_HOURLY_CAP, GUILD_HOURLY_CAP
     if user_id is not None:
         stamps = _prune((data.get("users") or {}).get(str(user_id), []), now)
         if len(stamps) >= user_cap:
@@ -178,7 +194,7 @@ def record_use(user_id, guild_id, *, root: str | None = None) -> None:
     _save(data, root)
 
 
-def reserve_use(user_id, guild_id, *, root: str | None = None) -> str | None:
+def reserve_use(user_id, guild_id, *, root: str | None = None, caps: tuple[int, int] | None = None) -> str | None:
     """Atomically refuse or take a cap slot at the start of an attempt."""
     with _LOCK:
         try:
@@ -192,7 +208,7 @@ def reserve_use(user_id, guild_id, *, root: str | None = None) -> str | None:
                     return LOCKOUT_REFUSAL
             except (TypeError, ValueError):
                 pass
-        refusal = rate_refusal(user_id, guild_id, root=root)
+        refusal = rate_refusal(user_id, guild_id, root=root, caps=caps)
         if refusal:
             return refusal
         record_use(user_id, guild_id, root=root)

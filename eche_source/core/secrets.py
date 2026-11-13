@@ -523,17 +523,26 @@ def load_all(root: str | None = None) -> dict[str, str]:
 
 
 def _asset_flag(store: dict | None, key: str, *, default: bool) -> bool:
-    from core.tools import prompt_choice
+    from core.asset_safety import parse_safety_flag
 
-    return prompt_choice((store or {}).get(key), default=default)
+    value, _invalid = parse_safety_flag((store or {}).get(key), default=default)
+    return value
 
 
-def couple_asset_toggles(public: dict) -> dict:
+def _asset_flag_raw(store: dict | None, key: str, *, default: bool) -> tuple[bool, bool, str]:
+    from core.asset_safety import parse_safety_flag
+
+    raw = str((store or {}).get(key) or "")
+    value, invalid = parse_safety_flag(raw, default=default)
+    return value, invalid, raw
+
+
+def couple_asset_toggles(public: dict, *, invalid: list | None = None) -> dict:
     """18+ forces approval and owner-only on. Approval-off forces owner-only and forbids 18+."""
     data = dict(public or {})
-    adult = _asset_flag(data, "asset_adult_enabled", default=False)
-    approval = _asset_flag(data, "asset_approval_enabled", default=True)
-    owner = _asset_flag(data, "asset_owner_only", default=True)
+    adult, ad_bad, ad_raw = _asset_flag_raw(data, "asset_adult_enabled", default=False)
+    approval, ap_bad, ap_raw = _asset_flag_raw(data, "asset_approval_enabled", default=True)
+    owner, ow_bad, ow_raw = _asset_flag_raw(data, "asset_owner_only", default=True)
     if adult:
         approval = True
         owner = True
@@ -543,6 +552,13 @@ def couple_asset_toggles(public: dict) -> dict:
     data["asset_adult_enabled"] = "1" if adult else "0"
     data["asset_approval_enabled"] = "1" if approval else "0"
     data["asset_owner_only"] = "1" if owner else "0"
+    if invalid is not None:
+        if ad_bad:
+            invalid.append(("asset_adult_enabled", ad_raw))
+        if ap_bad:
+            invalid.append(("asset_approval_enabled", ap_raw))
+        if ow_bad:
+            invalid.append(("asset_owner_only", ow_raw))
     return data
 
 
@@ -627,11 +643,18 @@ def save_all(data: dict[str, Any], root: str | None = None) -> None:
         public["xai_key_epoch"] = CURRENT_XAI_KEY_EPOCH
         secrets["xai_api_key"] = str(data.get("xai_api_key") or "").strip()
 
-    public = couple_asset_toggles(public)
-    old_enabled = str(existing_public.get("asset_enabled") or "")
-    old_owner = str(existing_public.get("asset_owner_only") or "")
-    new_enabled = str(public.get("asset_enabled") or "")
-    new_owner = str(public.get("asset_owner_only") or "")
+    invalid: list[tuple[str, str]] = []
+    public = couple_asset_toggles(public, invalid=invalid)
+    # asset_enabled is default-OFF; couple does not rewrite it. Normalize for the log.
+    from core.asset_safety import parse_safety_flag
+    old_enabled_val, _ = parse_safety_flag(existing_public.get("asset_enabled"), default=False)
+    new_enabled_val, _ = parse_safety_flag(public.get("asset_enabled"), default=False)
+    old_owner_val, _ = parse_safety_flag(existing_public.get("asset_owner_only"), default=True)
+    new_owner_val = _asset_flag(public, "asset_owner_only", default=True)
+    old_enabled = "1" if old_enabled_val else "0"
+    old_owner = "1" if old_owner_val else "0"
+    new_enabled = "1" if new_enabled_val else "0"
+    new_owner = "1" if new_owner_val else "0"
     old_adult = "1" if _asset_flag(existing_public, "asset_adult_enabled", default=False) else "0"
     old_approval = "1" if _asset_flag(existing_public, "asset_approval_enabled", default=True) else "0"
     new_adult = str(public.get("asset_adult_enabled") or "0")
@@ -654,6 +677,8 @@ def save_all(data: dict[str, Any], root: str | None = None) -> None:
             if old_val != new_val:
                 fields[f"{key}_old"] = old_val
                 fields[f"{key}_new"] = new_val
+        for key, raw in invalid:
+            record("settings-invalid", outcome="error", key=key, value=raw, safety=True)
         safe_activity("settings-save", outcome="success", **fields)
         record(
             "settings-save",
@@ -670,7 +695,16 @@ def save_all(data: dict[str, Any], root: str | None = None) -> None:
             **fields,
         )
     except Exception:
-        pass
+        # A failed audit must fail the save: revert the written files and surface the error.
+        try:
+            _save_public(root, existing_public)
+        except Exception:
+            pass
+        try:
+            _save_encrypted_secrets(root, existing)
+        except Exception:
+            pass
+        raise
     notices = []
     if old_adult != new_adult:
         notices.append(f"18+ mode changed from {old_adult} to {new_adult}.")

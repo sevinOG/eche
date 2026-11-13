@@ -10,7 +10,7 @@ import re
 import discord
 
 from core.asset_review import require_owner_review
-from core.asset_safety import require_enabled
+from core.asset_safety import confirm_asset_delivery, require_enabled
 from core.debuglog import dprint
 from core.imagine import (
     AssetFile,
@@ -52,9 +52,11 @@ async def _allowed(ctx) -> tuple[bool, str]:
         is_owner = False
     message = getattr(ctx, "message", None)
     channel = getattr(message, "channel", None)
-    blocked = refuse_speaker(is_owner, channel=channel, **_ids(message))
+    gate = {}
+    blocked = refuse_speaker(is_owner, channel=channel, out=gate, **_ids(message))
     if blocked:
         return False, blocked
+    ctx._asset_mode = gate["mode"]
     return True, ""
 
 
@@ -99,15 +101,24 @@ async def make_asset(ctx, arguments: dict) -> ToolResult:
     if kind not in ("image", "video"):
         kind = ""
     ids = _ids(message)
+    channel = getattr(message, "channel", None)
+    mode = getattr(ctx, "_asset_mode", None)
     try:
-        plan = plan_asset(prompt, kind=kind)
-        result = await run_asset(plan, api_key(), **ids)
+        plan = plan_asset(prompt, kind=kind, asset_mode=mode)
+        result = await run_asset(plan, api_key(), asset_mode=mode, **ids)
         if not isinstance(result, AssetFile):
             raise ImagineError("I couldn't make that.")
         result = await require_owner_review(
-            result, bot=getattr(ctx, "bot", None), origin=ctx, prompt=plan.prompt, **ids
+            result,
+            bot=getattr(ctx, "bot", None),
+            origin=ctx,
+            prompt=plan.prompt,
+            asset_mode=mode,
+            channel=channel,
+            **ids,
         )
-        require_enabled(**ids)
+        confirm_asset_delivery(mode, channel, **ids)
+        require_enabled(mode, **ids)
     except ImagineError as exc:
         return ToolResult(text=exc.text, fence=False, detail=exc.text)
     except Exception as exc:
@@ -117,7 +128,8 @@ async def make_asset(ctx, arguments: dict) -> ToolResult:
     if len(caption) > 120:
         caption = caption[:119].rstrip() + "…"
     try:
-        require_enabled(**ids)
+        confirm_asset_delivery(mode, channel, **ids)
+        require_enabled(mode, **ids)
         await _post(ctx.message, result, caption)
         from core.asset_review import audit_posted
         audit_posted(**ids)

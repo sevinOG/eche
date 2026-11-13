@@ -206,6 +206,18 @@ class Eche(commands.Bot):
     # ---------------------------------------------------------
     # RAW GATEWAY EVENT DIAGNOSTICS
     # ---------------------------------------------------------
+    async def _watch_asset_mode(self):
+        """Re-read toggles so a GUI save or a hand edit is audited and DM'd."""
+        import asyncio
+        from core.asset_safety import read_asset_mode
+
+        while True:
+            await asyncio.sleep(5)
+            try:
+                read_asset_mode()
+            except Exception:
+                pass
+
     async def on_ready(self):
         print(f">>> BOT READY AS {self.user}")
 
@@ -217,6 +229,11 @@ class Eche(commands.Bot):
         try:
             from core.gui_bridge import ready
             ready(str(self.user) if self.user else "")
+        except Exception:
+            pass
+        try:
+            from core.asset_safety import read_asset_mode
+            read_asset_mode()
         except Exception:
             pass
 
@@ -484,6 +501,15 @@ class Eche(commands.Bot):
                 attach(self)
         except Exception as e:
             print(f">>> gui_bridge attach skipped: {e}")
+        try:
+            from core.asset_safety import read_asset_mode
+            read_asset_mode()
+        except Exception as e:
+            print(f">>> asset mode snapshot skipped: {e}")
+        try:
+            self.loop.create_task(self._watch_asset_mode())
+        except Exception as e:
+            print(f">>> asset mode watch skipped: {e}")
 
         # Load each extension independently so one missing optional dep
         # (yt_dlp, dateparser, …) cannot abort the whole bot on a flash-drive copy.
