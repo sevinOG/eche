@@ -710,6 +710,47 @@ def _reasoning_for(payload: dict | None) -> bool:
     return reasoning_enabled()
 
 
+def _outgoing_messages(messages: list) -> list:
+    """Apply the hardcoded safety footer and the minors input check.
+
+    This is the single choke point shared by every provider path.
+    """
+    from core.blocklist import note, scan_messages
+    from core.safety import MinorsBlocked, prepare_llm_messages
+
+    prepared = prepare_llm_messages(messages)
+    check = scan_messages(prepared)
+    if check:
+        note(check)
+        raise MinorsBlocked(check)
+    return prepared
+
+
+def _output_blocked(*texts, tool_calls=None) -> bool:
+    """True when a model reply or tool call depicts or sexualizes a minor."""
+    from core.blocklist import is_blocked, note
+    import json as _json
+
+    parts = [str(t) for t in texts if t]
+    for call in tool_calls or []:
+        if not isinstance(call, dict):
+            parts.append(str(call))
+            continue
+        parts.append(str(call.get("name") or ""))
+        args = call.get("arguments")
+        if isinstance(args, str):
+            parts.append(args)
+        elif args:
+            try:
+                parts.append(_json.dumps(args, ensure_ascii=False))
+            except Exception:
+                parts.append(str(args))
+    if is_blocked(*parts):
+        note("llm-output")
+        return True
+    return False
+
+
 def _build_payload(
     messages: list,
     model: str,
@@ -718,6 +759,7 @@ def _build_payload(
     *,
     reasoning: bool | None = None,
 ) -> dict:
+    messages = _outgoing_messages(messages)
     payload = {
         "model": model,
         "messages": messages,
@@ -1865,6 +1907,7 @@ async def _groq_sdk_call(
     {"error": "..."}. reasoning_effort defaults to "none" so native
     chain-of-thought stays out of the reply.
     """
+    messages = _outgoing_messages(messages)
     try:
         from groq import AsyncGroq
     except ImportError:
@@ -1907,7 +1950,9 @@ async def _groq_sdk_call(
                 delta = chunk.choices[0].delta.content if chunk.choices else None
                 if delta:
                     parts.append(delta)
-            return "".join(parts)
+            text = "".join(parts)
+            from core.blocklist import REFUSAL
+            return REFUSAL if _output_blocked(text) else text
         choice = completion.choices[0]
         msg = choice.message
         content = getattr(msg, "content", None) or ""
@@ -1923,6 +1968,10 @@ async def _groq_sdk_call(
         }
         if kw.get("tools"):
             out["tool_calls"] = _tool_calls_from_message(msg)
+        from core.blocklist import REFUSAL
+        if _output_blocked(out.get("content"), tool_calls=out.get("tool_calls")):
+            out["content"] = REFUSAL
+            out["tool_calls"] = []
         return out
 
     try:
@@ -2003,6 +2052,9 @@ async def call_groq_turn(
     A quota miss returns no tool calls, so the caller does not run tools
     or start another request on that turn.
     """
+    from core.blocklist import REFUSAL
+    from core.safety import MinorsBlocked
+
     if max_completion_tokens is None:
         max_completion_tokens = channel_completion_tokens()
     else:
@@ -2039,17 +2091,20 @@ async def call_groq_turn(
             effort = None
             parsed = "parsed"
             budget = max_completion_tokens + _think_room()
-        result = await _groq_sdk_call(
-            messages,
-            model=model,
-            max_completion_tokens=budget,
-            temperature=0.6,
-            top_p=0.95,
-            reasoning_effort=effort,
-            reasoning_format=parsed,
-            stream=False,
-            tools=tools or None,
-        )
+        try:
+            result = await _groq_sdk_call(
+                messages,
+                model=model,
+                max_completion_tokens=budget,
+                temperature=0.6,
+                top_p=0.95,
+                reasoning_effort=effort,
+                reasoning_format=parsed,
+                stream=False,
+                tools=tools or None,
+            )
+        except MinorsBlocked:
+            return ModelTurn(REFUSAL, "", [], False)
 
         if isinstance(result, dict) and "error" in result:
             error_msg = result["error"]
@@ -2080,9 +2135,12 @@ async def call_groq_turn(
             return ModelTurn(_public_error(err), f"({err})", [], False)
 
         url = _api_url()
-        payload = _build_payload(
-            messages, model, max_tokens=max_completion_tokens, temperature=0.7
-        )
+        try:
+            payload = _build_payload(
+                messages, model, max_tokens=max_completion_tokens, temperature=0.7
+            )
+        except MinorsBlocked:
+            return ModelTurn(REFUSAL, "", [], False)
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
@@ -2153,6 +2211,8 @@ async def call_groq_turn(
     if quota:
         calls = []
     cut = reply_was_cut(reason) and not calls and not quota
+    if _output_blocked(reply, thoughts, tool_calls=calls):
+        return ModelTurn(REFUSAL, "", [], False)
     return ModelTurn(reply, thoughts, calls, quota, cut)
 
 
@@ -2233,6 +2293,9 @@ async def call_groq_simple(prompt: str, max_chars: int = 2000):
     Returns ONLY the model's text — no thoughts, no tags, no tuples.
     On failure returns ("error", message).
     """
+    from core.blocklist import REFUSAL
+    from core.safety import MinorsBlocked
+
     max_tokens = tokens_for(max_chars)
     model = _model()
     backend = _provider_backend()
@@ -2240,15 +2303,18 @@ async def call_groq_simple(prompt: str, max_chars: int = 2000):
     messages = [{"role": "user", "content": prompt}]
 
     if backend == "cloud":
-        result = await _groq_sdk_call(
-            messages,
-            model=model,
-            max_completion_tokens=max_tokens,
-            temperature=0.9,
-            top_p=0.95,
-            reasoning_effort="none",
-            stream=False,
-        )
+        try:
+            result = await _groq_sdk_call(
+                messages,
+                model=model,
+                max_completion_tokens=max_tokens,
+                temperature=0.9,
+                top_p=0.95,
+                reasoning_effort="none",
+                stream=False,
+            )
+        except MinorsBlocked:
+            return REFUSAL
         if isinstance(result, dict) and "error" in result:
             return ("error", result["error"])
         text = result.get("content") if isinstance(result, dict) else result
@@ -2256,15 +2322,18 @@ async def call_groq_simple(prompt: str, max_chars: int = 2000):
         if "<reply>" in text.lower():
             r, _ = parse_sections(text)
             text = r or text
-        return text
+        return REFUSAL if _output_blocked(text) else text
 
     if not _api_key() and backend != "ollama":
         return ("error", _missing_key_error())
 
     url = _api_url()
-    payload = _build_payload(
-        messages, model, max_tokens=max_tokens, temperature=0.9, reasoning=False
-    )
+    try:
+        payload = _build_payload(
+            messages, model, max_tokens=max_tokens, temperature=0.9, reasoning=False
+        )
+    except MinorsBlocked:
+        return REFUSAL
     data = await _async_post(url, payload, _headers(), timeout=90)
 
     if "error" in data:
@@ -2276,7 +2345,8 @@ async def call_groq_simple(prompt: str, max_chars: int = 2000):
             "error",
             f"{_provider_label()} bad response shape (no content). [{_config_snapshot()}]",
         )
-    return _visible_reply(_message_text(msg))
+    text = _visible_reply(_message_text(msg))
+    return REFUSAL if _output_blocked(text) else text
 
 
 # ---------------------------------------------------------------------------
@@ -2291,6 +2361,9 @@ async def call_groq_raw(
     Sends a prompt and returns ONLY the model's text.
     Optional model= overrides the chat model (memory summarizer).
     """
+    from core.blocklist import REFUSAL
+    from core.safety import MinorsBlocked
+
     use_model = (model or "").strip() or _model()
     backend = _provider_backend()
     messages = [{"role": "user", "content": prompt}]
@@ -2300,31 +2373,39 @@ async def call_groq_raw(
         # back empty. The SDK default asks for the answer only. A model that
         # rejects that retries without it. OpenRouter uses the REST path
         # below and does not send reasoning_effort.
-        result = await _groq_sdk_call(
-            messages,
-            model=use_model,
-            max_completion_tokens=max_completion_tokens,
-            temperature=0.4,
-            top_p=0.95,
-            stream=False,
-        )
+        try:
+            result = await _groq_sdk_call(
+                messages,
+                model=use_model,
+                max_completion_tokens=max_completion_tokens,
+                temperature=0.4,
+                top_p=0.95,
+                stream=False,
+            )
+        except MinorsBlocked:
+            return REFUSAL
         if isinstance(result, dict) and "error" in result:
             return f"ERROR: {result['error']}"
         if isinstance(result, dict):
-            return drop_safety_preamble(_strip_think(result.get("content") or ""))
-        return drop_safety_preamble(_strip_think(result or ""))
+            text = drop_safety_preamble(_strip_think(result.get("content") or ""))
+        else:
+            text = drop_safety_preamble(_strip_think(result or ""))
+        return REFUSAL if _output_blocked(text) else text
 
     if not _api_key() and backend != "ollama":
         return f"ERROR: {_missing_key_error()}"
 
     url = _api_url()
-    payload = _build_payload(
-        messages,
-        use_model,
-        max_tokens=max_completion_tokens,
-        temperature=0.4,
-        reasoning=False,
-    )
+    try:
+        payload = _build_payload(
+            messages,
+            use_model,
+            max_tokens=max_completion_tokens,
+            temperature=0.4,
+            reasoning=False,
+        )
+    except MinorsBlocked:
+        return REFUSAL
     data = await _async_post(url, payload, _headers(), timeout=90)
 
     if "error" in data:
@@ -2338,4 +2419,5 @@ async def call_groq_raw(
         )
     # Empty when the model spent the reply on a trace. The caller retries
     # the fold later instead of storing the trace.
-    return drop_safety_preamble(_strip_think(_message_text(msg)))
+    text = drop_safety_preamble(_strip_think(_message_text(msg)))
+    return REFUSAL if _output_blocked(text) else text

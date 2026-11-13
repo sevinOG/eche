@@ -343,6 +343,12 @@ class Eche(commands.Bot):
             failed.append(f"cogs.poker.poker: {e}")
             print(f">>> FAILED poker import: {e}")
 
+        try:
+            from core.safety import log_startup_hash
+            log_startup_hash()
+        except Exception as exc:
+            print(f">>> safety footer hash log skipped: {exc}")
+
         print(f">>> setup_hook: {loaded}/{len(extensions)} extensions loaded")
         if failed:
             print(f">>> setup_hook: {len(failed)} failed (non-fatal):")
