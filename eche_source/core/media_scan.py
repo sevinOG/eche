@@ -92,9 +92,12 @@ def source_has_generation(text: str) -> str:
 
 
 def is_image_model_id(model: str) -> bool:
+    """True for known generators and any model id that contains 'image'."""
     text = (model or "").strip().lower()
     if not text:
         return False
+    if "image" in text:
+        return True
     return any(marker in text for marker in IMAGE_MODEL_MARKERS)
 
 
