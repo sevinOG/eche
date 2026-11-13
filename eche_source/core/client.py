@@ -847,11 +847,18 @@ async def _outgoing_messages_async(messages: list) -> list:
 
 async def _classify_outgoing(prepared: list) -> list:
     from core.blocklist import note, split_transcript
-    from core.classifier import classify_async, extract_images, HISTORY_WINDOW
+    from core.classifier import (
+        begin_request_text_checks,
+        classify_async,
+        extract_images,
+        log_text_safety_checks,
+        HISTORY_WINDOW,
+    )
     from core.safety import MinorsBlocked, is_footer_message, is_user_guard, message_text
 
     _output_context.set(_request_output_context(prepared))
     images = extract_images(prepared)
+    text_checks = begin_request_text_checks()
 
     hard_parts: list[str] = []
     history_parts: list[str] = []
@@ -909,9 +916,22 @@ async def _classify_outgoing(prepared: list) -> list:
     if history_text.strip():
         combined = (hard_text + "\n\nHISTORY:\n" + history_text).strip()
 
-    verdict = await classify_async(combined or hard_text or " ", images=images or None)
+    # Model-based text checks can be turned off to save VRAM. Images and
+    # the later footer / blocklist path are never skipped.
+    if text_checks or images:
+        verdict = await classify_async(combined or hard_text or " ", images=images or None)
+        if not text_checks and images:
+            log_text_safety_checks(enabled=False, skipped=[])
+        elif text_checks:
+            log_text_safety_checks(enabled=True)
+    else:
+        log_text_safety_checks(enabled=False, skipped=["content_filter", "child_check"])
+        verdict = ""
     if verdict:
-        hard_verdict = await classify_async(hard_text or " ", images=images or None)
+        if text_checks or images:
+            hard_verdict = await classify_async(hard_text or " ", images=images or None)
+        else:
+            hard_verdict = ""
         if hard_verdict:
             check = f"llm-input-{hard_verdict}"
             note(check)
@@ -937,7 +957,7 @@ async def _output_blocked(*texts, tool_calls=None) -> bool:
     Replies are classified as an assistant turn against the latest user text.
     """
     from core.blocklist import is_blocked, match_info, note, split_transcript
-    from core.classifier import classify_response_async
+    from core.classifier import classify_response_async, request_text_checks, log_text_safety_checks
     import json as _json
 
     parts = [str(t) for t in texts if t]
@@ -965,10 +985,13 @@ async def _output_blocked(*texts, tool_calls=None) -> bool:
     if context:
         _hist, latest = split_transcript(context)
         prompt = (latest or context).strip()
-    check = await classify_response_async(reply, prompt=prompt)
-    if check:
-        note(check)
-        return True
+    if request_text_checks():
+        check = await classify_response_async(reply, prompt=prompt)
+        if check:
+            note(check)
+            return True
+    else:
+        log_text_safety_checks(enabled=False, skipped=["content_filter", "child_check"])
     return False
 
 

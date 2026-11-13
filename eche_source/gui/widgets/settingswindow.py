@@ -511,10 +511,25 @@ class SettingsWindow(QWidget):
         ))
         checker_body = QVBoxLayout()
         checker_body.setSpacing(12)
+        self.text_safety_checks_box = QCheckBox(
+            "Run model text checks on chat (content filter and child check). "
+            "Off saves VRAM and inference. The footer, blocklist, and keyword "
+            "filters still run. Image and asset checks (content filter, child "
+            "check, and Scout) always run."
+        )
+        self.text_safety_checks_box.setObjectName("text_safety_checks")
+        self.text_safety_checks_box.setToolTip(
+            "On by default. Only an explicit off turns this off. "
+            "It does not disable the footer, blocklist, keyword filters, "
+            "or any image/asset check."
+        )
+        checker_body.addWidget(self.text_safety_checks_box)
         checker_hint = QLabel(
             "Blank uses the chat provider and model selected above. "
             "Llama Guard models use the Guard prompt; other models use a YES/NO prompt. "
-            "A missing or retired model fails closed and never falls back to another model."
+            "A missing or retired model fails closed and never falls back to another model. "
+            "The image content check is separate: it must be set to a vision-capable model "
+            "and does not follow the content filter. Age vision stays on the pinned Scout path."
         )
         checker_hint.setObjectName("FieldHint")
         checker_hint.setWordWrap(True)
@@ -534,6 +549,13 @@ class SettingsWindow(QWidget):
                 "child_check_model",
                 "child_check_model",
             ),
+            (
+                "Image content check",
+                "image_check_provider_combo",
+                "image_check_provider",
+                "image_check_model",
+                "image_check_model",
+            ),
         ):
             row = QVBoxLayout()
             row.setSpacing(8)
@@ -548,9 +570,15 @@ class SettingsWindow(QWidget):
             combo.addItem("Local — Ollama", "ollama")
             setattr(self, p_attr, combo)
             row.addWidget(combo)
+            blank = (
+                "Must be set to a vision-capable model. Blank fails closed. "
+                "Does not follow the content filter model."
+                if m_key == "image_check_model"
+                else "Blank uses the chat model."
+            )
             row.addLayout(self._field_block(
                 f"{title} model",
-                "Blank uses the chat model.",
+                blank,
                 secret=False,
                 key=m_key,
                 help_key=help_key,
@@ -1609,6 +1637,7 @@ class SettingsWindow(QWidget):
         for attr, key in (
             ("content_filter_provider_combo", "content_filter_provider"),
             ("child_check_provider_combo", "child_check_provider"),
+            ("image_check_provider_combo", "image_check_provider"),
         ):
             combo = getattr(self, attr, None)
             if combo is None:
@@ -1622,6 +1651,13 @@ class SettingsWindow(QWidget):
             combo.blockSignals(True)
             combo.setCurrentIndex(idx if idx >= 0 else 0)
             combo.blockSignals(False)
+
+        if hasattr(self, "text_safety_checks_box"):
+            from core.classifier import parse_default_on_flag
+            on, _invalid = parse_default_on_flag(self.data.get("text_safety_checks"))
+            self.text_safety_checks_box.blockSignals(True)
+            self.text_safety_checks_box.setChecked(on)
+            self.text_safety_checks_box.blockSignals(False)
 
         from core.ollama_thinking import parse_model_modes
         self._reasoning_models = parse_model_modes(self.data.get("reasoning_models"))
@@ -1826,10 +1862,14 @@ class SettingsWindow(QWidget):
         for attr, key in (
             ("content_filter_provider_combo", "content_filter_provider"),
             ("child_check_provider_combo", "child_check_provider"),
+            ("image_check_provider_combo", "image_check_provider"),
         ):
             combo = getattr(self, attr, None)
             if combo is not None:
                 payload[key] = combo.currentData() or ""
+
+        if hasattr(self, "text_safety_checks_box"):
+            payload["text_safety_checks"] = "1" if self.text_safety_checks_box.isChecked() else "0"
 
         cloud_m = ""
         if "cloud_model" in self._public_edits:

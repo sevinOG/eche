@@ -102,7 +102,7 @@ class ChildCheckHardeningTests(Base):
         self.assertIs(C._parse_child_verdict("NO"), False)
         self.assertIs(C._parse_child_verdict("yes"), True)
         self.assertIs(C._parse_child_verdict("No"), False)
-        self.assertIs(C._parse_child_verdict("NO\nYES"), False)
+        self.assertIsNone(C._parse_child_verdict("NO\nYES"))
 
     def test_system_message_and_restated_question(self):
         out, child, _ = self._calls("hi")

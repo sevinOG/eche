@@ -114,6 +114,9 @@ class RoutingTests(unittest.TestCase):
             "content_filter_model",
             "child_check_provider",
             "child_check_model",
+            "image_check_provider",
+            "image_check_model",
+            "text_safety_checks",
         ):
             self.assertIn(key, PUBLIC_KEYS)
             self.assertNotIn(key, ENV_MAP)

@@ -15,7 +15,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 # Production trees only. Tests may mention deleted APIs when asserting absence.
-_SKIP_DIRS = {"tests", "__pycache__", "assets", "venv", ".venv"}
+_SKIP_DIRS = {"tests", "__pycache__", "assets", "venv", ".venv", "dist", "build"}
 
 _ENDPOINT_NEEDLES = (
     "images/generations",
