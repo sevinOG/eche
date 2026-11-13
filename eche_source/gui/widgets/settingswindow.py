@@ -1246,8 +1246,29 @@ class SettingsWindow(QWidget):
         try:
             result = data_folder.apply_move(plan, overwrite=overwrite)
         except Exception as exc:
+            try:
+                from core.audit import safe_activity
+                safe_activity(
+                    "data-folder",
+                    action="move-data-folder",
+                    outcome="error",
+                    error_type=type(exc).__name__,
+                )
+            except Exception:
+                pass
             QMessageBox.warning(self, "Data folder", f"Could not move data: {exc}")
             return
+        try:
+            from core.audit import safe_activity
+            safe_activity(
+                "data-folder",
+                action="move-data-folder",
+                outcome="success",
+                overwrite=bool(overwrite),
+                copied=result.get("copied"),
+            )
+        except Exception:
+            pass
         self.data_folder_status.setText(
             f"Saved. Copied {result['copied']} file(s), kept {result['skipped']}, "
             f"{result['same']} already matched. Restart Eche to use {plan.target}."
@@ -1931,6 +1952,16 @@ class SettingsWindow(QWidget):
         self._update_worker.log_line.connect(self._on_update_log)
         self._update_worker.finished_ok.connect(self._on_update_ready)
         self._update_worker.start()
+        try:
+            from core.audit import safe_activity
+            safe_activity(
+                "updater",
+                action="check-for-updates",
+                outcome="success",
+                mode="local" if local else "github",
+            )
+        except Exception:
+            pass
 
     def _on_update_log(self, line: str):
         self.update_status.setText(line[:240] if line else "Working…")

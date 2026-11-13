@@ -570,6 +570,21 @@ class EconomyWindow(QMainWindow):
             ),
             self._on_saved,
         )
+        try:
+            from core.audit import safe_activity
+            extra = {}
+            if self._user_id:
+                extra["user_id"] = self._user_id
+            if getattr(self, "_home_id", None):
+                extra["guild_id"] = self._home_id
+            safe_activity(
+                "bank-save",
+                action="save-bank",
+                outcome="success",
+                **extra,
+            )
+        except Exception:
+            pass
 
     def _on_saved(self, ok: bool, message: str, payload):
         self._set_busy(False)
