@@ -96,6 +96,8 @@ IMAGE_MODEL_MARKERS = (
     "kandinsky",
     "hidream",
     "lmage",
+    "krea",
+    "firefly",
 )
 
 
@@ -151,6 +153,11 @@ VIDEO_MODEL_MARKERS = (
     "gen-3-alpha",
     "gen3alpha",
     "gen3a",
+    "opensora",
+    "wanx",
+    "vidu",
+    "novareel",
+    "nova-reel",
 )
 
 # Lookalike letters that show up in evasive model ids (Cyrillic ѕora, etc.).
@@ -160,9 +167,12 @@ _MODEL_CONFUSABLES = str.maketrans({
     "ԁ": "d", "ԁ": "d",
     "Α": "a", "А": "a", "Е": "e", "О": "o", "Р": "p", "С": "c",
     "Ѕ": "s",
-    "ꜱ": "s", "ᴇ": "e",
+    "ꜱ": "s", "ᴇ": "e", "ᴏ": "o", "ʀ": "r", "ᴀ": "a", "ᴋ": "k",
+    "ɴ": "n", "ɪ": "i", "ʟ": "l", "ᴜ": "u", "ɢ": "g", "ᴛ": "t",
     "ν": "v", "Ν": "v",
     "к": "k", "К": "k",
+    "Ι": "i", "ı": "i",
+    "ꓢ": "s", "ꮪ": "s", "ꓦ": "v", "ꓗ": "k",
     "$": "s",
 })
 _MODEL_LEET = str.maketrans({
@@ -359,13 +369,21 @@ def _adjacent_spans(tokens: list[str]) -> list[str]:
     return out
 
 
-_VIDEO_CHAT_ALLOW = ("videollava", "llavavideo", "videollama")
+_VIDEO_CHAT_ALLOW = (
+    "videollava", "llavavideo", "videollama",
+    "videochatgpt", "videochat", "llavanextvideo", "videoxl",
+)
+_VIDEO_CHAT_TAG_RE = re.compile(
+    r"(?i)(?:video[-_.]?llava|llava[-_.]?video|video[-_.]?llama|"
+    r"video[-_.]?chatgpt|video[-_.]?chat|"
+    r"llava[-_.]?next[-_.]?video|video[-_.]?xl)"
+)
 _IMAGE_SPELLING_RE = re.compile(r"(?:image|lmage|imaqe)", re.I)
 
 
-def _is_video_chat_model(model: str) -> bool:
-    compact = normalize_model_id(model)
-    return any(tag in compact for tag in _VIDEO_CHAT_ALLOW)
+def _strip_video_chat_tags(model: str) -> str:
+    """Remove video-understanding tags, then the remainder can still be checked."""
+    return _VIDEO_CHAT_TAG_RE.sub("-", model or "")
 
 
 def _is_image_model_id_folded(model: str) -> bool:
@@ -395,15 +413,35 @@ def _is_image_model_id_folded(model: str) -> bool:
     return False
 
 
+def _fold_lookalikes(model: str) -> list[str]:
+    """Original plus I→l and !/| → i/l forms, before lowercasing."""
+    raw = model or ""
+    forms = [raw]
+    as_l = raw.replace("I", "l").replace("Ι", "l")
+    if as_l not in forms:
+        forms.append(as_l)
+    punct_i = raw.replace("!", "i").replace("|", "i")
+    if punct_i not in forms:
+        forms.append(punct_i)
+    punct_l = raw.replace("!", "l").replace("|", "l").replace("I", "l").replace("Ι", "l")
+    if punct_l not in forms:
+        forms.append(punct_l)
+    return forms
+
+
 def is_image_model_id(model: str) -> bool:
     """True for known image/video generators, matched at the start of a token."""
-    if _is_video_chat_model(model):
+    # Strip video-understanding tags first, then run the full check on
+    # what remains, so gpt-image-1-video-llava and videollama-sora-2
+    # are still rejected.
+    remainder = _strip_video_chat_tags(model)
+    if not remainder.strip("-_/.()[] 	"):
         return False
-    if _is_image_model_id_folded(model):
-        return True
-    # pik@ -> pika, while s@o@r@a still joins via @ as a separator.
-    if "@" in (model or ""):
-        return _is_image_model_id_folded((model or "").replace("@", "a"))
+    for form in _fold_lookalikes(remainder):
+        if _is_image_model_id_folded(form):
+            return True
+        if "@" in form and _is_image_model_id_folded(form.replace("@", "a")):
+            return True
     return False
 
 
