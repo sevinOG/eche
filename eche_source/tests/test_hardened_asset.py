@@ -572,10 +572,17 @@ class OfficialImagineHashTests(unittest.TestCase):
 
     def test_safety_models_ignore_env_overrides(self):
         from core.classifier import age_vision_model, child_check_model
-        from core.safety_models import AGE_VISION_DEFAULT_GROQ, CHILD_CHECK_DEFAULT_GROQ
-        with mock.patch.dict(os.environ, {"AGE_VISION_MODEL": "tiny-1m", "CHILD_CHECK_MODEL": "tiny-1m"}):
+        from core.safety_models import AGE_VISION_DEFAULT_GROQ
+        with mock.patch.dict(os.environ, {
+            "AGE_VISION_MODEL": "tiny-1m",
+            "CHILD_CHECK_MODEL": "tiny-1m",
+            "ECHE_PROVIDER": "cloud",
+            "GROQ_MODEL": "qwen/qwen3.8-27b",
+            "GROQ_API_KEY": "gsk-real",
+        }), mock.patch("core.classifier._checker_setting", return_value=""):
             with mock.patch("core.classifier._endpoint", return_value=("k", "https://api.groq.com/openai/v1/chat/completions")):
-                self.assertEqual(child_check_model(), CHILD_CHECK_DEFAULT_GROQ)
+                # Env cannot pick the child-check model; blank settings use the chat model.
+                self.assertEqual(child_check_model(), "qwen/qwen3.8-27b")
                 self.assertEqual(age_vision_model(), AGE_VISION_DEFAULT_GROQ)
 
     def test_age_vision_prompt_ignores_image_text_and_asks_after(self):
@@ -660,9 +667,18 @@ class OfficialImagineHashTests(unittest.TestCase):
         asyncio.run(_run())
 
     def test_dead_model_keys_are_not_in_public_keys(self):
-        from core.secrets import PUBLIC_KEYS
-        self.assertNotIn("child_check_model", PUBLIC_KEYS)
+        from core.secrets import ENV_MAP, PUBLIC_KEYS
+        # Age-vision stays pinned and is not a settings key.
         self.assertNotIn("age_vision_model", PUBLIC_KEYS)
+        # Checker models are settings-only; env cannot pick them.
+        for key in (
+            "content_filter_provider",
+            "content_filter_model",
+            "child_check_provider",
+            "child_check_model",
+        ):
+            self.assertIn(key, PUBLIC_KEYS)
+            self.assertNotIn(key, ENV_MAP)
 
 
 class HeldOutIncidentFilterTests(unittest.TestCase):

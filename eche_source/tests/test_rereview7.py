@@ -9,6 +9,7 @@ import unittest
 from unittest import mock
 
 from core import classifier as C
+from tests.checker_fixtures import patch_legacy_checker_settings
 from core.classifier import _sanitize_child_text, _child_messages, _child_check_sync
 
 
@@ -42,8 +43,11 @@ class Base(unittest.TestCase):
         C.clear_cache()
         self.env = mock.patch.dict(os.environ, {"GROQ_API_KEY": "gsk_x", "CHILD_CHECK_MODEL": ""})
         self.env.start()
+        self._legacy = patch_legacy_checker_settings()
+        self._legacy.start()
 
     def tearDown(self):
+        self._legacy.stop()
         self.env.stop()
         C.allow_in_tests(True)
         C.clear_cache()

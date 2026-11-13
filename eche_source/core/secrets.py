@@ -79,6 +79,11 @@ PUBLIC_KEYS = (
     "asset_owner_only",             # blank or missing stays ON (owner only). "0" opens it to the guild.
     "tool_asset",                   # "0" leaves the asset tool out of the prompt. Blank stays on.
     "xai_key_epoch",                # must match CURRENT_XAI_KEY_EPOCH or the stored xAI key is ignored
+    # Safety checkers. Settings-only (not in ENV_MAP). Blank = current chat provider/model.
+    "content_filter_provider",      # cloud | openrouter | ollama. Blank uses the chat provider.
+    "content_filter_model",         # Model id. Blank uses the chat model.
+    "child_check_provider",
+    "child_check_model",
 )
 
 # Map settings key -> environment variable used by the bot
@@ -569,7 +574,19 @@ def save_all(data: dict[str, Any], root: str | None = None) -> None:
     _save_encrypted_secrets(root, secrets)
     try:
         from core.audit import record, safe_activity
-        safe_activity("settings-save", outcome="success")
+        fields = {}
+        for key in (
+            "content_filter_provider",
+            "content_filter_model",
+            "child_check_provider",
+            "child_check_model",
+        ):
+            old_val = str(existing_public.get(key) or "").strip()
+            new_val = str(public.get(key) or "").strip()
+            if old_val != new_val:
+                fields[f"{key}_old"] = old_val
+                fields[f"{key}_new"] = new_val
+        safe_activity("settings-save", outcome="success", **fields)
         record(
             "settings-save",
             outcome="success",
@@ -578,6 +595,7 @@ def save_all(data: dict[str, Any], root: str | None = None) -> None:
             asset_owner_only_old=old_owner,
             asset_owner_only_new=new_owner,
             xai_key_set=key_set,
+            **fields,
         )
     except Exception:
         pass

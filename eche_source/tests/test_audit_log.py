@@ -21,6 +21,24 @@ import sys
 if str(SOURCE) not in sys.path:
     sys.path.insert(0, str(SOURCE))
 
+# Virtualenvs and third-party trees are not Eche entry points. Python 3.14
+# + a local venv otherwise reports asyncio/discord internals as unreviewed.
+_SKIP_DISCOVERY_PARTS = {
+    "tests", ".venv", "venv", "site-packages", "dist-packages",
+    "__pycache__", ".git", ".tox", ".nox", "node_modules",
+}
+
+
+def _skip_discovery_path(path: Path) -> bool:
+    parts = set(path.parts)
+    if parts & _SKIP_DISCOVERY_PARTS:
+        return True
+    # Windows venvs put site-packages under Lib/.
+    lowered = [part.lower() for part in path.parts]
+    if "lib" in lowered and "site-packages" in lowered:
+        return True
+    return False
+
 
 def _decorator_name(node: ast.AST) -> str | None:
     """Return 'command', 'group', or a 'group.command' attribute name."""
@@ -47,6 +65,8 @@ def discover_cog_commands(root: Path = COGS) -> list[str]:
     """Every Discord command declared under cogs/, including group subcommands."""
     found: list[str] = []
     for path in sorted(root.rglob("*.py")):
+        if _skip_discovery_path(path):
+            continue
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         except SyntaxError:
@@ -180,6 +200,8 @@ def discover_background_tasks(root: Path = SOURCE) -> set[str]:
     """AST-discover create_task targets and @tasks.loop functions."""
     names: set[str] = set()
     for path in root.rglob("*.py"):
+        if _skip_discovery_path(path):
+            continue
         if "tests" in path.parts or path.name.endswith(".pyi"):
             continue
         try:
@@ -296,6 +318,8 @@ def discover_qt_slots(root: Path = SOURCE / "gui") -> set[str]:
     names: set[str] = set()
     slot_param_names = {"slot", "callback", "handler", "clicked"}
     for path in root.rglob("*.py"):
+        if _skip_discovery_path(path):
+            continue
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         except (OSError, SyntaxError):
@@ -363,6 +387,8 @@ def discover_prompt_saves(root: Path = SOURCE) -> set[str]:
     """Functions that persist personality, provider, or summarizer prompts."""
     names: set[str] = set()
     for path in root.rglob("*.py"):
+        if _skip_discovery_path(path):
+            continue
         if "tests" in path.parts or path.name.endswith(".pyi"):
             continue
         try:
@@ -434,6 +460,8 @@ REVIEWED_ENTRYPOINTS = {
     "_post": "Llama Guard 4 HTTP classify call",
     "_child_post": "second-check instruction-model HTTP call",
     "_age_vision_post": "age-vision HTTP call",
+    "_post_ollama_chat": "local Llama Guard 3 classify HTTP call",
+    "_post_ollama_child": "local Llama Guard 3 child-check HTTP call",
 }
 
 
@@ -846,8 +874,9 @@ class AuditLogTests(unittest.TestCase):
         # Creating a path applies the directory ACL helper.
         path = self.audit_mod.audit_path()
         self.assertTrue(Path(path).parent.is_dir())
-        mode = Path(path).parent.stat().st_mode & 0o777
-        self.assertEqual(mode, 0o700)
+        if os.name == "posix":
+            mode = Path(path).parent.stat().st_mode & 0o777
+            self.assertEqual(mode, 0o700)
 
     def test_message_edit_skips_bot_and_self(self):
         from core.bot import Eche
@@ -2099,11 +2128,28 @@ class AuditCompletenessTests(AuditLogTests):
                 def __exit__(self, *exc):
                     return False
 
-            def _probe_classifier_http(fn, service, content, secret, expect_error=False, side=None, arg=None):
+            def _probe_classifier_http(fn, service, content, secret, expect_error=False, side=None, arg=None, endpoint=None):
                 before = len(_records(self.audit))
                 opener = side if side is not None else (lambda *a, **k: _HttpOk(content))
                 payload = arg if arg is not None else [{"role": "user", "content": secret}]
-                with mock.patch.object(C, "_endpoint", return_value=("gsk_test_audit_key", C.GROQ_URL)), \
+                ep = endpoint if endpoint is not None else ("gsk_test_audit_key", C.GROQ_URL)
+                def _probe_setting(key):
+                    if "OLLAMA" in (ep[1] or "").upper() or "11434" in (ep[1] or ""):
+                        if key in ("content_filter_model", "child_check_model"):
+                            return "llama-guard3:8b"
+                        if key in ("content_filter_provider", "child_check_provider"):
+                            return "ollama"
+                    else:
+                        if key == "content_filter_model":
+                            return "meta-llama/llama-guard-4-12b"
+                        if key == "child_check_model":
+                            return "llama-3.1-8b-instant"
+                        if key in ("content_filter_provider", "child_check_provider"):
+                            return "cloud"
+                    return ""
+                with mock.patch.object(C, "_endpoint", return_value=ep), \
+                     mock.patch.object(C, "_child_endpoint", return_value=ep), \
+                     mock.patch.object(C, "_checker_setting", side_effect=_probe_setting), \
                      mock.patch("urllib.request.urlopen", side_effect=opener):
                     try:
                         fn(payload)
@@ -2177,7 +2223,6 @@ class AuditCompletenessTests(AuditLogTests):
             if "SECRETFRAME" in leaked_v or "gsk_test_audit_key" in leaked_v:
                 gaps.append("_age_vision_post:prompt-or-key-logged")
 
-
             before = len(_records(self.audit))
             from core.asset_review import require_owner_review, set_review_hook
             from core.imagine import AssetFile
@@ -2202,6 +2247,33 @@ class AuditCompletenessTests(AuditLogTests):
                 blob = " ".join(str(r) for r in _records(self.audit)[before:])
                 if "secret-review-prompt-xyz" in blob:
                     gaps.append("require_owner_review:prompt-logged")
+
+            ollama_ep = ("", C.OLLAMA_CHAT_URL)
+            secret_ol = "secret-ollama-prompt-xyz"
+            ol_rows, ol_blob = _probe_classifier_http(
+                C._post, "classifier", "safe", secret_ol, endpoint=ollama_ep,
+            )
+            ol_child, ol_child_blob = _probe_classifier_http(
+                C._child_post, "child-check", "unsafe", secret_ol, endpoint=ollama_ep,
+                arg=[{"role": "user", "content": secret_ol}],
+            )
+            ol_err, ol_err_blob = _probe_classifier_http(
+                C._child_post,
+                "child-check",
+                "",
+                secret_ol,
+                expect_error=True,
+                side=lambda *a, **k: (_ for _ in ()).throw(TimeoutError("deadline")),
+                endpoint=ollama_ep,
+                arg=[{"role": "user", "content": secret_ol}],
+            )
+            if not ol_rows:
+                gaps.append("_post_ollama_chat")
+            if not ol_child or not ol_err:
+                gaps.append("_post_ollama_child")
+            leaked_ol = " ".join((ol_blob, ol_child_blob, ol_err_blob))
+            if "secret-ollama-prompt-xyz" in leaked_ol:
+                gaps.append("_post_ollama:prompt-or-key-logged")
 
             return gaps
 

@@ -679,6 +679,6 @@ def ids_from_http(response=None, payload=None) -> tuple[str, str]:
     return request_id, response_id
 
 
-def api_from_http(service: str, response=None, payload=None, *, outcome: str = "") -> dict:
+def api_from_http(service: str, response=None, payload=None, *, outcome: str = "", **extra) -> dict:
     request_id, response_id = ids_from_http(response, payload)
-    return api(service, request_id=request_id, response_id=response_id, outcome=outcome)
+    return api(service, request_id=request_id, response_id=response_id, outcome=outcome, **extra)

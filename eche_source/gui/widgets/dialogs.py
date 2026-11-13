@@ -236,6 +236,32 @@ _CONFIG_HINTS: list[tuple[str, str, str, str]] = [
         "Updates rebuild with the project’s .venv Python, which was not found.",
         "Create a venv in the source folder and install dependencies first.",
     ),
+    (
+        "content_filter_model",
+        "Content filter model is missing",
+        "The content filter could not find the model named in Settings → Provider & model "
+        "under content_filter_model (or the chat model, if that field is blank). "
+        "Providers retire models. Set a current model in that field. The check does not "
+        "fall back to another model and is not skipped.",
+        "Update content_filter_model, or the chat model if the field is blank, then save.",
+    ),
+    (
+        "child_check_model",
+        "Child check model is missing",
+        "The child check could not find the model named in Settings → Provider & model "
+        "under child_check_model (or the chat model, if that field is blank). "
+        "Providers retire models. Set a current model in that field. The check does not "
+        "fall back to another model and is not skipped.",
+        "Update child_check_model, or the chat model if the field is blank, then save.",
+    ),
+    (
+        "Safety checker model is missing",
+        "Safety checker model is missing",
+        "The content filter or child check could not find its model. "
+        "Update content_filter_model or child_check_model in Settings, or the chat model "
+        "if those fields are blank. The check does not fall back to another model and is not skipped.",
+        "Set a current model, then save Settings.",
+    ),
 ]
 
 

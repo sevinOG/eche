@@ -572,3 +572,35 @@ def _cap_help() -> dict[str, tuple[str, str]]:
 
 
 FIELD_HELP.update(_cap_help())
+
+
+FIELD_HELP["content_filter_model"] = (
+    "Content filter model",
+    "### What it does\n"
+    "The content filter checks every request and reply against the safety footer "
+    "categories. Leave the provider and model blank to use the same backend and "
+    "model as chat. Set them to point this check at a different provider or model.\n\n"
+    "### Format\n"
+    "The prompt is chosen from the model name. `llama-guard3` and `llama-guard-4` "
+    "ids use the Llama Guard prompt and a safe/unsafe parse. Prompt Guard models "
+    "only detect jailbreaks, so they are refused and the check fails closed. "
+    "Every other model gets the hardened YES/NO prompt (thinking stripped, "
+    "temperature 0).\n\n"
+    "### Missing or retired models\n"
+    "Groq and OpenRouter retire models, and an Ollama tag may not have been pulled. "
+    "If the configured model is missing, the check fails closed. There is no silent "
+    "fallback. Update this field, or the chat model if it is blank.",
+)
+FIELD_HELP["child_check_model"] = (
+    "Child check model",
+    "### What it does\n"
+    "A second, minors-only check that runs after the content filter. Leave the "
+    "provider and model blank to use the same backend and model as chat.\n\n"
+    "### Format\n"
+    "Llama Guard models use a single custom minors category and an exact "
+    "safe/unsafe parse. Prompt Guard is refused. Every other model gets the "
+    "hardened YES/NO minors prompt (thinking stripped, temperature 0).\n\n"
+    "### Missing or retired models\n"
+    "If the configured model is missing or retired, the check fails closed. "
+    "There is no silent fallback. Update this field, or the chat model if it is blank.",
+)
