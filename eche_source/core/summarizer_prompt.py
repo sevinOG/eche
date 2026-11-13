@@ -196,13 +196,19 @@ def get_summarizer_model() -> str:
             raw = ""
 
     if raw and not _is_deprecated_model(raw):
-        return raw
-
-    chat = (os.getenv("GROQ_MODEL") or "").strip()
-    if chat and not _is_deprecated_model(chat):
-        return chat
-
-    return DEFAULT_SUMMARIZER_MODEL
+        chosen = raw
+    else:
+        chat = (os.getenv("GROQ_MODEL") or "").strip()
+        if chat and not _is_deprecated_model(chat):
+            chosen = chat
+        else:
+            chosen = DEFAULT_SUMMARIZER_MODEL
+    try:
+        from core.media_scan import usable_chat_model
+        filtered = usable_chat_model(chosen, DEFAULT_SUMMARIZER_MODEL)
+        return filtered or DEFAULT_SUMMARIZER_MODEL
+    except Exception:
+        return chosen or DEFAULT_SUMMARIZER_MODEL
 
 
 def build_summary_prompt(combined_for_summary: str) -> str:
