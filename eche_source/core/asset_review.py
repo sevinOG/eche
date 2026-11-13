@@ -148,10 +148,12 @@ async def require_owner_review(
         raise ImagineError(OWNER_REVIEW_FAILED)
     fetch = getattr(bot, "fetch_user", None)
     sent = 0
-    view = _OwnerReviewView(reviewers)
     body = _review_message(
         user_id=user_id, guild_id=guild_id, channel_id=channel_id, prompt=prompt
     )
+    decision: asyncio.Future[bool] = asyncio.get_event_loop().create_future()
+    siblings: list = []
+    views: list[_OwnerReviewView] = []
     try:
         import io
         import discord
@@ -162,8 +164,11 @@ async def require_owner_review(
                 send = getattr(owner, "send", None)
                 if send is None:
                     continue
+                wrap = _OwnerReviewView(reviewers, decision=decision, siblings=siblings)
+                siblings.append(wrap._view)
+                views.append(wrap)
                 file = discord.File(io.BytesIO(result.data), filename=result.filename)
-                await send(content=body, file=file, view=view)
+                await send(content=body, file=file, view=wrap._view)
                 sent += 1
             except Exception:
                 continue
@@ -175,7 +180,7 @@ async def require_owner_review(
         raise ImagineError(OWNER_REVIEW_FAILED)
     _audit_review("review-sent", **ids)
     try:
-        approved = await asyncio.wait_for(view.decision, timeout=REVIEW_TIMEOUT_SECONDS)
+        approved = await asyncio.wait_for(decision, timeout=REVIEW_TIMEOUT_SECONDS)
     except asyncio.TimeoutError as exc:
         _audit_review("timeout", **ids)
         raise ImagineError(OWNER_REVIEW_TIMEOUT) from exc
@@ -192,7 +197,13 @@ async def require_owner_review(
 class _OwnerReviewView:
     """Thin wrapper so tests can import this module without discord.ui at collection."""
 
-    def __init__(self, owner_ids: Iterable[int] | int | None):
+    def __init__(
+        self,
+        owner_ids: Iterable[int] | int | None,
+        *,
+        decision: asyncio.Future[bool] | None = None,
+        siblings: list | None = None,
+    ):
         import discord
 
         if owner_ids is None:
@@ -211,10 +222,11 @@ class _OwnerReviewView:
                     pass
 
         class View(discord.ui.View):
-            def __init__(self, expected_ids: set[int]):
+            def __init__(self, expected_ids: set[int], shared, family: list):
                 super().__init__(timeout=REVIEW_TIMEOUT_SECONDS)
                 self.expected_ids = expected_ids
-                self.decision: asyncio.Future[bool] = asyncio.get_event_loop().create_future()
+                self.decision: asyncio.Future[bool] = shared
+                self._family = family
 
             async def _decide(self, interaction, value: bool):
                 user = getattr(interaction, "user", None)
@@ -236,7 +248,11 @@ class _OwnerReviewView:
                     )
                 except Exception:
                     pass
-                self.stop()
+                for other in list(self._family) + [self]:
+                    try:
+                        other.stop()
+                    except Exception:
+                        pass
 
             @discord.ui.button(label="Approve", style=discord.ButtonStyle.success)
             async def approve(self, interaction, button):
@@ -248,9 +264,14 @@ class _OwnerReviewView:
                 del button
                 await self._decide(interaction, False)
 
-        inner = View(expected)
+        shared = decision if decision is not None else asyncio.get_event_loop().create_future()
+        family = siblings if siblings is not None else []
+        inner = View(expected, shared, family)
         self.decision = inner.decision
         self._view = inner
+        if inner not in family:
+            # A standalone view (tests, single owner) still belongs to its family.
+            family.append(inner)
 
     def __getattr__(self, name):
         return getattr(self._view, name)

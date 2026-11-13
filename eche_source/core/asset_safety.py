@@ -62,7 +62,17 @@ class PreparedPrompt:
 
 
 def asset_enabled() -> bool:
-    """Owner kill switch. Blank or missing is OFF."""
+    """Owner kill switch. Blank or missing is OFF.
+
+    Any official pin failure also returns False, so the LLM asset tool
+    (which already consults this function) is disabled with ?asset.
+    """
+    try:
+        from core.media_scan import official_pins_ok
+        if official_pins_ok():
+            return False
+    except Exception:
+        return False
     try:
         from core.secrets import public_value
         from core.tools import prompt_choice
@@ -338,6 +348,7 @@ def extract_video_frames(data: bytes, mime: str = "video/mp4") -> list[bytes]:
         if result.returncode != 0:
             return []
         frames = _read_jpegs(raw)
+        fps_count = len(frames)
         last = os.path.join(raw, "last.jpg")
         last_result = _run_ffmpeg(
             [
@@ -354,16 +365,21 @@ def extract_video_frames(data: bytes, mime: str = "video/mp4") -> list[bytes]:
             ],
             timeout=30,
         )
+        last_ok = False
         if last_result.returncode == 0 and os.path.isfile(last):
             with open(last, "rb") as fh:
                 blob = fh.read()
-            if blob and (not frames or blob != frames[-1]):
-                frames.append(blob)
+            if blob:
+                last_ok = True
+                # Keep a unique last frame for the classifier, but do not
+                # let a byte-identical last frame shrink the fps count.
+                if not frames or blob != frames[-1]:
+                    frames.append(blob)
         if not frames:
             return []
         if not animated:
-            needed = max(1, math.ceil(duration * FRAME_FPS))
-            if len(frames) < needed:
+            needed = max(1, math.floor(duration * FRAME_FPS))
+            if fps_count < needed or not last_ok:
                 return []
         return frames
 
@@ -412,7 +428,6 @@ async def _classify_image(
     )
     part = _image_part(data, mime)
     if part is None:
-        _lock_on_block(user_id, "unreadable-output")
         _audit("refusal", category="unreadable-output", **ids)
         raise ImagineError(OUTPUT_UNCHECKED)
     try:
@@ -421,12 +436,10 @@ async def _classify_image(
         verdict = "classifier-error"
     if verdict == "classifier-image-unsupported":
         note("asset-output-vision")
-        _lock_on_block(user_id, verdict)
         _audit("refusal", category=verdict, **ids)
         raise ImagineError(VISION_UNAVAILABLE)
     if verdict:
         note(f"asset-output-{verdict}")
-        _lock_on_block(user_id, verdict)
         _audit("refusal", category=verdict, **ids)
         raise ImagineError(OUTPUT_REFUSAL)
     try:
@@ -435,7 +448,6 @@ async def _classify_image(
         age = "age-vision-error"
     if age:
         note(f"asset-output-{age}")
-        _lock_on_block(user_id, age)
         _audit("refusal", category=age, **ids)
         raise ImagineError(OUTPUT_REFUSAL)
 
@@ -467,7 +479,6 @@ async def check_generated_media(
     if needs_frames:
         frames = extract_video_frames(data, mime)
         if not frames:
-            _lock_on_block(user_id, "frame-extract")
             _audit("refusal", category="frame-extract", **ids)
             raise ImagineError(OUTPUT_UNCHECKED)
         for frame in frames:

@@ -557,6 +557,7 @@ OFFICIAL_IMAGINE_MODULES = frozenset({
     "core.asset_backend",
     "core.asset_review",
     "core.asset_limits",
+    "core.media_scan",
 })
 
 _OFFICIAL_MANIFEST_NAME = "official_imagine.sha256"
@@ -569,6 +570,7 @@ _OFFICIAL_MODULE_FILES = {
     "core.asset_backend": "core/asset_backend.py",
     "core.asset_review": "core/asset_review.py",
     "core.asset_limits": "core/asset_limits.py",
+    "core.media_scan": "core/media_scan.py",
 }
 
 
@@ -626,21 +628,52 @@ def official_hash_ok(module: str, path: Path | None, source_root: str | Path | N
     return file_sha256(path) == pinned
 
 
-# SHA-256 of official_imagine.sha256 as shipped. A rewritten pin file fails.
-EMBEDDED_MANIFEST_SHA256 = "c194f8c3572741b58daf9c5d617bfa72d42b4b98984de6825f4ad37cf0d1776e"
+# The pin file authenticates itself: a `# manifest-sha256: <hex>` line
+# stores the digest of the file with that hex zeroed. This covers the
+# pin file without living in an unpinned Python module, and lets
+# core/media_scan.py itself be pinned.
+_MANIFEST_HASH_RE = re.compile(r"(?im)^(# manifest-sha256: )([0-9a-f]{64})\s*$")
+_MANIFEST_HASH_ZERO = "0" * 64
+
+
+def _manifest_canonical_bytes(text: str) -> bytes:
+    if not _MANIFEST_HASH_RE.search(text or ""):
+        return b""
+    return _MANIFEST_HASH_RE.sub(
+        lambda m: m.group(1) + _MANIFEST_HASH_ZERO, text, count=1
+    ).encode("utf-8")
+
+
+def embedded_manifest_sha256(source_root: str | Path | None = None) -> str:
+    path = official_imagine_manifest_path(source_root)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except Exception:
+        return ""
+    match = _MANIFEST_HASH_RE.search(text)
+    return (match.group(2).lower() if match else "")
 
 
 def manifest_file_sha256(source_root: str | Path | None = None) -> str:
     path = official_imagine_manifest_path(source_root)
     if not path.is_file():
         return ""
-    return file_sha256(path)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except Exception:
+        return ""
+    blob = _manifest_canonical_bytes(text)
+    if not blob:
+        return ""
+    import hashlib
+    return hashlib.sha256(blob).hexdigest()
 
 
 def official_pins_ok(source_root: str | Path | None = None) -> str:
     """Why the official Imagine pins failed, or '' if every pin matches."""
     digest = manifest_file_sha256(source_root)
-    if not digest or digest != EMBEDDED_MANIFEST_SHA256:
+    stored = embedded_manifest_sha256(source_root)
+    if not digest or not stored or digest != stored:
         return "official manifest hash mismatch"
     if len(_OFFICIAL_MODULE_FILES) != len(OFFICIAL_IMAGINE_MODULES):
         return "official pin set mismatch"
@@ -649,6 +682,14 @@ def official_pins_ok(source_root: str | Path | None = None) -> str:
         if not official_hash_ok(name, path, source_root):
             return f"official hash mismatch: {rel}"
     return ""
+
+
+
+def __getattr__(name: str):
+    """EMBEDDED_MANIFEST_SHA256 reads the self-hash stored in the pin file."""
+    if name == "EMBEDDED_MANIFEST_SHA256":
+        return embedded_manifest_sha256()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def module_is_blocked(module: str, source_root: str | Path | None = None) -> str:

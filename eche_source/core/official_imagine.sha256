@@ -1,10 +1,12 @@
 # sha256 of official Imagine modules. Exact module paths only.
-# Generated with the hardened-asset re-review fixes.
+# The manifest-sha256 line is the digest of this file with that hex zeroed.
+# manifest-sha256: 808a8d3078dbd5248b67a8c277d66013e104157698a6e82b3353dd6851f38d4e
 69284784db2fb2d892aab03b42c020b2ff335a1a8a0206bd070b523fb8891bf0  cogs/asset.py
 b3a9c443062de6286bc8a7840159a9e2b389f040357f6888e09c1f800a09a1ac  core/imagine.py
 e58b90b4b6cc881ff1f86c2588a73f577be45e833e9e936432c3a75dc2f44dbb  core/tools_asset.py
-9fc7fc5cc2efdae632bcd9cb9b6bb762ba16042bf0dd524822570fc542cce2dd  core/asset_safety.py
-e10ceaf65a301c7bf4da0664a5a5ecac0bb371452aeb536ad1b22331cfcee55c  core/asset_filter.py
+2cb9c3f3dc0a59dead6592d53ec7d42202fc52f278c94c6762aad507f14ac154  core/asset_safety.py
+160f73f73fef3b3f6939bcab02550dce8c7d2162ff902664a9acab8aaba090fe  core/asset_filter.py
 6248bdc07aa07f827fa6bcc5b884708050efe1bda8719d4d07b9d06884bd78dd  core/asset_backend.py
-9f0cca616f2d1ae80a80d1bab19ab1e96b21baa367cd364ff0f62988bb039e20  core/asset_review.py
+f15fc1b3f151af1ca4cfe916062569e78f56eb2d00e9ff38fdd48b64dc8fdfd1  core/asset_review.py
 279ae6e3f4dcb0a1c55b0b91b693711455ac49752c1715b3b568e94f228d4684  core/asset_limits.py
+14488e9c041c43ffa1b6c3f4b78557e3a3ea849803561f3e5c0a8f2d57dfac64  core/media_scan.py

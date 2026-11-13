@@ -30,6 +30,8 @@ _PERSON = (
     "children", "teen", "teenager", "man", "woman", "lady", "gentleman",
     "student", "pupil", "schoolgirl", "schoolboy", "elf", "creature",
     "lad", "lass", "guy", "gal", "fellow",
+    "fairy", "faerie", "faery", "gymnast", "dancer", "sprite", "cherub",
+    "pixie", "angel", "elf", "nymph",
     "fille", "garçon", "garcon", "enfant", "niña", "nina", "niño", "nino",
     "mädchen", "madchen", "junge", "kind", "menina", "menino", "bambina",
     "bambino", "meisje", "jongen", "dziewczynka", "chłopiec", "chlopiec",
@@ -146,12 +148,36 @@ _ALWAYS = (
     # CS / HU / EL / HE / BN / TA
     r"dívka", r"divka", r"lány", r"lany", r"κορίτσι", r"בת", r"דוגעל",
     r"ছোট\s+মেয়ে", r"சிறுமி",
+    # Romanized and additional languages (Urdu, Arabic, Welsh, Irish,
+    # Danish, Afrikaans, and broader coverage).
+    r"chhoti\s+ladki", r"chhoti\s+larki", r"choti\s+ladki",
+    r"shoujo", r"shōjo", r"shoujo", r"\bkodomo\b",
+    r"xiao\s+nuhai", r"xiao\s+nvhai", r"xiao\s+nühai", r"xiaonuhai",
+    r"bachi", r"bacha", r"chhoti\s+larki",
+    r"بچہ", r"بچی", r"چھوٹی\s+لڑکی", r"بنت\s+صغيرة", r"بنت\s+صغیره",
+    r"\bplentyn\b", r"merch\s+fach", r"bachgen\s+bach",
+    r"páiste", r"paiste", r"cailín\s+beag", r"cailin\s+beag",
+    r"buachaill\s+beag", r"\bleanbh\b",
+    r"lille\s+pige", r"lille\s+dreng", r"\bbarnlige\b",
+    r"\bkindjie\b", r"klein\s+meisie", r"klein\s+seun",
+    r"kanak[\-\s]*kanak", r"\bbudak\b",
+    r"djevojčica", r"djevojcica", r"\bdijete\b",
+    r"\binfano\b", r"\bknabino\b",
+    r"\bpuella\b", r"\binfans\b",
+    r"పిల్ల", r"చిన్న\s+పిల్ల", r"కుర్రాది",
+    r"ਕੁੜੀ", r"ਬੱਚੀ", r"ਬੱਚਾ",
+    r"मुन्नी", r"मुन्ना",
+    r"pikkulapsi", r"\blapsi\b", r"\btyttö\b", r"tytto", r"pikkutyttö",
+    r"niñita", r"ninita", r"nenita", r"\bchamaca\b", r"chiquilla",
+    r"\bnena\b", r"niñito", r"nenito",
+    r"\bchildlike\b", r"child-like",
 )
 
 # Idioms that would otherwise trip a family or stage word.
 _BENIGN_RE = re.compile(
     r"(?is)baby\s*grand|babysitters?|babysitting|scout\s*drones?|son\s*of\s*a\s*gun|el\s*ni[ñn]o"
 )
+
 
 
 def _compile() -> tuple[re.Pattern, re.Pattern, re.Pattern]:
@@ -174,24 +200,168 @@ def _compile() -> tuple[re.Pattern, re.Pattern, re.Pattern]:
 
 _NEAR, _ALWAYS_RE, _ANTHRO_RE = _compile()
 
+# Broad object / animal / food / plant / household class. Used as one
+# cue class in the structural rule, not as the only nouns that count.
+_OBJECT_LEXICON = frozenset({
+    "twig", "stick", "match", "matchstick", "sapling", "acorn", "object",
+    "pencil", "eraser", "crayon", "candle", "wick", "lantern", "teacup",
+    "cup", "mug", "teapot", "saucer", "spoon", "fork", "knife", "plate",
+    "bowl", "loaf", "bread", "cookie", "cookies", "biscuit", "cake", "pie",
+    "apple", "pear", "orange", "banana", "carrot", "potato", "onion",
+    "pepper", "pumpkin", "gingerbread", "donut", "doughnut", "pretzel",
+    "umbrella", "dustpan", "broom", "mop", "bucket", "sponge", "soap",
+    "sock", "mitten", "glove", "hat", "boot", "shoe", "coat", "scarf",
+    "puppet", "doll", "teddy", "toy", "marble", "button", "needle", "thread",
+    "pin", "nail", "screw", "hammer", "wrench", "pliers", "clock", "watch",
+    "lamp", "bulb", "torch", "flashlight", "book", "page", "notebook",
+    "paper", "envelope", "letter", "stamp", "key", "lock", "door", "window",
+    "chair", "table", "stool", "desk", "shelf", "vase", "pot", "kettle",
+    "tree", "leaf", "leaves", "branch", "root", "flower", "rose", "tulip",
+    "daisy", "seed", "pinecone", "pebble", "stone", "rock", "shell",
+    "cloud", "raindrop", "snowflake", "icicle", "flame", "spark", "ember",
+    "bunny", "rabbit", "kitten", "cat", "puppy", "dog", "mouse", "mice",
+    "rat", "hamster", "fox", "wolf", "bear", "cub", "deer", "fawn", "owl",
+    "bird", "duck", "chick", "chicken", "hen", "goose", "swan", "frog",
+    "toad", "fish", "whale", "dolphin", "seal", "otter", "squirrel",
+    "chipmunk", "hedgehog", "raccoon", "panda", "koala", "monkey", "ape",
+    "elephant", "giraffe", "lion", "tiger", "zebra", "horse", "pony",
+    "pig", "cow", "goat", "sheep", "lamb", "chicken", "bee", "butterfly",
+    "bug", "insect", "spider", "ant", "worm", "snail", "turtle", "lizard",
+    "snake", "dragon", "unicorn", "phoenix",
+    "twigg", "twiglet", "stickman", "matchstickman",
+})
+
+_JOB_STEMS = frozenset({
+    "fire", "police", "sales", "business", "chair", "sports", "stunt",
+    "camera", "anchor", "congress", "front", "fresh", "post", "repair",
+    "work", "craft", "crew", "door", "watch", "guard", "bar", "super",
+    "fore", "hang", "marks", "new", "gentle", "yeo", "mail", "milk",
+    "garbage", "refuse", "insurance", "congress", "fresh", "otters",
+})
+
+_PERSON_WORDS = frozenset(p.lower() for p in _PERSON) | {
+    "man", "men", "woman", "women", "guy", "guys", "lady", "ladies",
+    "gal", "gals", "fellow", "fellows", "boy", "boys", "girl", "girls",
+    "person", "people", "human", "humanoid", "someone", "somebody",
+    "character", "characters", "figure", "figures",
+}
+
+_STOP = frozenset({
+    "a", "an", "the", "and", "or", "of", "in", "on", "at", "to", "for",
+    "with", "as", "by", "from", "into", "over", "under", "this", "that",
+    "these", "those", "is", "are", "was", "were", "be", "been", "being",
+    "it", "its", "their", "his", "her", "they", "them", "he", "she",
+    "we", "you", "i", "my", "your", "our", "out", "off", "up", "down",
+    "then", "than", "so", "very", "just", "about", "into", "near",
+    "after", "before", "while", "when", "where", "who", "whom", "which",
+})
+
+_HARM_RE = re.compile(
+    r"(?i)\b(?:"
+    r"fire|fires|firing|burn|burns|burning|burnt|burned|"
+    r"ignite|ignites|ignited|igniting|ablaze|blaze|blazing|"
+    r"scorch|scorched|charred|smolder|smoldering|smouldering|"
+    r"melt|melts|melted|melting|"
+    r"scream|screams|screaming|cry|cries|crying|howl|howls|howling|"
+    r"eaten|eating|devour|devoured|devouring|"
+    r"sliced|slice|slicing|snapped|snap|snapping|"
+    r"explode|explodes|exploding|explosion|"
+    r"wither|withers|withered|withering|"
+    r"drown|drowned|drowning|strangle|strangled|stab|stabbed|"
+    r"crush|crushed|shatter|shattered"
+    r")\b"
+)
+_ROMANCE_RE = re.compile(
+    r"(?i)\b(?:"
+    r"kiss|kisses|kissing|love|loves|loving|lover|lovers|"
+    r"in\s+love|boyfriend|girlfriend|sweetheart|sweethearts|"
+    r"couple|couples|romance|romantic|dating|marry|married|wedding"
+    r")\b"
+)
+_HUMANIZER_RE = re.compile(
+    r"(?i)\b(?:"
+    r"face|faces|faced|sentient|living|alive|anthropomorphic|anthro|"
+    r"spirit|sprite|personified|"
+    r"googly(?:\s+eyes)?|big\s+eyes|cute\s+(?:face|eyes)|large\s+eyes"
+    r")\b"
+)
+_COMPOUND_RE = re.compile(
+    r"(?i)\b([^\W\d_]{3,})[\- ]?(?:man|woman|men|women|guy|gal|girl|boy|lady|fellow)s?\b"
+)
+_LIVING_NOUN_RE = re.compile(
+    r"(?i)\b(?:living|sentient|anthropomorphic|anthro)\s+([^\W\d_]{3,})\b"
+)
+_NOUN_WITH_FACE_RE = re.compile(
+    r"(?i)\b([^\W\d_]{3,})\s+with\s+(?:an?\s+)?(?:big|googly|cute|large|wide)\s+(?:eyes|face|eye)\b"
+)
+_LEET_ONE_AS_L = str.maketrans({"1": "l"})
+
+import unicodedata
+
+
+def _unwrap_enclosed(text: str) -> str:
+    """Fold circled, squared and parenthesized letter forms to ASCII."""
+    out: list[str] = []
+    for ch in text or "":
+        name = unicodedata.name(ch, "")
+        if name:
+            m = re.search(r"LETTER\s+([A-Z])\s*$", name)
+            if m and any(
+                tag in name
+                for tag in (
+                    "CIRCLED", "SQUARED", "PARENTHESIZED",
+                    "REGIONAL INDICATOR", "NEGATIVE",
+                )
+            ):
+                out.append(m.group(1).lower())
+                continue
+        out.append(ch)
+    return "".join(out)
+
+
+def _strip_bidi(text: str) -> str:
+    return re.sub(r"[\u202a-\u202e\u2066-\u2069]", "", text or "")
+
+
+def _collapse_repeats(text: str) -> str:
+    # Runs of 3+ only, so "room" and "little" stay intact and "baaaby" folds.
+    return re.sub(r"(.)\1{2,}", r"\1", text or "")
+
+
+def _dehyphen(text: str) -> str:
+    return (text or "").replace("-", "")
+
 
 def _forms(text: str) -> list[str]:
-    """Raw text plus every blocklist-normalized, folded and de-spaced form."""
-    from core.blocklist import _folded, _join_spaced_letters, normalize
+    """Raw text plus normalized, folded, reversed, de-hyphenated and collapsed forms."""
+    from core.blocklist import _folded, _join_spaced_letters, _join_hyphenated, normalize
 
     out: list[str] = []
     seen: set[str] = set()
-    seeds = [text or ""]
+    raw = text or ""
+    seeds = [raw, _unwrap_enclosed(raw), _strip_bidi(raw)]
+    # If bidi controls were present, also inspect the reversed payload.
+    stripped = _strip_bidi(raw)
+    if stripped != raw or stripped != stripped[::-1]:
+        seeds.append(stripped[::-1])
+        seeds.append(_strip_bidi(_unwrap_enclosed(raw))[::-1])
     try:
-        seeds.append(normalize(text or ""))
+        for seed in list(seeds):
+            seeds.append(normalize(seed))
     except Exception:
         pass
     for seed in seeds:
         variants = [
             seed,
             _folded(seed),
+            _folded(seed.translate(_LEET_ONE_AS_L)),
             _join_spaced_letters(seed),
             _join_spaced_letters(_folded(seed)),
+            _join_hyphenated(seed),
+            _dehyphen(seed),
+            _dehyphen(_folded(seed)),
+            _collapse_repeats(seed),
+            _collapse_repeats(_folded(seed)),
             re.sub(r"[\s_]+", "", seed or ""),
             re.sub(r"[\s_]+", "", _folded(seed)),
         ]
@@ -200,6 +370,67 @@ def _forms(text: str) -> list[str]:
                 seen.add(item)
                 out.append(item)
     return out
+
+
+def _object_stems(text: str) -> set[str]:
+    """Nouns marked as objects by a humanizer pattern (POS-free)."""
+    found: set[str] = set()
+    for m in _COMPOUND_RE.finditer(text or ""):
+        stem = m.group(1).lower()
+        if stem not in _JOB_STEMS and stem not in _PERSON_WORDS and stem not in _STOP:
+            found.add(stem)
+    # "living room", "living wages", etc. are not personified objects.
+    living_idiom = {
+        "room", "rooms", "space", "area", "areas", "quarters",
+        "arrangement", "wage", "wages", "standard", "conditions",
+        "expense", "expenses", "cost", "costs", "legend", "proof",
+        "color", "colour", "history", "document", "memory", "thing",
+        "things",
+    }
+    for m in _LIVING_NOUN_RE.finditer(text or ""):
+        word = m.group(1).lower()
+        if word not in _STOP and word not in _PERSON_WORDS and word not in living_idiom:
+            found.add(word)
+    for m in _NOUN_WITH_FACE_RE.finditer(text or ""):
+        word = m.group(1).lower()
+        if word not in _STOP and word not in _PERSON_WORDS:
+            found.add(word)
+    return found
+
+
+def _lexicon_hits(text: str) -> set[str]:
+    found: set[str] = set()
+    for token in re.findall(r"[^\W\d_]{3,}", (text or "").lower()):
+        if token in _OBJECT_LEXICON:
+            found.add(token)
+    compact = re.sub(r"[\s_\-]+", "", (text or "").lower())
+    for word in _OBJECT_LEXICON:
+        if len(word) >= 4 and word in compact:
+            found.add(word)
+    return found
+
+
+def _anthro_incident(text: str) -> bool:
+    """Object/animal + humanizer, plus romance or harm, over cue classes.
+
+    A strong humanizer (compound -man/-woman, living/sentient X, X with a
+    face or big eyes, anthropomorphic X) is enough on its own. A weaker
+    lexicon object still needs romance or harm plus a humanizer cue.
+    """
+    raw = text or ""
+    if not raw.strip():
+        return False
+    stems = _object_stems(raw)
+    lexicon = _lexicon_hits(raw)
+    objects = stems | lexicon
+    if not objects:
+        return False
+    humanizer = bool(stems) or bool(_HUMANIZER_RE.search(raw))
+    if not humanizer:
+        return False
+    if stems:
+        return True
+    return bool(_ROMANCE_RE.search(raw) or _HARM_RE.search(raw))
 
 
 def _masked(text: str) -> str:
@@ -215,6 +446,11 @@ def media_prompt_blocked(text: str) -> bool:
         inspect = _masked(form)
         if not inspect.strip():
             continue
-        if _ALWAYS_RE.search(inspect) or _NEAR.search(inspect) or _ANTHRO_RE.search(inspect):
+        if (
+            _ALWAYS_RE.search(inspect)
+            or _NEAR.search(inspect)
+            or _ANTHRO_RE.search(inspect)
+            or _anthro_incident(inspect)
+        ):
             return True
     return False
