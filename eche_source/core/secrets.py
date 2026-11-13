@@ -13,6 +13,7 @@ import json
 import os
 import stat
 import sys
+import threading
 from typing import Any
 
 # Keys that must never sit in plaintext settings.json
@@ -82,7 +83,6 @@ PUBLIC_KEYS = (
     "child_check_model",
     "image_check_provider",         # settings-only vision content check. Blank is off/fail-closed.
     "image_check_model",            # Must be vision-capable. Does not follow content_filter_model.
-    "text_safety_checks",           # Default ON. Off skips chat text model checks only.
 )
 
 # Map settings key -> environment variable used by the bot
@@ -412,8 +412,34 @@ def _migrate_plaintext_settings(root: str) -> None:
         _write_json(path, data)
 
 
+_load_cache_lock = threading.Lock()
+_load_cache: dict[str, tuple[tuple, dict[str, str]]] = {}
+
+
+def _settings_fingerprint(root: str) -> tuple:
+    parts = []
+    for path in (settings_path(root), secrets_path(root)):
+        try:
+            st = os.stat(path)
+            parts.append((path, st.st_mtime_ns, st.st_size))
+        except OSError:
+            parts.append((path, None, None))
+    return tuple(parts)
+
+
+def clear_load_cache() -> None:
+    """Tests and save_all. Drops the in-memory settings snapshot."""
+    with _load_cache_lock:
+        _load_cache.clear()
+
+
 def load_all(root: str | None = None) -> dict[str, str]:
     root = root or _user_root()
+    finger = _settings_fingerprint(root)
+    with _load_cache_lock:
+        hit = _load_cache.get(root)
+        if hit and hit[0] == finger:
+            return dict(hit[1])
     os.makedirs(os.path.join(root, "config"), exist_ok=True)
     _migrate_plaintext_settings(root)
 
@@ -515,11 +541,14 @@ def load_all(root: str | None = None) -> dict[str, str]:
             else _CLOUD_DEFAULT
         )
 
+    with _load_cache_lock:
+        _load_cache[root] = (finger, dict(out))
     return out
 
 
 def save_all(data: dict[str, Any], root: str | None = None) -> None:
     root = root or _user_root()
+    clear_load_cache()
     os.makedirs(os.path.join(root, "config"), exist_ok=True)
 
     public = {k: str(data.get(k) or "").strip() for k in PUBLIC_KEYS}
@@ -567,7 +596,6 @@ def save_all(data: dict[str, Any], root: str | None = None) -> None:
             "child_check_model",
             "image_check_provider",
             "image_check_model",
-            "text_safety_checks",
         ):
             old_val = str(existing_public.get(key) or "").strip()
             new_val = str(public.get(key) or "").strip()

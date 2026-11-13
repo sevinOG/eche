@@ -117,6 +117,10 @@ def _collect_command(item, found: list[str], state: dict) -> None:
 
 def _records(path: Path) -> list[dict]:
     from core import audit as audit_mod
+    try:
+        audit_mod.flush()
+    except Exception:
+        pass
     return list(audit_mod.iter_records(str(path)))
 
 
@@ -447,7 +451,21 @@ class AuditLogTests(unittest.TestCase):
             pass
         audit_mod._refusal.set(False)
 
+    def _audit_text(self, path=None, encoding="utf-8"):
+        try:
+            self.audit_mod.flush()
+        except Exception:
+            pass
+        target = self.audit if path is None else Path(path)
+        if not target.exists():
+            return ""
+        return target.read_text(encoding=encoding)
+
     def tearDown(self):
+        try:
+            self.audit_mod.close()
+        except Exception:
+            pass
         if self._old_root is None:
             os.environ.pop("ECHE_USER_ROOT", None)
         else:
@@ -572,7 +590,7 @@ class AuditLogTests(unittest.TestCase):
         self.assertEqual(rec.get("outcome"), "refusal")
         self.assertEqual(rec.get("user_id"), "7")
         self.assertEqual(rec.get("channel_id"), "9")
-        raw = self.audit.read_text(encoding="utf-8")
+        raw = self._audit_text()
         self.assertNotIn("Safety rules (mandatory", raw)
 
     def test_api_logs_request_and_response_ids(self):
@@ -588,16 +606,16 @@ class AuditLogTests(unittest.TestCase):
     def test_safety_event_is_not_truncated(self):
         long_category = "classifier-unsafe-" + ("x" * 2000)
         self.audit_mod.block(long_category, footer_hash="abc123", user_id=1, guild_id=2, channel_id=3)
-        raw = self.audit.read_text(encoding="utf-8")
+        raw = self._audit_text()
         self.assertIn(long_category, raw)
         self.assertNotIn("…", raw.split(long_category)[0][-5:] + raw.split(long_category)[1][:5] if False else raw)
         self.assertGreater(len(raw), 500)
 
     def test_file_is_append_only(self):
         self.audit_mod.command("ping", "success", user_id=1, guild_id=2, channel_id=3)
-        first = self.audit.read_text(encoding="utf-8")
+        first = self._audit_text()
         self.audit_mod.command("help", "success", user_id=1, guild_id=2, channel_id=3)
-        second = self.audit.read_text(encoding="utf-8")
+        second = self._audit_text()
         self.assertTrue(second.startswith(first))
         self.assertEqual(len(_records(self.audit)), 2)
 
@@ -623,7 +641,7 @@ class AuditLogTests(unittest.TestCase):
             guild_id=2,
             channel_id=3,
         )
-        blob = self.audit.read_text(encoding="utf-8")
+        blob = self._audit_text()
         self.assertNotIn("sk-abcdefghijklmnopqrstuvwxyz", blob)
         self.assertNotIn("deadbeef", blob.lower())
         self.assertNotIn("zzz", blob)
@@ -696,14 +714,14 @@ class AuditLogTests(unittest.TestCase):
         self.audit_mod.AUDIT_MAX_BYTES = 200
         try:
             self.audit_mod.block("keep-me-" + ("x" * 80), user_id=1, channel_id=2)
-            first = self.audit.read_text(encoding="utf-8")
+            first = self._audit_text()
             self.audit_mod.block("second-block-" + ("y" * 80), user_id=1, channel_id=2)
         finally:
             self.audit_mod.AUDIT_MAX_BYTES = 5 * 1024 * 1024
         rotated = list((self.root / "logs").glob("audit.jsonl.*"))
         self.assertTrue(rotated, "expected a renamed archive")
-        archive_text = rotated[0].read_text(encoding="utf-8")
-        current = self.audit.read_text(encoding="utf-8") if self.audit.exists() else ""
+        archive_text = self._audit_text(rotated[0])
+        current = self._audit_text() if self.audit.exists() else ""
         combined = archive_text + current
         self.assertIn("keep-me-", combined)
         self.assertIn("second-block-", combined)
@@ -758,7 +776,7 @@ class AuditLogTests(unittest.TestCase):
             )
         self.assertEqual(rec.get("user_id"), owner)
         self.assertEqual(rec.get("guild_id"), home)
-        raw = self.audit.read_text(encoding="utf-8")
+        raw = self._audit_text()
         self.assertIn(owner, raw)
         self.assertIn(home, raw)
         self.assertNotIn("[redacted]", rec.get("user_id"))
@@ -827,7 +845,7 @@ class AuditLogTests(unittest.TestCase):
     def test_logs_directory_gets_an_acl(self):
         src = (SOURCE / "core" / "audit.py").read_text(encoding="utf-8")
         self.assertIn("_ensure_log_dir", src)
-        self.assertIn("_apply_acl(folder)", src)
+        self.assertIn("_apply_acl_once(folder)", src)
         # Creating a path applies the directory ACL helper.
         path = self.audit_mod.audit_path()
         self.assertTrue(Path(path).parent.is_dir())
@@ -876,7 +894,7 @@ class AuditLogTests(unittest.TestCase):
         with mock.patch.object(self.audit_mod, "AUDIT_MAX_BYTES", 10), \
              mock.patch("os.rename", side_effect=PermissionError("in use")):
             self.audit_mod.block("still-logged", footer_hash="abc", user_id=1, channel_id=2)
-        raw = self.audit.read_text(encoding="utf-8")
+        raw = self._audit_text()
         self.assertIn("still-logged", raw)
 
     def test_exception_inside_handler_still_logs(self):
@@ -2420,7 +2438,7 @@ class AuditCompletenessTests(AuditLogTests):
                 await gui_bridge._announce(bot, "announce body " + secretish)
 
         asyncio.run(run())
-        raw = self.audit.read_text(encoding="utf-8")
+        raw = self._audit_text()
         self.assertNotIn(secretish, raw)
         self.assertNotIn("personality body", raw)
         self.assertNotIn("summarizer body", raw)
@@ -2436,6 +2454,83 @@ class AuditCompletenessTests(AuditLogTests):
         text = (audit_mod._prune_archives.__doc__ or "") + "\n"
         text += Path(audit_mod.__file__).read_text(encoding="utf-8")
         self.assertIn("unbounded by design", text.lower())
+
+
+
+class AuditWriterLoopTests(unittest.TestCase):
+    # Own fixture: do not inherit AuditLogTests cases (those read the file immediately).
+    def setUp(self):
+        AuditLogTests.setUp(self)
+
+    def tearDown(self):
+        AuditLogTests.tearDown(self)
+
+    def test_icacls_runs_once_across_many_appends(self):
+        from collections import Counter
+        from core import secrets as secrets_mod
+
+        calls = []
+
+        def fake_run(*args, **kwargs):
+            cmd = args[0] if args else kwargs.get("args") or []
+            calls.append(list(cmd))
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        self.audit_mod._acl_done.clear()
+        with mock.patch.object(secrets_mod.sys, "platform", "win32"), \
+             mock.patch("subprocess.run", side_effect=fake_run), \
+             mock.patch("getpass.getuser", return_value="tester"):
+            for i in range(20):
+                self.audit_mod.record("activity", name=f"n{i}")
+        icacls = [c for c in calls if c and c[0] == "icacls"]
+        self.assertTrue(icacls)
+        counts = Counter(os.path.abspath(c[1]) for c in icacls)
+        self.assertTrue(all(n == 1 for n in counts.values()), counts)
+
+    def test_burst_on_running_loop_does_not_block_and_flush_writes_every_line(self):
+        original = self.audit_mod._write_once
+
+        def slow_write(path, line):
+            import time as _time
+            _time.sleep(0.01)
+            return original(path, line)
+
+        async def run():
+            start = time.perf_counter() if False else __import__("time").perf_counter()
+            for i in range(200):
+                self.audit_mod.record("activity", name=f"burst-{i}")
+            elapsed = __import__("time").perf_counter() - start
+            self.assertLess(elapsed, 1.0, f"loop blocked for {elapsed:.2f}s")
+            await asyncio.sleep(0)
+            self.audit_mod.flush()
+            names = [r.get("name") for r in _records(self.audit) if r.get("event") == "activity"]
+            self.assertEqual(len([n for n in names if str(n).startswith("burst-")]), 200)
+
+        with mock.patch.object(self.audit_mod, "_write_once", side_effect=slow_write):
+            asyncio.run(run())
+
+    def test_rotation_reapplies_the_acl(self):
+        from core import secrets as secrets_mod
+
+        calls = []
+
+        def fake_run(*args, **kwargs):
+            cmd = args[0] if args else kwargs.get("args") or []
+            calls.append(list(cmd))
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        self.audit_mod._acl_done.clear()
+        path = self.audit_mod.audit_path()
+        with mock.patch.object(secrets_mod.sys, "platform", "win32"), \
+             mock.patch("subprocess.run", side_effect=fake_run), \
+             mock.patch("getpass.getuser", return_value="tester"):
+            self.audit_mod.record("activity", name="before-rotate")
+            first = len([c for c in calls if c and c[0] == "icacls"])
+            with open(path, "ab") as fh:
+                fh.write(b"x" * (self.audit_mod.AUDIT_MAX_BYTES + 10))
+            self.audit_mod.record("activity", name="after-rotate")
+            after = [c for c in calls if c and c[0] == "icacls"]
+            self.assertGreater(len(after), first)
 
 
 async def _noop_async():

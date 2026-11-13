@@ -11,7 +11,7 @@ sys.path.insert(0, str(ROOT))
 from core import classifier as C  # noqa: E402
 from core import client  # noqa: E402
 from core.safety import MinorsBlocked  # noqa: E402
-from tests.checker_fixtures import patch_legacy_checker_settings  # noqa: E402
+from tests.checker_fixtures import image_path_classifier, patch_legacy_checker_settings  # noqa: E402
 
 
 class _Resp(io.BytesIO):
@@ -69,30 +69,40 @@ class NonBlocking(Base):
     def test_deadline_fails_closed(self):
         def hang(req, *a, **k):
             time.sleep(1.5); return _ok_for(req, "safe")
-        async def main():
+        async def main(msgs):
             t0 = time.monotonic()
             try:
-                await client._outgoing_messages_async(MSGS)
+                await client._outgoing_messages_async(msgs)
                 return "passed", time.monotonic() - t0, threading.active_count()
             except MinorsBlocked:
                 return "blocked", time.monotonic() - t0, threading.active_count()
         base = threading.active_count()
+        # Text-only chat does not run the model classifier, so a hang cannot block it.
         with mock.patch.object(C, "CLASSIFIER_DEADLINE", 0.3), \
              mock.patch("urllib.request.urlopen", side_effect=hang):
-            res, took, live = asyncio.run(main())
+            res, took, live = asyncio.run(main(MSGS))
+        self.assertEqual(res, "passed")
+        self.assertLess(took, 0.8, "text-only path should not wait on the classifier")
+        with mock.patch.object(C, "CLASSIFIER_DEADLINE", 0.3), \
+             image_path_classifier(), \
+             mock.patch("urllib.request.urlopen", side_effect=hang):
+            res, took, live = asyncio.run(main(MSGS))
         self.assertEqual(res, "blocked")
         self.assertLess(took, 0.8, "deadline not enforced")
-        # Informational: the worker thread is still alive after the deadline (finishes on its own).
-        print(f"\n[info] deadline hit after {took:.2f}s; threads alive at refusal: {live} (baseline {base})")
+        print(f"\n[info] image-path deadline hit after {took:.2f}s; threads alive at refusal: {live} (baseline {base})")
 
 
 class SyncPathFailOpen(Base):
-    """Latent: sync _outgoing_messages on a running loop skips the classifier."""
+    """Text-only sync path on a loop skips the model classifier; images do not."""
     def test_sync_on_loop_still_classifies(self):
         async def main():
             return client._outgoing_messages(MSGS)
         with mock.patch("urllib.request.urlopen", side_effect=lambda req, *a, **k: _ok_for(req, "unsafe\nS4")):
-            with self.assertRaises(MinorsBlocked, msg="sync path returned without classifier"):
+            out = asyncio.run(main())
+        self.assertTrue(out)
+        with mock.patch("urllib.request.urlopen", side_effect=lambda req, *a, **k: _ok_for(req, "unsafe\nS4")), \
+             image_path_classifier():
+            with self.assertRaises(MinorsBlocked, msg="image path on a running loop skipped the classifier"):
                 asyncio.run(main())
 
 
@@ -104,7 +114,8 @@ class HistoryDropKeepsLatest(Base):
                 return _ok("NO")
             body = req.data.decode()
             return _ok("unsafe\nS12" if "HISTORY:" in body else "safe")
-        with mock.patch("urllib.request.urlopen", side_effect=judge):
+        with mock.patch("urllib.request.urlopen", side_effect=judge), \
+             image_path_classifier():
             out = asyncio.run(client._outgoing_messages_async(MSGS))
         blob = "\n".join(str(m.get("content")) for m in out)
         self.assertIn("hi there", blob, "latest user message dropped along with history")

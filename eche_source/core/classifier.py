@@ -1,9 +1,12 @@
 # core/classifier.py
-# Fail-closed safety classifier on every LLM request and reply.
-# The content filter and the child check default to the current chat
-# provider and model, called through that provider's own API. Optional
-# settings (content_filter_model / child_check_model, each with a
-# provider) can point them elsewhere; blank means use the chat model.
+# Fail-closed safety classifier for the image and asset path.
+# Text chat does not call these model checks; it keeps the safety footer
+# and the minors keyword/blocklist filter. The content filter, child
+# check, image check, and age-vision check stay always on for images
+# and generated assets, and cannot be turned off. Optional settings
+# (content_filter_model / child_check_model / image_check_model, each
+# with a provider) can point them elsewhere; blank means use the chat
+# model, except image_check which has no chat fallback.
 # Format is picked from the model name: Llama Guard uses the Guard
 # prompt and category parse, Prompt Guard is refused, everything else
 # uses the hardened YES/NO prompt. A missing or retired model fails
@@ -26,6 +29,12 @@ import urllib.request
 CLASSIFIER_MODEL = "meta-llama/llama-guard-4-12b"
 CLASSIFIER_TIMEOUT = 15
 CLASSIFIER_DEADLINE = 20
+# Local Ollama checkers: a cold load next to a 27B chat model can take ~45s.
+# Hosted Groq/OpenRouter keep the tighter 15s/20s limits above.
+OLLAMA_CHECKER_TIMEOUT = 45
+OLLAMA_CHECKER_DEADLINE = 50
+OLLAMA_CHECKER_NUM_CTX = 4096
+OLLAMA_KEEP_ALIVE = "30m"
 # Kept as an alias of the second-check prompt so tests and docs can
 # still find this name. It is NOT sent to Llama Guard 4 (LG4 rejects
 # system messages). Named fictional children are covered by the word
@@ -54,6 +63,42 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 OLLAMA_HOST = "http://127.0.0.1:11434"
 OLLAMA_CHAT_URL = OLLAMA_HOST + "/api/chat"
 OLLAMA_GENERATE_URL = OLLAMA_HOST + "/api/generate"
+
+
+def _ollama_checker_url(spec: "CheckerSpec") -> str:
+    """The URL this checker will actually POST to."""
+    if getattr(spec, "fmt", "") == "llama_guard":
+        return OLLAMA_GENERATE_URL
+    return OLLAMA_CHAT_URL
+
+
+def _checker_http_timeout(spec: "CheckerSpec | None" = None) -> int:
+    if spec is not None and spec.provider == "ollama":
+        return OLLAMA_CHECKER_TIMEOUT
+    if spec is not None and spec.kind == "child_check":
+        return CHILD_CHECK_TIMEOUT
+    return CLASSIFIER_TIMEOUT
+
+
+def _checker_deadline(spec: "CheckerSpec | None" = None) -> int:
+    if spec is not None and spec.provider == "ollama":
+        return OLLAMA_CHECKER_DEADLINE
+    if spec is not None and spec.kind == "child_check":
+        return CHILD_CHECK_DEADLINE
+    return CLASSIFIER_DEADLINE
+
+
+def _ollama_checker_body(fields: dict, *, num_predict: int) -> dict:
+    options = dict(fields.get("options") or {})
+    options.setdefault("temperature", 0)
+    options["num_predict"] = num_predict
+    options["num_ctx"] = OLLAMA_CHECKER_NUM_CTX
+    body = dict(fields)
+    body["stream"] = False
+    body["think"] = False
+    body["keep_alive"] = OLLAMA_KEEP_ALIVE
+    body["options"] = options
+    return body
 # Historical name, not used as a pin. Tests may still mention it.
 OLLAMA_MODEL = "llama-guard3:8b"
 HISTORY_WINDOW = 8
@@ -149,7 +194,6 @@ CHILD_CHECK_PROVIDER_KEY = "child_check_provider"
 CHILD_CHECK_MODEL_KEY = "child_check_model"
 IMAGE_CHECK_PROVIDER_KEY = "image_check_provider"
 IMAGE_CHECK_MODEL_KEY = "image_check_model"
-TEXT_SAFETY_CHECKS_KEY = "text_safety_checks"
 _CHECKER_PROVIDERS = frozenset({"cloud", "openrouter", "ollama"})
 _THINK_BLOCK = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
 _MISSING_MODEL_MARKERS = (
@@ -185,117 +229,6 @@ class CheckerSpec:
         self.field = field
         self.problem = problem
 
-
-
-_DISABLE_TOKENS = frozenset({"0", "false", "no", "off"})
-_ENABLE_TOKENS = frozenset({"1", "true", "yes", "on"})
-_TEXT_CHECKS_CTX = None  # set to a contextvars.ContextVar on first use
-
-
-def parse_default_on_flag(stored) -> tuple[bool, bool]:
-    """Default-ON flag. Only an explicit 0/false/no/off turns it off.
-
-    Returns (value, invalid). Unreadable or unrecognised values stay ON.
-    """
-    text = str(stored if stored is not None else "").strip().lower()
-    if not text:
-        return True, False
-    if text in _DISABLE_TOKENS:
-        return False, False
-    if text in _ENABLE_TOKENS:
-        return True, False
-    return True, True
-
-
-def _text_checks_var():
-    global _TEXT_CHECKS_CTX
-    if _TEXT_CHECKS_CTX is None:
-        import contextvars
-        _TEXT_CHECKS_CTX = contextvars.ContextVar("text_safety_checks", default=None)
-    return _TEXT_CHECKS_CTX
-
-
-def read_text_safety_checks() -> bool:
-    """Current saved value. Missing, blank, or unreadable settings mean ON."""
-    if settings_file_problem():
-        return True
-    try:
-        raw = _checker_setting(TEXT_SAFETY_CHECKS_KEY)
-    except Exception:
-        return True
-    value, _invalid = parse_default_on_flag(raw)
-    return value
-
-
-def begin_request_text_checks() -> bool:
-    """Read the toggle once for this request and remember it."""
-    value = read_text_safety_checks()
-    _text_checks_var().set(value)
-    return value
-
-
-def request_text_checks() -> bool:
-    """The snapshot from begin_request_text_checks, or a fresh read."""
-    current = _text_checks_var().get()
-    if current is None:
-        return read_text_safety_checks()
-    return current
-
-
-def reset_request_text_checks() -> None:
-    """Tests only."""
-    try:
-        _text_checks_var().set(None)
-    except Exception:
-        pass
-
-
-def log_text_safety_checks(*, startup: bool = False, skipped: list[str] | None = None, enabled: bool | None = None) -> None:
-    """Startup or per-message line naming which model text checks run or are skipped."""
-    on = read_text_safety_checks() if enabled is None else enabled
-    if skipped is None:
-        skipped = [] if on else ["content_filter", "child_check"]
-    if startup:
-        if on:
-            message = (
-                "Text safety checks are on. Chat input and output still run "
-                "the content filter and the child check."
-            )
-        else:
-            message = (
-                "Text safety checks are off. Skipping content_filter and "
-                "child_check on chat text. The footer, blocklist, keyword "
-                "filters, and the image/asset path (content filter, child "
-                "check, Scout) still run."
-            )
-    elif on:
-        message = "Text safety checks ran content_filter and child_check on this message."
-    else:
-        names = ", ".join(skipped) or "content_filter, child_check"
-        message = (
-            f"Text safety checks skipped {names} on this chat text. "
-            "The footer, blocklist, and keyword filters still apply."
-        )
-    try:
-        from core.audit import safe_activity
-        safe_activity(
-            "text-safety-checks",
-            outcome="start" if startup else ("success" if on else "skipped"),
-            enabled="1" if on else "0",
-            skipped=",".join(skipped),
-        )
-    except Exception:
-        pass
-    try:
-        from core.gui_bridge import log
-        log(message, channel="bot")
-    except Exception:
-        print(f"[classifier] {message}", flush=True)
-    try:
-        import logging
-        logging.getLogger("classifier").info(message)
-    except Exception:
-        pass
 
 
 def settings_file_problem(root: str | None = None) -> str:
@@ -446,7 +379,6 @@ _CHECKER_WATCH_KEYS = (
     CHILD_CHECK_MODEL_KEY,
     IMAGE_CHECK_PROVIDER_KEY,
     IMAGE_CHECK_MODEL_KEY,
-    TEXT_SAFETY_CHECKS_KEY,
     "provider_backend",
     "groq_model",
     "cloud_model",
@@ -829,10 +761,6 @@ def warn_if_unconfigured() -> None:
     if tests_are_allowing():
         return
     try:
-        log_text_safety_checks(startup=True)
-    except Exception:
-        pass
-    try:
         log_safety_models()
     except Exception:
         pass
@@ -849,24 +777,139 @@ def warn_if_unconfigured() -> None:
         print(f"[classifier] {MISSING_KEY_MESSAGE}", flush=True)
 
 
-_SAFE_VERDICT = re.compile(r"(?is)^safe$")
-_UNSAFE_VERDICT = re.compile(r"(?is)^unsafe(?:\n\s*S\d+(?:,\s*S\d+)*)?$")
+_SAFE_VERDICT = re.compile(r"(?i)^safe$")
+_UNSAFE_HEAD = re.compile(r"(?i)^unsafe$")
+# Real LG3 category lines may use commas, spaces, or other light separators.
+_CATEGORY_LINE = re.compile(r"(?i)^S\d+(?:\s*[,;|/]\s*S\d+|\s+S\d+)*$")
+_GUARD_STOP_TOKENS = (
+    "<|eot_id|>",
+    "<|end_of_text|>",
+    "<|eot|>",
+    "<|begin_of_text|>",
+)
+_BOS = "<|begin_of_text|>"
+
+
+def _normalize_guard_output(text: str) -> str:
+    """Strip stop tokens and normalize whitespace, keeping only real lines."""
+    cleaned = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+    for tok in _GUARD_STOP_TOKENS:
+        cleaned = cleaned.replace(tok, "")
+    cleaned = _strip_think(cleaned)
+    lines: list[str] = []
+    for raw_line in cleaned.split("\n"):
+        line = re.sub(r"[ \t\f\v]+", " ", raw_line).strip()
+        if line:
+            lines.append(line)
+    return "\n".join(lines)
+
+
+def _verdict_categories(text: str) -> str:
+    cleaned = _normalize_guard_output(text)
+    lines = cleaned.split("\n")
+    if len(lines) < 2:
+        return ""
+    return ",".join(re.findall(r"S\d+", lines[1], flags=re.IGNORECASE))
 
 
 def _parse_verdict(text: str) -> bool | None:
     """True = unsafe (block), False = safe, None = unreadable (fail closed).
 
-    Only an exact 'safe', or 'unsafe' plus an optional category line
-    matching S\\d+(,\\s*S\\d+)*, counts. Extra words or extra lines fail closed.
+    LG3's real forms ('safe', 'unsafe\nS4', and the same with trailing
+    newlines or spaces) are accepted after whitespace is normalized.
+    The verdict itself stays exact: only 'safe', or 'unsafe' plus an
+    optional category line of S-codes. Extra words or extra lines fail closed.
     """
-    cleaned = str(text or "").replace("\r", "\n").strip()
+    cleaned = _normalize_guard_output(text)
     if not cleaned:
         return None
-    if _SAFE_VERDICT.fullmatch(cleaned):
-        return False
-    if _UNSAFE_VERDICT.fullmatch(cleaned):
+    lines = cleaned.split("\n")
+    if _SAFE_VERDICT.fullmatch(lines[0]):
+        return False if len(lines) == 1 else None
+    if not _UNSAFE_HEAD.fullmatch(lines[0]):
+        return None
+    if len(lines) == 1:
+        return True
+    if len(lines) == 2 and _CATEGORY_LINE.fullmatch(lines[1]):
         return True
     return None
+
+
+def _raw_llama_guard3_prompt(prompt: str) -> str:
+    """Meta official raw prompt: exactly one begin-of-text token at the start.
+
+    /api/generate raw=True does not apply Ollama's template, so BOS is not
+    added for us. Hosted chat wrappers should send the body without BOS.
+    """
+    body = prompt or ""
+    if body.startswith(_BOS):
+        body = body[len(_BOS):]
+    return _BOS + body
+
+
+def _is_timeout_error(exc: BaseException | None) -> bool:
+    if exc is None:
+        return False
+    if isinstance(exc, TimeoutError):
+        return True
+    try:
+        if isinstance(exc, asyncio.TimeoutError):
+            return True
+    except Exception:
+        pass
+    name = type(exc).__name__.lower()
+    if "timeout" in name:
+        return True
+    text = str(exc or "").lower()
+    if "timed out" in text or "timeout" in text:
+        return True
+    cause = exc.__cause__ or exc.__context__
+    if cause is not None and cause is not exc:
+        return _is_timeout_error(cause)
+    return False
+
+
+def _log_check_block(
+    kind: str,
+    reason: str,
+    *,
+    raw: str = "",
+    category: str = "",
+    error_type: str = "",
+) -> None:
+    """Console + audit line for every safety-check block. Never logs user text."""
+    parts = [f"Safety check blocked ({kind}): {reason}"]
+    snippet = ""
+    if reason == "parse-fail" and raw:
+        snippet = str(raw).replace("\r", " ").replace("\n", "\\n")[:40]
+        parts.append(f"raw={snippet!r}")
+    if category:
+        parts.append(f"category={category}")
+    if error_type:
+        parts.append(f"error_type={error_type}")
+    message = ". ".join(parts) + "."
+    try:
+        from core.audit import api as audit_api
+        audit_api(
+            kind if kind in {"classifier", "child-check", "image-check"} else "safety-check",
+            outcome="block",
+            reason=reason,
+            category=category,
+            error_type=error_type,
+            raw=snippet,
+        )
+    except Exception:
+        pass
+    try:
+        from core.gui_bridge import log
+        log(message, channel="chat")
+    except Exception:
+        print(f"[classifier] {message}", flush=True)
+    try:
+        import logging
+        logging.getLogger("classifier").info(message)
+    except Exception:
+        pass
 
 
 _TEMPLATE_TOKENS = (
@@ -989,15 +1032,10 @@ def _post_ollama_chat(
         prepared = [m for m in (messages or []) if m.get("role") in {"user", "assistant"}]
     else:
         prepared = list(messages or [])
-    body = json.dumps(
-        {
-            "model": model,
-            "messages": prepared,
-            "stream": False,
-            "think": False,
-            "options": {"temperature": 0, "num_predict": 64},
-        }
-    ).encode("utf-8")
+    body = json.dumps(_ollama_checker_body(
+        {"model": model, "messages": prepared},
+        num_predict=64,
+    )).encode("utf-8")
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
     req = urllib.request.Request(OLLAMA_CHAT_URL, data=body, headers=headers, method="POST")
     started = time.perf_counter()
@@ -1048,7 +1086,7 @@ def _ollama_child_prompt(escaped_body: str) -> str:
     return (
         "<|start_header_id|>user<|end_header_id|>\n\n"
         "Task: Check if there is unsafe content in 'User' messages in "
-        "conversations according to our safety policy with the below "
+        "conversations according our safety policy with the below "
         "categories.\n\n"
         "<BEGIN UNSAFE CONTENT CATEGORIES>\n"
         f"{CHILD_CHECK_OLLAMA_CATEGORY}\n"
@@ -1076,21 +1114,19 @@ def _post_ollama_child(escaped_body: str, model: str | None = None, *, spec: Che
     if not model:
         report_checker_problem(spec)
         raise RuntimeError("child-check model missing")
-    body = json.dumps(
+    body = json.dumps(_ollama_checker_body(
         {
             "model": model,
-            "prompt": _ollama_child_prompt(escaped_body),
+            "prompt": _raw_llama_guard3_prompt(_ollama_child_prompt(escaped_body)),
             "raw": True,
-            "stream": False,
-            "think": False,
-            "options": {"temperature": 0, "num_predict": 32},
-        }
-    ).encode("utf-8")
+        },
+        num_predict=32,
+    )).encode("utf-8")
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
     req = urllib.request.Request(OLLAMA_GENERATE_URL, data=body, headers=headers, method="POST")
     started = time.perf_counter()
     try:
-        with urllib.request.urlopen(req, timeout=CHILD_CHECK_TIMEOUT) as resp:
+        with urllib.request.urlopen(req, timeout=_checker_http_timeout(spec)) as resp:
             raw = resp.read()
             http_resp = resp
     except Exception as exc:
@@ -1099,7 +1135,7 @@ def _post_ollama_child(escaped_body: str, model: str | None = None, *, spec: Che
             report_missing_model(spec, status=status, detail=err_body)
         try:
             from core.audit import api as audit_api
-            audit_api("child-check", outcome="error", backend="ollama", model=model, format=spec.fmt)
+            audit_api("child-check", outcome="error", backend="ollama", model=model, format=spec.fmt, endpoint=OLLAMA_GENERATE_URL)
         except Exception:
             pass
         raise RuntimeError(f"child-check request failed: {type(exc).__name__}") from exc
@@ -1156,8 +1192,9 @@ def _official_llama_guard3_prompt(messages: list, *, categories: str | None = No
 
     Built here so Ollama's stock template cannot force the last *User*
     message. $agent_type is User for input checks and Agent for reply
-    checks. Sent in raw mode; no begin-of-text token (Ollama adds BOS).
-    Each turn is role-label neutralized first.
+    checks. The hosted chat path sends this body as a user message
+    (no BOS). Raw /api/generate adds a single begin-of-text token via
+    _raw_llama_guard3_prompt. Each turn is role-label neutralized first.
     """
     agent_type = _llama_guard_agent_type(messages)
     turns: list[str] = []
@@ -1211,16 +1248,14 @@ def _post_ollama_generate(
     if not model:
         report_checker_problem(spec)
         raise RuntimeError("checker model missing")
-    body = json.dumps(
+    body = json.dumps(_ollama_checker_body(
         {
             "model": model,
-            "prompt": prompt,
+            "prompt": _raw_llama_guard3_prompt(prompt),
             "raw": True,
-            "stream": False,
-            "think": False,
-            "options": {"temperature": 0, "num_predict": 64},
-        }
-    ).encode("utf-8")
+        },
+        num_predict=64,
+    )).encode("utf-8")
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
     req = urllib.request.Request(OLLAMA_GENERATE_URL, data=body, headers=headers, method="POST")
     started = time.perf_counter()
@@ -1268,9 +1303,10 @@ def _post(messages: list, *, spec: CheckerSpec | None = None) -> str:
     if not url:
         hook = _child_endpoint() if spec.kind == "child_check" else _endpoint()
         key, url = hook
-    _log_checker(spec, url or "")
+    log_url = _ollama_checker_url(spec) if _is_ollama_url(url) else (url or "")
+    _log_checker(spec, log_url)
     kind = "classifier" if spec.kind != "child_check" else "child-check"
-    timeout = CLASSIFIER_TIMEOUT if spec.kind != "child_check" else CHILD_CHECK_TIMEOUT
+    timeout = _checker_http_timeout(spec)
     if _is_ollama_url(url):
         if spec.fmt == "llama_guard":
             return _post_ollama_generate(
@@ -1354,20 +1390,27 @@ def _content_filter_yesno_messages(text: str) -> list[dict]:
     ]
 
 
-def _verdict_to_check(text: str, fmt: str = "llama_guard") -> str:
+def _verdict_to_check(text: str, fmt: str = "llama_guard", *, kind: str = "classifier") -> str:
     cleaned = _strip_think(text)
     try:
         if fmt == "yes_no":
             flag = _parse_child_verdict(cleaned)
             if flag is None:
+                _log_check_block(kind, "parse-fail", raw=cleaned)
                 return "classifier-error"
+            if flag:
+                _log_check_block(kind, "category", category="YES")
             return "classifier-unsafe" if flag else ""
         verdict = _parse_verdict(cleaned)
-    except Exception:
+    except Exception as exc:
+        reason = "timeout" if _is_timeout_error(exc) else "error"
+        _log_check_block(kind, reason, error_type=type(exc).__name__)
         return "classifier-error"
     if verdict is None:
+        _log_check_block(kind, "parse-fail", raw=cleaned)
         return "classifier-error"
     if verdict:
+        _log_check_block(kind, "category", category=_verdict_categories(cleaned) or "unsafe")
         return "classifier-unsafe"
     return ""
 
@@ -1543,10 +1586,12 @@ async def _classify_messages(messages: list, *, images: list | None = None, spec
     try:
         raw = await asyncio.wait_for(
             asyncio.to_thread(_post, messages, spec=spec),
-            timeout=CLASSIFIER_DEADLINE,
+            timeout=_checker_deadline(spec),
         )
-        result = _verdict_to_check(raw, spec.fmt)
-    except Exception:
+        result = _verdict_to_check(raw, spec.fmt, kind="classifier")
+    except Exception as exc:
+        reason = "timeout" if _is_timeout_error(exc) else "error"
+        _log_check_block("classifier", reason, error_type=type(exc).__name__)
         result = "classifier-error"
     # Only cache decisive verdicts. A missing key or timeout must not
     # poison a later attempt with the same text.
@@ -1580,9 +1625,11 @@ async def _classify_images_async(text: str, images: list) -> str:
     try:
         return await asyncio.wait_for(
             asyncio.to_thread(_classify_images_sync, text, images),
-            timeout=CLASSIFIER_DEADLINE,
+            timeout=_checker_deadline(_resolve_checker("image_check")),
         )
-    except Exception:
+    except Exception as exc:
+        reason = "timeout" if _is_timeout_error(exc) else "error"
+        _log_check_block("image-check", reason, error_type=type(exc).__name__)
         return "classifier-error"
 
 
@@ -1594,10 +1641,11 @@ def _post_with_images(messages: list, spec: CheckerSpec) -> str:
     key, url = _endpoint_for(spec)
     if not url:
         key, url = _endpoint()
-    _log_checker(spec, url or "")
+    log_url = _ollama_checker_url(spec) if _is_ollama_url(url) else (url or "")
+    _log_checker(spec, log_url)
     if _is_ollama_url(url):
         return _post_ollama_chat(
-            messages, model=spec.model, spec=spec, kind="image-check", timeout=CLASSIFIER_TIMEOUT
+            messages, model=spec.model, spec=spec, kind="image-check", timeout=_checker_http_timeout(spec)
         )
     if not key or not url:
         raise RuntimeError("image-check key missing")
@@ -2048,7 +2096,8 @@ def _child_post(messages: list) -> str:
         report_checker_problem(spec)
         raise RuntimeError("child-check configuration error")
     key, url = _child_endpoint()
-    _log_checker(spec, url or "")
+    log_url = _ollama_checker_url(spec) if _is_ollama_url(url) else (url or "")
+    _log_checker(spec, log_url)
     if _is_ollama_url(url):
         if spec.fmt == "llama_guard":
             body = ""
@@ -2056,7 +2105,7 @@ def _child_post(messages: list) -> str:
                 if msg.get("role") == "user":
                     body = str(msg.get("content") or "")
             return _post_ollama_child(body, model=spec.model, spec=spec)
-        return _post_ollama_chat(messages, model=spec.model, spec=spec, kind="child-check", timeout=CHILD_CHECK_TIMEOUT)
+        return _post_ollama_chat(messages, model=spec.model, spec=spec, kind="child-check", timeout=_checker_http_timeout(spec))
     if not key or not url:
         raise RuntimeError("child-check key missing")
     if spec.fmt == "llama_guard":
@@ -2087,7 +2136,7 @@ def _child_post(messages: list) -> str:
     req = urllib.request.Request(url, data=body, headers=headers, method="POST")
     started = time.perf_counter()
     try:
-        with urllib.request.urlopen(req, timeout=CHILD_CHECK_TIMEOUT) as resp:
+        with urllib.request.urlopen(req, timeout=_checker_http_timeout(spec)) as resp:
             raw = resp.read()
             http_resp = resp
     except Exception as exc:
@@ -2148,14 +2197,18 @@ def _child_check_sync(text: str) -> str:
                 raw = _strip_think(_child_post([{"role": "user", "content": escaped}]))
                 verdict = _parse_verdict(raw)
             else:
-                verdict = _parse_child_verdict(
-                    _strip_think(_child_post(_child_messages_for_body(escaped)))
-                )
-        except Exception:
+                raw = _strip_think(_child_post(_child_messages_for_body(escaped)))
+                verdict = _parse_child_verdict(raw)
+        except Exception as exc:
+            reason = "timeout" if _is_timeout_error(exc) else "error"
+            _log_check_block("child-check", reason, error_type=type(exc).__name__)
             return "child-check-error"
         if verdict is None:
+            _log_check_block("child-check", "parse-fail", raw=raw)
             return "child-check-error"
         if verdict:
+            category = _verdict_categories(raw) if spec.fmt == "llama_guard" else "YES"
+            _log_check_block("child-check", "category", category=category or "unsafe")
             return "child-check-unsafe"
     return ""
 
@@ -2173,9 +2226,11 @@ async def _child_check_async(text: str) -> str:
     try:
         return await asyncio.wait_for(
             asyncio.to_thread(_child_check_sync, text),
-            timeout=CHILD_CHECK_DEADLINE,
+            timeout=_checker_deadline(spec),
         )
-    except Exception:
+    except Exception as exc:
+        reason = "timeout" if _is_timeout_error(exc) else "error"
+        _log_check_block("child-check", reason, error_type=type(exc).__name__)
         return "child-check-error"
 
 

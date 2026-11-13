@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from unittest import mock
 
 LEGACY_SHAPED_SETTINGS = {
@@ -19,3 +20,58 @@ def patch_legacy_checker_settings(target="core.classifier._checker_setting"):
         target,
         side_effect=lambda key: LEGACY_SHAPED_SETTINGS.get(key, ""),
     )
+
+
+def patch_image_path_classifier():
+    """Run the always-on image-path classifier on otherwise text history tests.
+
+    Vision and the image-content check are stubbed as clear so the existing
+    urlopen judges still exercise history quarantine and fail-closed text
+    checks. The dummy image only triggers that path.
+    """
+    from core.classifier import CheckerSpec, _resolve_checker as _orig_resolve
+
+    images = [{"type": "image_url", "image_url": {"url": "data:image/png;base64,xx"}}]
+
+    async def _clear(*_a, **_k):
+        return ""
+
+    def _resolve(kind):
+        if kind == "image_check":
+            return CheckerSpec(
+                kind="image_check",
+                provider="cloud",
+                model="meta-llama/llama-4-scout-17b-16e-instruct",
+                fmt="llama_guard",
+                field="image_check_model",
+                problem="",
+            )
+        return _orig_resolve(kind)
+
+    return (
+        mock.patch("core.classifier.extract_images", return_value=images),
+        mock.patch("core.classifier._classify_images_async", side_effect=_clear),
+        mock.patch("core.classifier.age_vision_async", side_effect=_clear),
+        mock.patch("core.classifier._resolve_checker", side_effect=_resolve),
+    )
+
+
+def start_image_path_classifier():
+    patches = patch_image_path_classifier()
+    for patch in patches:
+        patch.start()
+    return patches
+
+
+def stop_image_path_classifier(patches):
+    for patch in reversed(patches):
+        patch.stop()
+
+
+@contextmanager
+def image_path_classifier():
+    patches = start_image_path_classifier()
+    try:
+        yield
+    finally:
+        stop_image_path_classifier(patches)
