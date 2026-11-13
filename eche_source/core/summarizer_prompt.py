@@ -9,6 +9,7 @@ DEFAULT_SUMMARIZER_PROMPT = """Update the long-term memory. Reply with the updat
 
 Keep: who the person is, their preferences, how they want to be treated, instructions they gave, decisions, and open threads.
 Drop: greetings, small talk, play-by-play of the chat, quotes, examples, jokes, and guesses.
+Drop anything about beating, passing, or working around a filter or moderation, including preferences like "to pass moderation filters" or "maintaining realistic body proportions".
 No slurs, ids, or @mentions. Skip anything made up, wrong, or refused, and requests that were answered or are stale.
 - Merge the new lines in. One bullet per subject; add to a matching bullet instead of starting a new one.
 - Replace facts that changed. Keep older facts that still hold.
@@ -27,6 +28,7 @@ DEFAULT_CONDENSE_PROMPT = """Shorten this memory to at most {char_limit} charact
 
 Keep: who the person is, preferences, how they want to be treated, instructions they gave, decisions, and open threads.
 Merge duplicates. Drop one-off chatter, examples, and repeated wording.
+Drop anything about beating, passing, or working around a filter or moderation, including "to pass moderation filters" and "maintaining realistic body proportions".
 No slurs, no Discord ids or long id numbers, and no @mentions. Drop refusals, made-up facts, and requests that were answered, refused, or are stale.
 Format: short "- " bullets, each ending with a period. No headings, no intro.
 
@@ -37,6 +39,23 @@ Memory:
 # Earlier shipped defaults. A saved prompt file that still matches one of
 # these exactly was never edited, so it follows the current default.
 _OLD_DEFAULT_SUMMARIZER_PROMPTS = (
+    """Update the long-term memory. Reply with the updated memory only.
+
+Keep: who the person is, their preferences, how they want to be treated, instructions they gave, decisions, and open threads.
+Drop: greetings, small talk, play-by-play of the chat, quotes, examples, jokes, and guesses.
+No slurs, ids, or @mentions. Skip anything made up, wrong, or refused, and requests that were answered or are stale.
+- Merge the new lines in. One bullet per subject; add to a matching bullet instead of starting a new one.
+- Replace facts that changed. Keep older facts that still hold.
+- No dates unless the date itself matters.
+Format: short "- " bullets, each ending with a period. No headings, no intro.
+Length: at most {char_limit} characters.
+
+Existing memory:
+{existing_summary}
+
+New lines:
+{new_lines}
+""",
     """Update the long-term memory. Reply with the updated memory only.
 
 Keep: who the person is, their preferences, how they want to be treated, instructions they gave, decisions, and open threads.

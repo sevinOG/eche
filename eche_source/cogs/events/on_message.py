@@ -45,9 +45,24 @@ from core.bot_memory import remember_bot
 
 # --- HARD BLOCK (minors) ---
 from core.blocklist import REFUSAL as BLOCK_REFUSAL, is_blocked, note as block_note
+from core.guardrails import (
+    BYPASS_REFUSAL,
+    PART_DECLINE,
+    asks_to_bypass_filter,
+    coaches_bypass,
+    is_refusal_text,
+    part_count_request,
+    part_stub,
+)
 
 # --- BOO SYSTEM ---
 from core.boo_kaitar import maybe_boo
+
+
+def _scope(message):
+    author = getattr(message, "author", None)
+    channel = getattr(message, "channel", None)
+    return getattr(author, "id", None), getattr(channel, "id", None)
 
 # One user's pin is read, then written, then maybe folded. A second message
 # from that user waits so it cannot append lines after the fold.
@@ -194,7 +209,18 @@ class OnMessage(commands.Cog):
                 continue
             seen.add(name.casefold())
             arguments = (call or {}).get("arguments") or {}
-            if is_blocked(_flat_arguments(arguments)):
+            user_id, channel_id = _scope(message)
+            if asks_to_bypass_filter(_flat_arguments(arguments)):
+                block_note(f"{name} arguments bypass")
+                try:
+                    await _send_reply(message, BYPASS_REFUSAL)
+                except Exception as e:
+                    dprint(f"[on_message] refusal send failed: {e}")
+                    continue
+                said.append(BYPASS_REFUSAL)
+                ran_any = True
+                break
+            if is_blocked(_flat_arguments(arguments), user_id=user_id, channel_id=channel_id):
                 # The model asked a tool for something on the block list.
                 block_note(f"{name} arguments")
                 try:
@@ -216,9 +242,12 @@ class OnMessage(commands.Cog):
                     "sorry, i'm being rate limited"
                 ):
                     lookup_quota = True
-            if not result.quiet and is_blocked(spoken):
+            if not result.quiet and is_blocked(spoken, user_id=user_id, channel_id=channel_id):
                 block_note(f"{name} reply")
                 spoken = BLOCK_REFUSAL
+            elif not result.quiet and coaches_bypass(spoken):
+                block_note(f"{name} reply bypass")
+                spoken = BYPASS_REFUSAL
             # A quiet tool already posted everything, including its announcement.
             shown = "" if result.quiet else spoken
             chunks = format_tool_messages(
@@ -356,7 +385,15 @@ class OnMessage(commands.Cog):
     async def _answer_and_remember(self, message, guild, cleaned, remembered, media):
         # Hard block before any prompt is built or model is called. Nothing
         # from this message is remembered or added to the episode.
-        if is_blocked(cleaned, getattr(media, "text", "")):
+        user_id, channel_id = _scope(message)
+        if asks_to_bypass_filter(cleaned) or asks_to_bypass_filter(getattr(media, "text", "") or ""):
+            block_note("chat message bypass")
+            try:
+                await _send_reply(message, BYPASS_REFUSAL)
+            except Exception as e:
+                dprint(f"[on_message] refusal send failed: {e}")
+            return
+        if is_blocked(cleaned, getattr(media, "text", ""), user_id=user_id, channel_id=channel_id):
             block_note("chat message")
             try:
                 await _send_reply(message, BLOCK_REFUSAL)
@@ -452,10 +489,16 @@ class OnMessage(commands.Cog):
                 dprint(f"[on_message] tool delivery failed: {e}")
                 ran_tools = False
 
-        if not ran_tools and reply.strip() and is_blocked(reply):
+        if not ran_tools and reply.strip() and is_blocked(reply, user_id=user_id, channel_id=channel_id):
             # The model's own reply is checked before it is sent.
             block_note("model reply")
             reply = BLOCK_REFUSAL
+        elif not ran_tools and coaches_bypass(reply):
+            block_note("model reply bypass")
+            reply = BYPASS_REFUSAL
+        elif not ran_tools and part_stub(reply):
+            block_note("multipart stub")
+            reply = PART_DECLINE
 
         if ran_tools:
             if getattr(self.bot, "next_reply_override", False):
@@ -482,7 +525,9 @@ class OnMessage(commands.Cog):
         note = " ".join((remembered or "").split())
         if asked in ("(no text)", "(no content)") and note not in ("", "(no text)", "(no content)"):
             asked = note
-        if not quota_reply:
+        said_all = tool_said if ran_tools else ([reply] if reply.strip() else [])
+        refused_turn = bool(said_all) and all(is_refusal_text(s) for s in said_all)
+        if not quota_reply and not refused_turn:
             # The reply is already on Discord. The last three full messages
             # stay in the local buffer. Every third one updates the long-term pin.
             user_text = asked
@@ -518,7 +563,8 @@ class OnMessage(commands.Cog):
                     )
                 except Exception as e:
                     dprint(f"[on_message] bot memory store failed: {e}")
-        await self._record_server_line(message, asked, episode_lines)
+        if not refused_turn:
+            await self._record_server_line(message, asked, episode_lines)
 
     async def _record_server_line(self, message, text: str, tool_lines: list[str] | None = None) -> None:
         """One episode line for this server message, plus any tool that ran."""

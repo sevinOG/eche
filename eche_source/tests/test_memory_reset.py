@@ -414,20 +414,18 @@ class ContextToolTests(TempRoot):
         self.assertEqual(tool.access, tools.ACCESS_ANYONE)
         self.assertEqual(tool.parameters.get("properties"), {})
 
-    def test_offered_to_everyone_without_a_phrase(self):
+    def test_offered_to_everyone(self):
         for owner in (False, True):
             names = tools.visible_names(speaker_is_owner=owner, admin_enabled=False)
             self.assertIn("context_raw", names)
             specs = tools.specs_for(speaker_is_owner=owner)
             self.assertTrue(any("context_raw" in str(spec) for spec in specs))
 
-    def test_no_phrase_trigger_left(self):
-        self.assertFalse(hasattr(tools_context, "asks_for_own_context"))
-        path = os.path.join(SOURCE, "cogs", "events", "on_message.py")
-        with open(path, encoding="utf-8") as fh:
-            source = fh.read()
-        self.assertNotIn("asks_for_own_context", source)
-        self.assertNotIn("asked_context", source)
+    def test_memory_request_helper_exists(self):
+        from core.guardrails import asks_for_memory
+
+        self.assertTrue(asks_for_memory("what do you remember about me?"))
+        self.assertFalse(asks_for_memory("Here's the jacket what do you think https://example.com/x"))
 
     def test_reads_only_the_speaker(self):
         seen = {}
@@ -437,7 +435,10 @@ class ContextToolTests(TempRoot):
             return "Context for alice:\nSummary:\nLikes cats.\n"
 
         author = mock.Mock(id=42, name="alice")
-        ctx = tools.ToolContext(bot=object(), message=mock.Mock(author=author))
+        ctx = tools.ToolContext(
+            bot=object(),
+            message=mock.Mock(author=author, content="what do you remember about me?"),
+        )
         with mock.patch.object(tools_context, "read_raw_context", fake_read):
             result = run(tools_context.show_own_context(ctx, {"user_id": 99, "user": "bob"}))
         self.assertEqual(seen["id"], 42)

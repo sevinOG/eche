@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import os
 import re
+import threading
+import time
 import unicodedata
 
 REFUSAL = "Nope. Not going there."
@@ -179,10 +181,6 @@ def match(text: str) -> str:
     return ""
 
 
-def is_blocked(*texts) -> bool:
-    return any(match(str(text or "")) for text in texts if text)
-
-
 def note(where: str) -> None:
     """One log line. The blocked text itself is not logged."""
     try:
@@ -191,3 +189,87 @@ def note(where: str) -> None:
         log(f"Blocked ({where}).", channel="chat")
     except Exception:
         print(f"[blocklist] blocked ({where})", flush=True)
+
+# ---------------------------------------------------------- sticky refusals
+# After a minors block, close rephrasings from the same user in the same
+# channel are also refused for a short window, so swapping one word
+# ("kids" → "people", "toddler" → "pouts") does not get through.
+
+BLOCK_WINDOW = 10 * 60
+_OVERLAP = 0.6
+_MIN_TOKENS = 4
+_STOP = frozenset("""
+    a an the to of and or but while like in on at for with from by as is it
+    this that these those any anything some somehow so then than too very
+    just be been being was were are am do did does doing have has had
+    not no yes if when what who whom whose which how why
+    i you he she we they me him her us them my your his their
+    video image picture photo pic make create generate of
+""".split())
+
+_recent_lock = threading.Lock()
+# (user_id, channel_id) -> list[(expires_at, tokens)]
+_recent: dict[tuple[object, object], list[tuple[float, frozenset[str]]]] = {}
+
+
+def _tokens(text: str) -> frozenset[str]:
+    words = re.findall(r"[a-z0-9]+", normalize(text).casefold())
+    return frozenset(w for w in words if len(w) > 1 and w not in _STOP)
+
+
+def clear_recent_blocks() -> None:
+    """Tests only."""
+    with _recent_lock:
+        _recent.clear()
+
+
+def remember_block(user_id, channel_id, text: str) -> None:
+    """Keep a refused prompt so a close rewrite can be caught."""
+    tokens = _tokens(text)
+    if user_id is None or len(tokens) < _MIN_TOKENS:
+        return
+    key = (user_id, channel_id)
+    expires = time.monotonic() + BLOCK_WINDOW
+    with _recent_lock:
+        rows = [row for row in _recent.get(key, []) if row[0] > time.monotonic()]
+        rows.append((expires, tokens))
+        _recent[key] = rows[-8:]
+
+
+def close_variant(user_id, channel_id, text: str) -> bool:
+    """True when `text` is a close rewrite of a recent refusal in this place."""
+    if user_id is None:
+        return False
+    tokens = _tokens(text)
+    if len(tokens) < 2:
+        return False
+    key = (user_id, channel_id)
+    now = time.monotonic()
+    with _recent_lock:
+        rows = [row for row in _recent.get(key, []) if row[0] > now]
+        if not rows:
+            _recent.pop(key, None)
+            return False
+        _recent[key] = rows
+        for _expires, prior in rows:
+            if not prior:
+                continue
+            if len(tokens & prior) / len(prior) >= _OVERLAP:
+                return True
+    return False
+
+
+def is_blocked(*texts, user_id=None, channel_id=None) -> bool:
+    """True when any text hits the minors list, or is a close rewrite of one."""
+    found = False
+    for text in texts:
+        raw = str(text or "")
+        if not raw:
+            continue
+        if match(raw):
+            remember_block(user_id, channel_id, raw)
+            found = True
+        elif close_variant(user_id, channel_id, raw):
+            remember_block(user_id, channel_id, raw)
+            found = True
+    return found

@@ -2,6 +2,7 @@ Update the long-term memory. Reply with the updated memory only.
 
 Keep: who the person is, their preferences, how they want to be treated, instructions they gave, decisions, and open threads.
 Drop: greetings, small talk, play-by-play of the chat, quotes, examples, jokes, and guesses.
+Drop anything about beating, passing, or working around a filter or moderation, including preferences like "to pass moderation filters" or "maintaining realistic body proportions".
 No slurs, ids, or @mentions. Skip anything made up, wrong, or refused, and requests that were answered or are stale.
 - Merge the new lines in. One bullet per subject; add to a matching bullet instead of starting a new one.
 - Replace facts that changed. Keep older facts that still hold.
