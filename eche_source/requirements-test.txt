@@ -1,0 +1,4 @@
+# Test-only extras. Not part of the hashed application pin in requirements.txt.
+# Install into the test env with:
+#   python -m pip install -r requirements-test.txt
+jinja2>=3.1

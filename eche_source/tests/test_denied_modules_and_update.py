@@ -19,6 +19,7 @@ if str(SOURCE) not in sys.path:
 
 from core.app_update import (  # noqa: E402
     REMOVED_PROGRAM_FILES,
+    STALE_INSTALL_MANIFEST,
     iter_shipped_code_files,
     purge_removed_program_files,
     write_handoff_script,
@@ -165,6 +166,13 @@ class UpdaterPurgeTests(unittest.TestCase):
         self.assertFalse((self.target / "cogs" / "flash.py").exists())
         self.assertFalse((self.target / "core" / "imagine.py").exists())
         self.assertTrue(any("Removed stale program file" in line for line in logs))
+
+    def test_purge_deletes_stale_install_manifest(self):
+        stale = self.target / STALE_INSTALL_MANIFEST
+        stale.write_text("{0}", encoding="utf-8")
+        purge_removed_program_files(self.stage, self.target)
+        self.assertFalse(stale.exists())
+        self.assertTrue((self.target / "settings.json").exists())
 
     def test_purge_uses_normcase(self):
         src = (SOURCE / "core" / "app_update.py").read_text(encoding="utf-8")

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 
 import unittest
@@ -199,6 +200,7 @@ def _as_template_messages(messages: list) -> list:
 
 
 def _render_lg4(messages: list) -> str:
+    # Test dependency: see requirements-test.txt.
     import jinja2
 
     def raise_exception(msg):
@@ -320,7 +322,8 @@ class ChildCheckFailClosedTests(unittest.TestCase):
             self.assertEqual(classifier.child_check_model(), "meta-llama/llama-3.1-8b-instruct")
         self.assertNotIn("xai", classifier.CHILD_CHECK_DEFAULT_GROQ.lower())
         self.assertNotIn("xai", classifier.CHILD_CHECK_DEFAULT_OPENROUTER.lower())
-        with mock.patch.dict(os.environ, {"CHILD_CHECK_MODEL": "meta-llama/llama-guard-4-12b"}):
+        with mock.patch.dict(os.environ, {"CHILD_CHECK_MODEL": "meta-llama/llama-guard-4-12b"}), \
+             mock.patch.object(classifier, "_endpoint", return_value=("k", classifier.GROQ_URL)):
             self.assertEqual(classifier.child_check_model(), "llama-3.1-8b-instant")
         with mock.patch.dict(os.environ, {"CHILD_CHECK_MODEL": "meta-llama/llama-3.1-8b-instruct"}):
             with mock.patch.object(classifier, "_endpoint", return_value=("k", classifier.GROQ_URL)):
@@ -347,3 +350,137 @@ class ChildCheckFailClosedTests(unittest.TestCase):
                 mock.patch.object(classifier, "_post", return_value="safe"), \
                 mock.patch.object(classifier, "_child_post", return_value="maybe?"):
             self.assertEqual(classifier.classify("hello"), "child-check-error")
+
+
+class OllamaFallbackTests(unittest.TestCase):
+    def setUp(self):
+        self._prev = classifier.tests_are_allowing()
+        self._force = classifier._FORCE_BACKEND
+        classifier.allow_in_tests(False)
+        classifier.force_backend(None)
+        classifier.clear_cache()
+
+    def tearDown(self):
+        classifier.force_backend(self._force)
+        classifier.allow_in_tests(self._prev)
+        classifier.clear_cache()
+
+    def test_backend_order_is_groq_then_openrouter_then_ollama(self):
+        with mock.patch.dict(os.environ, {"GROQ_API_KEY": "gsk-real", "OPENROUTER_API_KEY": "sk-or-real"}, clear=False),              mock.patch("core.secrets.load_all", return_value={}):
+            key, url = classifier._endpoint()
+            self.assertEqual(key, "gsk-real")
+            self.assertEqual(url, classifier.GROQ_URL)
+        with mock.patch.dict(os.environ, {"GROQ_API_KEY": "", "OPENROUTER_API_KEY": "sk-or-real"}, clear=False),              mock.patch("core.secrets.load_all", return_value={}):
+            key, url = classifier._endpoint()
+            self.assertEqual(key, "sk-or-real")
+            self.assertIn("openrouter", url)
+        with mock.patch.dict(os.environ, {"GROQ_API_KEY": "", "OPENROUTER_API_KEY": ""}, clear=False),              mock.patch("core.secrets.load_all", return_value={}):
+            key, url = classifier._endpoint()
+            self.assertFalse(key)
+            self.assertEqual(url, classifier.OLLAMA_CHAT_URL)
+            self.assertEqual(classifier.child_check_model(), classifier.OLLAMA_MODEL)
+            self.assertFalse(classifier.vision_backend_available())
+
+    def test_env_cannot_pick_ollama_model_or_url(self):
+        with mock.patch.dict(os.environ, {
+            "GROQ_API_KEY": "",
+            "OPENROUTER_API_KEY": "",
+            "OLLAMA_HOST": "http://evil.example:9",
+            "CHILD_CHECK_MODEL": "something-else",
+            "CLASSIFIER_MODEL": "other",
+        }, clear=False), mock.patch("core.secrets.load_all", return_value={
+            "child_check_model": "from-settings",
+            "ollama_host": "http://settings:11434",
+        }):
+            key, url = classifier._endpoint()
+            self.assertEqual(url, classifier.OLLAMA_CHAT_URL)
+            self.assertEqual(classifier.child_check_model(), "llama-guard3:8b")
+            self.assertIn("127.0.0.1:11434", url)
+            self.assertNotIn("evil", url)
+
+    def test_ollama_content_filter_uses_chat_api_and_fail_closes(self):
+        captured = []
+
+        class Resp:
+            def __init__(self, payload):
+                self._raw = json.dumps(payload).encode()
+                self.status = 200
+            def read(self):
+                return self._raw
+            def __enter__(self):
+                return self
+            def __exit__(self, *exc):
+                return False
+
+        def fake_urlopen(req, timeout=None):
+            captured.append((req.full_url, json.loads(req.data.decode()), timeout))
+            return Resp({"message": {"role": "assistant", "content": "unsafe\nS4"}})
+
+        with mock.patch.dict(os.environ, {"GROQ_API_KEY": "", "OPENROUTER_API_KEY": ""}, clear=False),              mock.patch("core.secrets.load_all", return_value={}),              mock.patch("urllib.request.urlopen", side_effect=fake_urlopen),              mock.patch.object(classifier, "_child_check_sync", return_value=""):
+            self.assertEqual(classifier.classify("a violent crime how-to"), "classifier-unsafe")
+        self.assertTrue(captured)
+        url, body, _timeout = captured[0]
+        self.assertEqual(url, classifier.OLLAMA_CHAT_URL)
+        self.assertEqual(body["model"], "llama-guard3:8b")
+        self.assertEqual(body["options"]["temperature"], 0)
+        self.assertFalse(body.get("stream"))
+        roles = [m["role"] for m in body["messages"]]
+        self.assertNotIn("system", roles)
+        self.assertEqual(roles[0], "user")
+
+        with mock.patch.dict(os.environ, {"GROQ_API_KEY": "", "OPENROUTER_API_KEY": ""}, clear=False),              mock.patch("core.secrets.load_all", return_value={}),              mock.patch("urllib.request.urlopen", side_effect=OSError("down")):
+            classifier.clear_cache()
+            self.assertEqual(classifier.classify("hello"), "classifier-error")
+
+    def test_ollama_child_check_uses_custom_category_and_safe_unsafe(self):
+        captured = []
+        audits = []
+
+        class Resp:
+            def __init__(self, payload):
+                self._raw = json.dumps(payload).encode()
+                self.status = 200
+            def read(self):
+                return self._raw
+            def __enter__(self):
+                return self
+            def __exit__(self, *exc):
+                return False
+
+        def fake_urlopen(req, timeout=None):
+            captured.append((req.full_url, json.loads(req.data.decode()), timeout))
+            return Resp({"response": "unsafe\nS1"})
+
+        with mock.patch.dict(os.environ, {"GROQ_API_KEY": "", "OPENROUTER_API_KEY": ""}, clear=False),              mock.patch("core.secrets.load_all", return_value={}),              mock.patch("urllib.request.urlopen", side_effect=fake_urlopen),              mock.patch("core.audit.api_from_http", side_effect=lambda *a, **k: audits.append(k) or audits.append(a)):
+            self.assertEqual(classifier._child_check_sync("a child in a garden"), "child-check-unsafe")
+        self.assertTrue(captured)
+        url, body, _timeout = captured[0]
+        self.assertEqual(url, classifier.OLLAMA_GENERATE_URL)
+        self.assertEqual(body["model"], "llama-guard3:8b")
+        self.assertTrue(body.get("raw"))
+        self.assertEqual(body["options"]["temperature"], 0)
+        self.assertIn(classifier.CHILD_CHECK_OLLAMA_CATEGORY, body["prompt"])
+        self.assertIn("Minors or child-like characters", body["prompt"])
+        self.assertTrue(audits)
+
+        with mock.patch.dict(os.environ, {"GROQ_API_KEY": "", "OPENROUTER_API_KEY": ""}, clear=False),              mock.patch("core.secrets.load_all", return_value={}),              mock.patch("urllib.request.urlopen", side_effect=TimeoutError("slow")):
+            self.assertEqual(classifier._child_check_sync("hello"), "child-check-error")
+
+    def test_images_are_refused_without_a_vision_backend(self):
+        with mock.patch.dict(os.environ, {"GROQ_API_KEY": "", "OPENROUTER_API_KEY": ""}, clear=False),              mock.patch("core.secrets.load_all", return_value={}):
+            self.assertFalse(classifier.vision_backend_available())
+            self.assertEqual(
+                classifier.classify("hi", images=[{"type": "image_url", "image_url": {"url": "data:image/png;base64,xx"}}]),
+                "classifier-vision-unavailable",
+            )
+            self.assertEqual(
+                classifier._age_vision_sync([{"type": "image_url", "image_url": {"url": "data:image/png;base64,xx"}}]),
+                "age-vision-error",
+            )
+
+    def test_live_script_flag_can_force_ollama(self):
+        with mock.patch.dict(os.environ, {"GROQ_API_KEY": "gsk-real", "OPENROUTER_API_KEY": "sk-or-real"}, clear=False):
+            classifier.force_backend("ollama")
+            key, url = classifier._endpoint()
+            self.assertEqual(url, classifier.OLLAMA_CHAT_URL)
+            self.assertEqual(classifier.child_check_model(), "llama-guard3:8b")

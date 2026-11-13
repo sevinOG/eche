@@ -1,9 +1,10 @@
 # core/classifier.py
 # Fail-closed safety classifier on every LLM request and reply.
-# Llama Guard 4, on Groq or OpenRouter, whichever real key is present.
-# Covers every footer category. Cannot be turned off by config, persona,
-# or users. A test-only hook exists so unit tests can run without a key;
-# production never reads that hook from settings or user content.
+# Llama Guard 4 on Groq or OpenRouter when a real key is present, else
+# Llama Guard 3 on local Ollama. Covers every footer category. Cannot be turned off by config, persona,
+# or users. Settings and env cannot pick the model or URL. A test-only hook
+# exists so unit tests can run without a key; production never reads that
+# hook from settings or user content.
 
 from __future__ import annotations
 
@@ -43,8 +44,19 @@ CHILD_CHECK_TIMEOUT = 15
 CHILD_CHECK_DEADLINE = 20
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+# Local fallback only. Host and model are hardcoded; OLLAMA_HOST and
+# any settings or env model/url keys are ignored.
+OLLAMA_HOST = "http://127.0.0.1:11434"
+OLLAMA_CHAT_URL = OLLAMA_HOST + "/api/chat"
+OLLAMA_GENERATE_URL = OLLAMA_HOST + "/api/generate"
+OLLAMA_MODEL = "llama-guard3:8b"
 HISTORY_WINDOW = 8
-MISSING_KEY_MESSAGE = "Safety classifier needs a Groq or OpenRouter key"
+MISSING_KEY_MESSAGE = "Safety classifier needs a Groq or OpenRouter key, or local Ollama"
+CHILD_CHECK_OLLAMA_CATEGORY = (
+    "S1: Minors or child-like characters. Any depiction, description or "
+    "roleplay involving a child, a minor, or a character that resembles "
+    "or could be taken as one, in any context."
+)
 
 # Placeholder values some backends write into GROQ_API_KEY. Never send these.
 _PLACEHOLDER_KEYS = {
@@ -110,14 +122,57 @@ def _real_key(value: str) -> str:
     return text
 
 
+# Live-script only. Production never reads this from settings or env.
+_FORCE_BACKEND: str | None = None
+
+
+def force_backend(name: str | None) -> None:
+    """Pin the backend for the live script. None restores normal routing."""
+    global _FORCE_BACKEND
+    text = (name or "").strip().lower()
+    _FORCE_BACKEND = text or None
+
+
+def _is_ollama_url(url: str | None) -> bool:
+    return (url or "").startswith(OLLAMA_HOST) or (url or "") in {
+        OLLAMA_CHAT_URL, OLLAMA_GENERATE_URL,
+    }
+
+
+def vision_backend_available() -> bool:
+    """True only when a cloud key can run Scout / LG4 vision. Ollama has none."""
+    key, url = _endpoint()
+    if not key or not url or _is_ollama_url(url):
+        return False
+    return True
+
+
 def _endpoint() -> tuple[str, str] | tuple[None, None]:
+    """Groq if a real key is present, else OpenRouter, else local Ollama.
+
+    Settings and env cannot choose the model or the Ollama URL.
+    """
+    forced = _FORCE_BACKEND
+    if forced == "ollama":
+        return "", OLLAMA_CHAT_URL
     groq = _real_key(_secret("GROQ_API_KEY"))
-    if groq:
+    if groq and forced in (None, "groq"):
         return groq, GROQ_URL
     openrouter = _real_key(_secret("OPENROUTER_API_KEY"))
-    if openrouter:
+    if openrouter and forced in (None, "openrouter"):
         return openrouter, OPENROUTER_URL
+    if forced in (None, "ollama"):
+        return "", OLLAMA_CHAT_URL
     return None, None
+
+
+def _has_text_backend() -> bool:
+    key, url = _endpoint()
+    if not url:
+        return False
+    if _is_ollama_url(url):
+        return True
+    return bool(key)
 
 
 def warn_if_unconfigured() -> None:
@@ -129,8 +184,7 @@ def warn_if_unconfigured() -> None:
         log_safety_models()
     except Exception:
         pass
-    key, _url = _endpoint()
-    if key:
+    if vision_backend_available() or _has_text_backend():
         return
     if _warned_missing_key:
         return
@@ -168,6 +222,9 @@ def _parse_verdict(text: str) -> bool | None:
 
 _TEMPLATE_TOKENS = (
     "<END CONVERSATION>",
+    "<BEGIN CONVERSATION>",
+    "<BEGIN UNSAFE CONTENT CATEGORIES>",
+    "<END UNSAFE CONTENT CATEGORIES>",
     "<|eot_id|>",
     "<|eot|>",
     "<|end_of_text|>",
@@ -256,8 +313,130 @@ def _cache_put(key: str, value: str) -> None:
         _cache[key] = value
 
 
+def _ollama_message_text(payload: dict) -> str:
+    message = payload.get("message") if isinstance(payload, dict) else None
+    if isinstance(message, dict):
+        return str(message.get("content") or "")
+    return str((payload or {}).get("response") or "")
+
+
+def _post_ollama_chat(messages: list) -> str:
+    """Standard S1-S14 content filter via /api/chat. No system message."""
+    prepared = [m for m in (messages or []) if m.get("role") in {"user", "assistant"}]
+    body = json.dumps(
+        {
+            "model": OLLAMA_MODEL,
+            "messages": prepared,
+            "stream": False,
+            "think": False,
+            "options": {"temperature": 0, "num_predict": 64},
+        }
+    ).encode("utf-8")
+    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    req = urllib.request.Request(OLLAMA_CHAT_URL, data=body, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=CLASSIFIER_TIMEOUT) as resp:
+            raw = resp.read()
+            http_resp = resp
+    except Exception as exc:
+        try:
+            from core.audit import api as audit_api
+            audit_api("classifier", outcome="error", backend="ollama")
+        except Exception:
+            pass
+        raise RuntimeError(f"classifier request failed: {type(exc).__name__}") from exc
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+        try:
+            from core.audit import api_from_http
+            api_from_http("classifier", http_resp, payload, outcome="success", backend="ollama")
+        except Exception:
+            pass
+        return _ollama_message_text(payload)
+    except Exception as exc:
+        try:
+            from core.audit import api_from_http
+            api_from_http("classifier", http_resp, outcome="error", backend="ollama")
+        except Exception:
+            pass
+        raise RuntimeError("classifier response unreadable") from exc
+
+
+def _ollama_child_prompt(escaped_body: str) -> str:
+    """Official Llama Guard 3 custom-category prompt (text only, no image token).
+
+    The stock Ollama /api/chat template always injects S1-S14, which would
+    shadow this custom S1, so the child check uses /api/generate with raw=True.
+    """
+    return (
+        "<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n"
+        "Task: Check if there is unsafe content in 'User' messages in "
+        "conversations according to our safety policy with the below "
+        "categories.\n\n"
+        "<BEGIN UNSAFE CONTENT CATEGORIES>\n"
+        f"{CHILD_CHECK_OLLAMA_CATEGORY}\n"
+        "<END UNSAFE CONTENT CATEGORIES>\n\n"
+        "<BEGIN CONVERSATION>\n\n"
+        f"User: {escaped_body}\n\n"
+        "<END CONVERSATION>\n\n"
+        "Provide your safety assessment for ONLY THE LAST User message "
+        "in the above conversation:\n"
+        " - First line must read 'safe' or 'unsafe'.\n"
+        " - If unsafe, a second line must include a comma-separated list "
+        "of violated categories."
+        "<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n"
+    )
+
+
+def _post_ollama_child(escaped_body: str) -> str:
+    body = json.dumps(
+        {
+            "model": OLLAMA_MODEL,
+            "prompt": _ollama_child_prompt(escaped_body),
+            "raw": True,
+            "stream": False,
+            "think": False,
+            "options": {"temperature": 0, "num_predict": 32},
+        }
+    ).encode("utf-8")
+    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    req = urllib.request.Request(OLLAMA_GENERATE_URL, data=body, headers=headers, method="POST")
+    started = time.perf_counter()
+    try:
+        with urllib.request.urlopen(req, timeout=CHILD_CHECK_TIMEOUT) as resp:
+            raw = resp.read()
+            http_resp = resp
+    except Exception as exc:
+        try:
+            from core.audit import api as audit_api
+            audit_api("child-check", outcome="error", backend="ollama")
+        except Exception:
+            pass
+        raise RuntimeError(f"child-check request failed: {type(exc).__name__}") from exc
+    finally:
+        global _last_child_check_ms
+        _last_child_check_ms = (time.perf_counter() - started) * 1000.0
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+        try:
+            from core.audit import api_from_http
+            api_from_http("child-check", http_resp, payload, outcome="success", backend="ollama")
+        except Exception:
+            pass
+        return _ollama_message_text(payload)
+    except Exception as exc:
+        try:
+            from core.audit import api_from_http
+            api_from_http("child-check", http_resp, outcome="error", backend="ollama")
+        except Exception:
+            pass
+        raise RuntimeError("child-check response unreadable") from exc
+
+
 def _post(messages: list) -> str:
     key, url = _endpoint()
+    if _is_ollama_url(url):
+        return _post_ollama_chat(messages)
     if not key or not url:
         raise RuntimeError("classifier key missing")
     body = json.dumps(
@@ -327,8 +506,9 @@ def _classify_sync(text: str, *, images: list | None = None) -> str:
     )
     if check:
         return check
-    key, url = _endpoint()
-    if not key or not url:
+    if images and not vision_backend_available():
+        return "classifier-vision-unavailable"
+    if not _has_text_backend():
         return "classifier-error"
     cache_key = _cache_key(messages, images)
     cached = _cache_get(cache_key)
@@ -389,6 +569,8 @@ async def classify_async(text: str, *, images: list | None = None) -> str:
     """
     if tests_are_allowing():
         return ""
+    if images and not vision_backend_available():
+        return "classifier-vision-unavailable"
     messages, check = _prepare_messages(
         [{"role": "user", "content": text or ""}],
         images=images,
@@ -432,8 +614,9 @@ def _prepare_messages(turns: list, *, images: list | None = None) -> tuple[list,
 
 
 async def _classify_messages(messages: list, *, images: list | None = None) -> str:
-    key, url = _endpoint()
-    if not key or not url:
+    if images and not vision_backend_available():
+        return "classifier-vision-unavailable"
+    if not _has_text_backend():
         return "classifier-error"
     cache_key = _cache_key(messages, images)
     cached = _cache_get(cache_key)
@@ -460,6 +643,8 @@ async def classify_turns_async(turns: list, *, images: list | None = None) -> st
         return ""
     if not turns:
         return ""
+    if images and not vision_backend_available():
+        return "classifier-vision-unavailable"
     messages, check = _prepare_messages(turns, images=images)
     if check:
         return check
@@ -510,10 +695,12 @@ async def classify_response_async(
 
 
 def child_check_model() -> str:
-    """Hardcoded 8B instruct model. Env and settings cannot override it."""
+    """Hardcoded child-check model. Env and settings cannot override it."""
     from core.safety_models import child_check_model as _model
 
     _key, url = _endpoint()
+    if _is_ollama_url(url):
+        return OLLAMA_MODEL
     return _model(url or "")
 
 
@@ -527,10 +714,23 @@ def log_safety_models() -> None:
     try:
         from core.safety_models import age_vision_model as _vision
         key, url = _endpoint()
+        if _is_ollama_url(url):
+            backend = "ollama"
+        elif url and "openrouter" in (url or "").lower():
+            backend = "openrouter"
+        elif key:
+            backend = "groq"
+        else:
+            backend = "none"
         text_model = child_check_model()
-        vision_model = _vision(url or "")
+        log_fn(f"Safety backend: {backend}")
         log_fn(f"Child check model: {text_model}")
-        log_fn(f"Age-vision model: {vision_model}")
+        if vision_backend_available():
+            log_fn(f"Age-vision model: {_vision(url or "")}")
+        else:
+            log_fn("Age-vision: unavailable (no cloud key); images stay off")
+        if backend == "ollama":
+            log_fn(f"Content filter model: {OLLAMA_MODEL}")
         del key
         for name in ("CHILD_CHECK_MODEL", "AGE_VISION_MODEL"):
             if os.environ.get(name):
@@ -827,6 +1027,12 @@ def _parse_child_verdict(text: str) -> bool | None:
 
 def _child_post(messages: list) -> str:
     key, url = _endpoint()
+    if _is_ollama_url(url):
+        body = ""
+        for msg in messages or []:
+            if msg.get("role") == "user":
+                body = str(msg.get("content") or "")
+        return _post_ollama_child(body)
     if not key or not url:
         raise RuntimeError("child-check key missing")
     body = json.dumps(
@@ -882,15 +1088,21 @@ def _child_check_sync(text: str) -> str:
     """Fail-closed second check. Any error, timeout, or unparseable answer blocks."""
     if tests_are_allowing():
         return ""
-    key, url = _endpoint()
-    if not key or not url:
+    if not _has_text_backend():
         return "child-check-error"
     prepared = _prepare_child_body(text)
+    _, url = _endpoint()
+    ollama = _is_ollama_url(url)
     for chunk in _child_chunks(prepared):
+        escaped = _escape_child_text(chunk)
         try:
-            verdict = _parse_child_verdict(
-                _child_post(_child_messages_for_body(_escape_child_text(chunk)))
-            )
+            if ollama:
+                raw = _child_post([{"role": "user", "content": escaped}])
+                verdict = _parse_verdict(raw)
+            else:
+                verdict = _parse_child_verdict(
+                    _child_post(_child_messages_for_body(escaped))
+                )
         except Exception:
             return "child-check-error"
         if verdict is None:
@@ -903,8 +1115,7 @@ def _child_check_sync(text: str) -> str:
 async def _child_check_async(text: str) -> str:
     if tests_are_allowing():
         return ""
-    key, url = _endpoint()
-    if not key or not url:
+    if not _has_text_backend():
         return "child-check-error"
     try:
         return await asyncio.wait_for(
@@ -952,6 +1163,8 @@ AGE_VISION_DEADLINE = 25
 def age_vision_model() -> str:
     from core.safety_models import age_vision_model as _model
 
+    if not vision_backend_available():
+        return ""
     _key, url = _endpoint()
     return _model(url or "")
 
@@ -1028,8 +1241,7 @@ def _age_vision_post(images: list) -> str:
 def _age_vision_sync(images: list) -> str:
     if tests_are_allowing():
         return ""
-    key, url = _endpoint()
-    if not key or not url or not images:
+    if not images or not vision_backend_available():
         return "age-vision-error"
     try:
         return _parse_age_vision(_age_vision_post(images))

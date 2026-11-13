@@ -64,6 +64,11 @@ def _is_link(path: Path) -> bool:
     return False
 
 
+def _norm_key(path: Path | str) -> str:
+    """Case-folded path with forward slashes, so Windows tests and mixed seps match."""
+    return os.path.normcase(os.path.normpath(str(path))).replace("\\", "/")
+
+
 def _path_is_inside(path: Path, root: Path) -> bool:
     """True if path.resolve() is the root or a file under it (normcase)."""
     try:
@@ -71,11 +76,11 @@ def _path_is_inside(path: Path, root: Path) -> bool:
         base = root.resolve()
     except OSError:
         return False
-    left = os.path.normcase(str(resolved))
-    right = os.path.normcase(str(base))
+    left = _norm_key(resolved)
+    right = _norm_key(base)
     if left == right:
         return True
-    return left.startswith(right + os.sep)
+    return left.startswith(right + "/")
 
 
 def _is_protected(path: Path, root: Path) -> bool:
@@ -117,6 +122,21 @@ def iter_shipped_code_files(root: str | Path) -> set[str]:
 
 
 
+STALE_INSTALL_MANIFEST = ".eche_install_manifest.json"
+
+
+def _delete_stale_install_manifest(target: str | Path) -> bool:
+    """Remove the leftover installer manifest from an existing install."""
+    path = Path(target) / STALE_INSTALL_MANIFEST
+    try:
+        if not path.is_file() or _is_link(path):
+            return False
+        path.unlink()
+        return True
+    except OSError:
+        return False
+
+
 def purge_removed_program_files(stage: str | Path, target: str | Path) -> list[str]:
     # Not robocopy /PURGE: that would also delete user files. Only the
     # explicit REMOVED_PROGRAM_FILES manifest is ever deleted.
@@ -136,6 +156,7 @@ def purge_removed_program_files(stage: str | Path, target: str | Path) -> list[s
     except Exception:
         if os.path.normcase(str(stage)) == os.path.normcase(str(target)):
             return []
+    _delete_stale_install_manifest(target)
     keep = iter_shipped_code_files(stage)
     if not keep:
         raise RuntimeError("New release manifest was empty; refusing to purge.")
