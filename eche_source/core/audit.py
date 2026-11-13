@@ -26,6 +26,10 @@ AUDIT_RELATIVE = os.path.join("logs", "audit.jsonl")
 AUDIT_FALLBACK_RELATIVE = os.path.join("logs", "audit.fallback.jsonl")
 AUDIT_ALERT_RELATIVE = os.path.join("logs", "audit.alert")
 AUDIT_MAX_BYTES = 5 * 1024 * 1024
+# Rotated archives: cap count and total bytes of *non-safety* records.
+# Safety lines (blocks, refusals) are always kept.
+AUDIT_MAX_ARCHIVES = 8
+AUDIT_MAX_ARCHIVE_BYTES = 20 * 1024 * 1024
 
 _lock = threading.Lock()
 _bound: contextvars.ContextVar[dict[str, Any]] = contextvars.ContextVar(
@@ -44,11 +48,11 @@ _SECRET_ASSIGN = re.compile(
 )
 _SECRET_TOKEN = re.compile(
     r"(?i)\b(?:bearer\s+[A-Za-z0-9\-._~+/]+=*|sk-[A-Za-z0-9\-._]+|gsk_[A-Za-z0-9]+|"
-    r"sk-or-[A-Za-z0-9\-._]+)\b"
+    r"sk-or-[A-Za-z0-9\-._]+|xai-[A-Za-z0-9\-._]+)\b"
 )
-# Discord webhooks, bare or hook=...
+# Discord webhooks, including /api/v9/ and /api/v10/ REST URLs, bare or hook=...
 _WEBHOOK_RE = re.compile(
-    r"(?i)(?:https?://)?(?:(?:canary|ptb)\.)?discord(?:app)?\.com/api/webhooks/\d+/[A-Za-z0-9_-]+"
+    r"(?i)(?:https?://)?(?:(?:canary|ptb)\.)?discord(?:app)?\.com/api(?:/v\d+)?/webhooks/\d+/[A-Za-z0-9_-]+"
     r"|(?:\bhook\s*=\s*)(?:https?://\S+|\S+)"
 )
 # Discord bot token shape, with or without a "Bot " prefix.
@@ -122,11 +126,19 @@ def _configured_secret_values() -> list[str]:
         from core.secrets import ENV_MAP, SECRET_KEYS, load_all
 
         cfg = load_all() or {}
-        for key in (*SECRET_KEYS, "discord_token", "inf_api_key", "openrouter_api_key"):
+        # Tokens, keys, and webhook-like secrets only. Never IDs, model
+        # names, or other public settings (HOME_SERVER_ID, ECHE_OWNER_ID).
+        secret_keys = set(SECRET_KEYS) | {
+            "discord_token", "inf_api_key", "openrouter_api_key",
+            "us_access_token", "us_secret_token", "xai_api_key",
+        }
+        for key in secret_keys:
             val = str(cfg.get(key) or "").strip()
             if len(val) >= 8:
                 values.append(val)
-        for env_name in ENV_MAP.values():
+        for settings_key, env_name in ENV_MAP.items():
+            if settings_key not in secret_keys:
+                continue
             val = str(os.environ.get(env_name) or "").strip()
             if len(val) >= 8:
                 values.append(val)
@@ -169,12 +181,19 @@ def _now() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
+def _ensure_log_dir(path: str) -> None:
+    folder = os.path.dirname(path)
+    if folder:
+        os.makedirs(folder, exist_ok=True)
+        _apply_acl(folder)
+
+
 def audit_path() -> str:
     from core.paths import ensure_user_layout
 
     root = ensure_user_layout()
     path = os.path.join(root, AUDIT_RELATIVE)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    _ensure_log_dir(path)
     return path
 
 
@@ -183,7 +202,7 @@ def _fallback_path() -> str:
     from core.paths import ensure_user_layout
     root = ensure_user_layout()
     path = os.path.join(root, AUDIT_FALLBACK_RELATIVE)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    _ensure_log_dir(path)
     return path
 
 
@@ -191,19 +210,127 @@ def _alert_path() -> str:
     from core.paths import ensure_user_layout
     root = ensure_user_layout()
     path = os.path.join(root, AUDIT_ALERT_RELATIVE)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    _ensure_log_dir(path)
     return path
 
 
-def _apply_acl(path: str) -> None:
+def _apply_acl(path: str, *, alert: bool = True) -> None:
     try:
         from core.secrets import _restrict_acl_windows
         _restrict_acl_windows(path)
-    except Exception:
+        return
+    except Exception as exc:
         try:
-            os.chmod(path, 0o600)
+            mode = 0o700 if os.path.isdir(path) else 0o600
+            os.chmod(path, mode)
         except Exception:
             pass
+        if alert:
+            _alert_acl_failure(exc)
+
+
+def _alert_acl_failure(exc: Exception) -> None:
+    message = f"Audit ACL failed: {type(exc).__name__}: {exc}"
+    try:
+        path = _alert_path()
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(f"{_now()} {message}\n")
+            fh.flush()
+        _apply_acl(path, alert=False)
+    except Exception:
+        pass
+    try:
+        from core.gui_bridge import log
+        log(message, channel="chat")
+    except Exception:
+        print(f"[audit] {message}", flush=True)
+
+
+def _is_safety_line(line: str) -> bool:
+    raw = (line or "").strip()
+    if not raw:
+        return False
+    try:
+        rec = json.loads(raw)
+    except Exception:
+        # Keep unreadable lines rather than drop a possible safety record.
+        return True
+    if not isinstance(rec, dict):
+        return True
+    if rec.get("safety") is True or rec.get("event") == "block":
+        return True
+    return str(rec.get("outcome") or "").lower() == "refusal"
+
+
+def _archive_paths(folder: str) -> list[str]:
+    names = []
+    try:
+        for name in os.listdir(folder):
+            if name.startswith("audit.jsonl.") or name.startswith("audit.fallback.jsonl."):
+                names.append(os.path.join(folder, name))
+    except OSError:
+        return []
+    names.sort(key=lambda p: os.path.getmtime(p) if os.path.exists(p) else 0)
+    return names
+
+
+def _non_safety_size(path: str) -> int:
+    total = 0
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                if not _is_safety_line(line):
+                    total += len(line.encode("utf-8"))
+    except OSError:
+        return 0
+    return total
+
+
+def _rewrite_safety_only(path: str) -> None:
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            kept = [line for line in fh if _is_safety_line(line)]
+    except OSError:
+        return
+    if not kept:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        return
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.writelines(kept)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+        _apply_acl(path)
+    except OSError:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+
+
+def _prune_archives(folder: str) -> None:
+    """Cap non-safety archive volume; never drop safety lines."""
+    while True:
+        paths = [p for p in _archive_paths(folder) if os.path.isfile(p)]
+        bulky = [p for p in paths if _non_safety_size(p) > 0]
+        if not bulky:
+            return
+        total = sum(_non_safety_size(p) for p in bulky)
+        over_count = len(bulky) > AUDIT_MAX_ARCHIVES
+        over_size = total > AUDIT_MAX_ARCHIVE_BYTES
+        if not over_count and not over_size:
+            return
+        victim = bulky[0]
+        _rewrite_safety_only(victim)
+        after = _non_safety_size(victim) if os.path.isfile(victim) else 0
+        if after > 0:
+            # Could not shrink this file; stop to avoid a tight loop.
+            return
 
 
 def _rotate_if_needed(path: str) -> None:
@@ -221,10 +348,11 @@ def _rotate_if_needed(path: str) -> None:
         dest = f"{path}.{stamp}-{n}"
     os.rename(path, dest)
     _apply_acl(dest)
+    _prune_archives(os.path.dirname(path) or ".")
 
 
 def _write_once(path: str, line: str) -> None:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    _ensure_log_dir(path)
     with open(path, "a", encoding="utf-8") as fh:
         fh.write(line + "\n")
         fh.flush()
@@ -238,7 +366,14 @@ def _append_line(path: str, line: str, *, safety: bool, rotate: bool = True, ret
         try:
             with _lock:
                 if rotate:
-                    _rotate_if_needed(path)
+                    # A rename PermissionError must not block the append,
+                    # especially for safety lines that have to reach the live file.
+                    try:
+                        _rotate_if_needed(path)
+                    except Exception:
+                        if not safety:
+                            # Ordinary records still try to append to the live file.
+                            pass
                 _write_once(path, line)
             return
         except Exception as exc:
@@ -257,7 +392,7 @@ def _alert_write_failure(exc: Exception, *, safety: bool) -> None:
         with open(path, "a", encoding="utf-8") as fh:
             fh.write(f"{_now()} {message}\n")
             fh.flush()
-        _apply_acl(path)
+        _apply_acl(path, alert=False)
     except Exception:
         pass
     try:
@@ -352,8 +487,10 @@ def record(event: str, *, safety: bool = False, **fields) -> dict:
     for key in list(rec):
         if key.lower() in _SECRET_KEYS or "nonce" in key.lower():
             rec.pop(key, None)
+    is_safety = bool(safety or event == "block" or str(rec.get("outcome") or "").lower() == "refusal")
+    if is_safety:
+        rec["safety"] = True
     line = json.dumps(rec, ensure_ascii=False, separators=(",", ":"))
-    is_safety = bool(safety or event == "block")
     write_error: Exception | None = None
     try:
         _append_line(audit_path(), line, safety=is_safety)
@@ -361,7 +498,7 @@ def record(event: str, *, safety: bool = False, **fields) -> dict:
         write_error = exc
         if is_safety:
             try:
-                _append_line(_fallback_path(), line, safety=True, rotate=False)
+                _append_line(_fallback_path(), line, safety=True, rotate=True)
                 write_error = None
             except Exception as fallback_exc:
                 write_error = fallback_exc
@@ -421,6 +558,22 @@ def command(name: str, outcome: str, *, ctx=None, **extra) -> dict:
 
 def command_from_ctx(ctx, outcome: str, **extra) -> dict:
     return command(_qualified_command(ctx), outcome, ctx=ctx, **extra)
+
+
+def error(source: str, error_type: str = "", *, ctx=None, message=None, **extra) -> dict:
+    """Unhandled command, app-command, cog, or event error."""
+    if message is not None:
+        bind_from_message(message)
+    ids = _merge_ids(_ids_from_ctx(ctx if ctx is not None else message), extra)
+    return record(
+        "error",
+        source=source,
+        error_type=error_type,
+        outcome="error",
+        safety=False,
+        **ids,
+        **extra,
+    )
 
 
 def tool(name: str, outcome: str, *, ctx=None, message=None, **extra) -> dict:

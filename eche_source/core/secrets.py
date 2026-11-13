@@ -233,23 +233,38 @@ def redact(value: str, keep: int = 4) -> str:
 
 
 def _restrict_acl_windows(path: str) -> None:
-    try:
-        import getpass
-        import subprocess
+    """Owner+SYSTEM ACL. A nonzero icacls exit is a failure: chmod, then raise.
 
+    On non-Windows hosts icacls is unavailable; chmod is the control and is
+    not treated as an ACL failure.
+    """
+    if not sys.platform.startswith("win"):
+        try:
+            mode = 0o700 if os.path.isdir(path) else (stat.S_IRUSR | stat.S_IWUSR)
+            os.chmod(path, mode)
+        except Exception:
+            pass
+        return
+    import getpass
+    import subprocess
+
+    err: Exception | None = None
+    try:
         user = getpass.getuser()
         flags = 0
         if sys.platform.startswith("win"):
             flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        subprocess.run(
+        is_dir = os.path.isdir(path)
+        grant = "(OI)(CI)(F)" if is_dir else "(R,W)"
+        result = subprocess.run(
             [
                 "icacls",
                 path,
                 "/inheritance:r",
                 "/grant:r",
-                f"{user}:(R,W)",
+                f"{user}:{grant}",
                 "/grant:r",
-                "SYSTEM:(R,W)",
+                f"SYSTEM:{grant}",
             ],
             check=False,
             capture_output=True,
@@ -257,11 +272,19 @@ def _restrict_acl_windows(path: str) -> None:
             timeout=8,
             creationflags=flags,
         )
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "").strip()
+            err = RuntimeError(f"icacls exited {result.returncode}: {detail}")
+    except Exception as exc:
+        err = exc
+    if err is None:
+        return
+    try:
+        mode = 0o700 if os.path.isdir(path) else (stat.S_IRUSR | stat.S_IWUSR)
+        os.chmod(path, mode)
     except Exception:
-        try:
-            os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
-        except Exception:
-            pass
+        pass
+    raise err
 
 
 def _read_json(path: str) -> dict[str, Any]:
@@ -312,7 +335,11 @@ def _save_encrypted_secrets(root: str, secrets: dict[str, str]) -> None:
     path = secrets_path(root)
     _write_json(path, payload)
     if sys.platform.startswith("win"):
-        _restrict_acl_windows(path)
+        try:
+            _restrict_acl_windows(path)
+        except Exception:
+            # chmod fallback already ran inside the helper
+            pass
 
 
 def _load_public(root: str) -> dict[str, str]:
