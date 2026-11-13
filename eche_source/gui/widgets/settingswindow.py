@@ -546,35 +546,6 @@ class SettingsWindow(QWidget):
             "Optional photo search via Unsplash (free developer keys).",
             body,
         ))
-        imagine = QVBoxLayout()
-        imagine.setSpacing(12)
-        imagine.addLayout(self._field_block(
-            "Grok API key",
-            "xAI key for ?asset and the asset tool. Pictures and videos are billed to this key.",
-            secret=True, key="xai_api_key", help_key="xai_api_key",
-        ))
-        key_row = QHBoxLayout()
-        key_row.setSpacing(8)
-        xai_btn = QPushButton("xAI console")
-        xai_btn.setObjectName("link")
-        xai_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl("https://console.x.ai/")))
-        key_row.addWidget(xai_btn)
-        key_row.addWidget(self._info_button("xai_api_key"))
-        key_row.addStretch()
-        imagine.addLayout(key_row)
-        self.asset_owner_only_box = QCheckBox("Owner only")
-        self.asset_owner_only_box.setObjectName("asset_owner_only")
-        self.asset_owner_only_box.setToolTip(
-            "Off, anyone can ask for an asset. On, only Owner IDs can."
-        )
-        imagine.addWidget(self.asset_owner_only_box)
-        imagine.addWidget(self._info_button("asset_access"))
-        layout.addWidget(self._card(
-            "Grok Imagine",
-            "Everyone can ask unless Owner only is on. "
-            "A video is a short 480p clip. ?asset still works when the prompt tool is off.",
-            imagine,
-        ))
         layout.addStretch(1)
         return page
 
@@ -1566,10 +1537,8 @@ class SettingsWindow(QWidget):
             self.security_admin_box.blockSignals(True)
             self.security_admin_box.setChecked(flag_on(self.data.get("admin_tools"), ""))
             self.security_admin_box.blockSignals(False)
-        if hasattr(self, "asset_owner_only_box"):
-            from core.admin_tools import flag_on
+        if hasattr(self, "_prompt_tool_boxes"):
             from core.tools import prompt_choice
-            self.asset_owner_only_box.setChecked(flag_on(self.data.get("asset_owner_only"), ""))
             for name, box in self._prompt_tool_boxes.items():
                 box.setChecked(prompt_choice(self.data.get(f"tool_{name}"), default=True))
             self.prompt_episodic_box.setChecked(
@@ -1825,18 +1794,15 @@ class SettingsWindow(QWidget):
             except Exception:
                 pass
             payload["admin_tools"] = admin
-        if hasattr(self, "asset_owner_only_box"):
-            payload["asset_owner_only"] = "1" if self.asset_owner_only_box.isChecked() else "0"
+        if hasattr(self, "_prompt_tool_boxes"):
             for name, box in self._prompt_tool_boxes.items():
                 payload[f"tool_{name}"] = "1" if box.isChecked() else "0"
             payload["prompt_episodic"] = "1" if self.prompt_episodic_box.isChecked() else "0"
         else:
             for key in (
-                "asset_owner_only",
                 "tool_duckduckgo",
                 "tool_thread",
                 "tool_context_raw",
-                "tool_asset",
                 "prompt_episodic",
             ):
                 payload[key] = str(self.data.get(key) or "").strip()

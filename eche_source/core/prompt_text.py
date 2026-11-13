@@ -15,20 +15,12 @@ TOOL_LINES = {
     ),
     "thread": (
         "thread: they asked for a thread, or agreed to one you offered. The tool names the thread. "
-        "Pictures or videos they asked to put in that thread are posted there. "
         "Trying a search again is not a thread."
     ),
     "context_raw": (
         "context_raw: only when they explicitly ask to see their memory, context, "
         "or what you remember about them. "
         "A pasted link, an image, or 'what do you think' about something they sent is not this tool."
-    ),
-    "asset": (
-        "asset: they asked for a picture, a video, or a change to one they attached. "
-        "prompt is their words, copied through — do not soften or rewrite for filters. "
-        "kind is image or video when they named one. "
-        "If they cite Image 1 or a character lock, they must attach or reply to that file. "
-        "A thread of those files is the thread tool."
     ),
     "kick": "kick: only when an owner explicitly asks to kick one member.",
     "ban": "ban: only when an owner explicitly asks to ban one member.",
@@ -60,9 +52,8 @@ _STYLE = (
     "Then quote what it found, or say it found nothing.\n"
     "Never rewrite, soften, or coach anyone so a prompt will pass a filter. "
     "If they ask for a plan to get around one, refuse and give no tips.\n"
-    "Only describe a picture or video you actually made in this conversation. "
-    "If you are not sure what was generated, say you don't remember. "
-    "Do not invent one, and do not invent billing or credit problems.\n"
+    "You cannot make pictures or videos. If they ask, say so. "
+    "Do not claim you generated one.\n"
     "You send one message per turn. If they ask for something in several messages, "
     "put it in one message or offer a thread. Do not start a 1/N series."
 )

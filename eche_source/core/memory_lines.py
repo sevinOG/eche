@@ -81,17 +81,12 @@ def _arg(arguments, key: str, limit: int = _ACTION_ARG_LIMIT) -> str:
 def tool_action(name: str, arguments: dict | None = None, posted: str = "") -> str:
     """One bracketed note of what eche did with a tool, in eche's own voice.
 
-    posted is text a quiet tool already put on Discord itself (an asset
-    caption). It is kept so the record says what came out, not only the call.
+    posted is text a quiet tool already put on Discord itself. It is kept
+    so the record says what came out, not only the call.
     """
     tool = " ".join(str(name or "").split()).lower() or "a tool"
     detail = ""
-    if tool == "asset":
-        kind = _arg(arguments, "kind", 10).lower()
-        prompt = _arg(arguments, "prompt")
-        what = f"a {kind}" if kind in ("image", "video") else "an asset"
-        detail = f"made {what}" + (f' of "{prompt}"' if prompt else "")
-    elif tool == "duckduckgo":
+    if tool == "duckduckgo":
         query = _arg(arguments, "query")
         detail = f'searched "{query}"' if query else "searched the web"
     elif tool == "thread":

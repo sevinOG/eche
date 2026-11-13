@@ -2,9 +2,9 @@
 # Hard block on anything involving minors. This is the one thing Eche refuses.
 #
 # Checked on: the incoming chat message before any model call, the model's
-# reply before it is sent, tool arguments and tool replies, every ?asset and
-# image or video prompt before the API, thread plans and every thread post,
-# and the desktop chat. A match gets REFUSAL and nothing else.
+# reply before it is sent, tool arguments and tool replies, thread plans
+# and every thread post, and the desktop chat. A match gets REFUSAL and
+# nothing else.
 #
 # Whole words only, so "kidney", "kidding", and "Kidd" do not match. The
 # Settings field "Blocked words" adds more words or phrases to this list.

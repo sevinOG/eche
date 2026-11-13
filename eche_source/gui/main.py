@@ -278,7 +278,7 @@ class MainWindow(QMainWindow):
         tools_col.setSpacing(6)
         self.default_tools_box = self._tool_toggle(
             "Default tools",
-            "Thread, lookup, context, and asset. Off, and those tools are left out of chat.",
+            "Thread, lookup, and context. Off, and those tools are left out of chat.",
             self._default_tools_saved_on(),
             self._on_default_tools_toggled,
         )
@@ -382,9 +382,9 @@ class MainWindow(QMainWindow):
             self.default_tools_box.blockSignals(False)
             return
         if checked:
-            self.append_log("[INFO] Default tools on. Thread, lookup, context, and asset are available.")
+            self.append_log("[INFO] Default tools on. Thread, lookup, and context are available.")
         else:
-            self.append_log("[INFO] Default tools off. Thread, lookup, context, and asset are left out.")
+            self.append_log("[INFO] Default tools off. Thread, lookup, and context are left out.")
 
     def _on_admin_tools_toggled(self, checked: bool):
         try:

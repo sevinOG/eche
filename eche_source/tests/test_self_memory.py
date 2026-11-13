@@ -66,19 +66,19 @@ class StoredBotRecord(unittest.TestCase):
         )
         self.assertNotIn("draft reply", got)
 
-    def test_quiet_asset_records_what_was_made(self):
+    def test_quiet_search_records_what_was_posted(self):
         action = ml.tool_action(
-            "asset",
-            {"prompt": "a raccoon dancing on a table", "kind": "video"},
-            posted="a raccoon dancing on a table",
+            "duckduckgo",
+            {"query": "raccoon facts"},
+            posted="Raccoons wash their food.",
         )
         got = ml.bot_output_record("", [], [action])
-        self.assertTrue(got.startswith("[I used asset: made a video of"))
-        self.assertIn("raccoon dancing", got)
-        self.assertIn('posted "a raccoon dancing on a table"', got)
+        self.assertTrue(got.startswith("[I used duckduckgo: searched"))
+        self.assertIn("raccoon facts", got)
+        self.assertIn('posted "Raccoons wash their food."', got)
 
     def test_fallback_line_is_first_person_and_longer(self):
-        self.assertEqual(ml.bot_memory_line("", ["asset"]), "I used asset")
+        self.assertEqual(ml.bot_memory_line("", ["duckduckgo"]), "I used duckduckgo")
         line = ml.bot_memory_line(self.LONG)
         self.assertTrue(line.startswith("I said "))
         self.assertGreater(len(line), 200)
@@ -168,7 +168,7 @@ class BotPinFold(TempRoot):
                 cs.fold_long_memory(
                     pinned,
                     "Eche with sam:\n\n",
-                    ["[I used asset: made a video of \"a cat\"] here you go"],
+                    ["[I used duckduckgo: searched \"a cat\"] here you go"],
                     side="bot",
                 )
             )
@@ -216,7 +216,7 @@ class BotPinFold(TempRoot):
 class BotBufferStoresOwnWords(TempRoot):
     def test_record_lands_in_bot_buffer_verbatim(self):
         record = ml.bot_output_record(
-            "", ["Here's your video."], [ml.tool_action("asset", {"prompt": "a cat"})]
+            "", ["Here is what I found."], [ml.tool_action("duckduckgo", {"query": "a cat"})]
         )
         rows, pending = pr.push(4242, "bot", record)
         self.assertEqual(rows[-1], record)

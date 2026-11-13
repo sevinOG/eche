@@ -29,7 +29,6 @@ import core.tools_context  # noqa: F401  registers context_raw
 import core.tools_duckduckgo  # noqa: F401  registers duckduckgo
 import core.tools_thread  # noqa: F401  registers thread
 import core.tools_admin  # noqa: F401  registers mute, timeout, kick, ban
-import core.tools_asset  # noqa: F401  registers asset
 from core.admin_tools import admin_injection, admin_tools_enabled, author_is_owner
 from core.tools import (
     ToolContext,
@@ -181,31 +180,11 @@ class OnMessage(commands.Cog):
         actions: list[str] = []
         seen: set[str] = set()
         lookup_quota = False
-        # A thread of pictures or videos posts the files there. The same
-        # turn's asset call would also reply on the channel message.
-        render_in_thread = False
-        try:
-            from core.imagine import asset_thread_request
-
-            asked = {
-                str(call.get("name") or "").casefold()
-                for call in calls[:3]
-                if isinstance(call, dict)
-            }
-            render_in_thread = (
-                "thread" in asked
-                and "asset" in asked
-                and asset_thread_request(getattr(message, "content", "") or "")
-            )
-        except Exception as exc:
-            dprint(f"[on_message] asset thread check failed: {type(exc).__name__}")
         for call in calls[:3]:
             if not isinstance(call, dict):
                 continue
             name = str(call.get("name") or "")
             if not name or name.casefold() in seen:
-                continue
-            if render_in_thread and name.casefold() == "asset":
                 continue
             seen.add(name.casefold())
             arguments = (call or {}).get("arguments") or {}
@@ -320,10 +299,8 @@ class OnMessage(commands.Cog):
         if self.bot.user and message.author.id == self.bot.user.id:
             return
 
-        # Ignore commands. ?asset posts the file itself, and only when
-        # discord.py will actually dispatch that command.
-        from core.bot import is_asset_command
-        if message.content.startswith("!") or is_asset_command(message.content):
+        # Ignore bang commands. discord.py dispatches those itself.
+        if message.content.startswith("!"):
             return
 
         # ⭐ BOO LOGIC — runs for ALL messages, even without mention ⭐

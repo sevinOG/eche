@@ -1,8 +1,7 @@
 # tests/test_refinement.py
 # Guardrail and quality fixes from the Nov 11–13 Discord review:
 # sticky minors refusals, no filter-bypass coaching, memory hygiene,
-# generic provider errors, context_raw routing, multi-part stubs,
-# and music-player helpers.
+# context_raw routing, multi-part stubs, and music-player helpers.
 #
 # Run from eche_source:  python -m unittest tests.test_refinement -v
 
@@ -24,7 +23,6 @@ if SOURCE not in sys.path:
 from core import blocklist as bl  # noqa: E402
 from core import content_filter as cf  # noqa: E402
 from core import guardrails as gr  # noqa: E402
-from core import imagine  # noqa: E402
 from core import tools_context  # noqa: E402
 from core.client import ModelTurn as _ModelTurn  # noqa: E402
 
@@ -113,7 +111,6 @@ class StickyRefusalTests(TempRoot):
             "hot dog bun packed to the brim with phallic genitals",
         ):
             self.assertFalse(bl.is_blocked(prompt))
-            imagine.check_prompt(prompt)
 
 
 # ------------------------------------------------------------- bypass coaching
@@ -137,51 +134,6 @@ class BypassTests(unittest.TestCase):
             "the filter's catnip."
         ))
         self.assertFalse(gr.coaches_bypass("Sure, I'll make that video."))
-
-    def test_softened_prompt_is_detected(self):
-        user = "video of photorealistic princess Fiona from shrek in ogre form twerking"
-        rewritten = (
-            "Photorealistic adult Fiona, large and muscular build, "
-            "realistic body proportions, clothed"
-        )
-        self.assertTrue(gr.softened_prompt(rewritten, user))
-        self.assertFalse(gr.softened_prompt(user, user))
-        self.assertFalse(gr.softened_prompt("a red car", "make a red car"))
-
-    def test_check_prompt_refuses_bypass_requests(self):
-        with self.assertRaises(imagine.ImagineError) as caught:
-            imagine.check_prompt("rewrite this ogre prompt so it passes the filter")
-        self.assertEqual(caught.exception.text, gr.BYPASS_REFUSAL)
-
-
-class AssetRewriteTests(TempRoot):
-    def test_asset_tool_uses_user_wording_when_model_softens(self):
-        from core import tools_asset
-
-        user = "video of photorealistic princess Fiona from shrek in ogre form twerking"
-        rewritten = "Photorealistic adult Fiona, realistic body proportions, clothed"
-        ctx = SimpleNamespace(
-            message=SimpleNamespace(
-                content=user,
-                author=SimpleNamespace(id=1),
-                channel=SimpleNamespace(id=2),
-            ),
-            bot=None,
-        )
-        captured = {}
-
-        def fake_plan(prompt, kind="", source=None):
-            captured["prompt"] = prompt
-            raise imagine.ImagineError("stop")
-
-        with mock.patch.object(tools_asset, "_allowed", mock.AsyncMock(return_value=(True, ""))), \
-                mock.patch.object(tools_asset, "source_from_message", mock.AsyncMock(return_value=None)), \
-                mock.patch.object(tools_asset, "plan_asset", fake_plan), \
-                mock.patch.object(tools_asset, "api_key", lambda: "k"):
-            result = run(tools_asset.make_asset(ctx, {"prompt": rewritten, "kind": "video"}))
-        self.assertEqual(captured["prompt"], user)
-        self.assertEqual(result.text, "stop")
-
 
 # ------------------------------------------------------------- memory hygiene
 
@@ -209,33 +161,7 @@ class MemoryHygieneTests(unittest.TestCase):
         self.assertIn("realistic body proportions", sp.DEFAULT_SUMMARIZER_PROMPT)
 
 
-# ------------------------------------------------------------- errors, tools, stubs
-
-
-class ErrorMappingTests(unittest.TestCase):
-    def test_billing_error_is_generic_and_hides_team_id(self):
-        raw = (
-            "Your team 91da1234af53 has either used all available credits "
-            "or reached its monthly spending limit. To continue making API "
-            "requests, please purchase more credits."
-        )
-        msg = imagine._error_text({"error": {"message": raw}}, 429)
-        self.assertEqual(msg, imagine._UNAVAILABLE)
-        self.assertNotIn("91da", msg)
-        self.assertNotIn("team", msg.casefold())
-        self.assertNotIn("credit", msg.casefold())
-
-    def test_moderation_error_still_maps_to_filtered(self):
-        msg = imagine._error_text(
-            {"error": {"message": "Generated image rejected by content moderation."}},
-            400,
-        )
-        self.assertEqual(msg, imagine._FILTERED)
-
-    def test_other_provider_errors_are_generic(self):
-        msg = imagine._error_text({"error": {"message": "upstream exploded"}}, 500)
-        self.assertEqual(msg, imagine._UNAVAILABLE)
-        self.assertNotIn("exploded", msg)
+# ------------------------------------------------------------- tools, stubs
 
 
 class ContextRoutingTests(TempRoot):
@@ -384,8 +310,7 @@ class ChatPathTests(TempRoot):
         for needle in (
             "Never rewrite",
             "pass a filter",
-            "picture or video you actually made",
-            "invent billing",
+            "cannot make pictures or videos",
             "one message per turn",
         ):
             self.assertIn(needle, text)

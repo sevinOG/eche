@@ -1,6 +1,6 @@
 # tests/test_blocklist.py
 # Offline checks for the minors hard block (core/blocklist.py) on chat input,
-# chat output, tool calls, ?asset and image/video prompts, and thread posts,
+# chat output, tool calls, and thread posts,
 # plus the Blocked words setting and the memory slur-masking toggle.
 #
 # Run from eche_source:  python -m unittest tests.test_blocklist -v
@@ -26,7 +26,6 @@ from core import blocklist as bl  # noqa: E402
 from core import content_filter as cf  # noqa: E402
 from core import context_summarizer as cs  # noqa: E402
 from core import episodic  # noqa: E402
-from core import imagine  # noqa: E402
 from core import summarizer_prompt as sp  # noqa: E402
 from core.client import ModelTurn as _ModelTurn  # noqa: E402
 
@@ -263,123 +262,6 @@ class DesktopChatTests(TempRoot):
             model.assert_not_called()
         with mock.patch.object(client, "call_groq", mock.AsyncMock(return_value="the children laughed")):
             self.assertEqual(run(local_chat.reply_local("tell me a joke")), bl.REFUSAL)
-
-
-# ------------------------------------------------------- picture and video
-
-
-class AssetTests(TempRoot):
-    def test_plan_refuses_minors(self):
-        for prompt in ("image of a kid on a bike", "video of a 10 year old", "a loli anime girl"):
-            with self.assertRaises(imagine.ImagineError) as caught:
-                imagine.plan_asset(prompt)
-            self.assertEqual(caught.exception.text, bl.REFUSAL)
-
-    def test_run_refuses_before_any_request(self):
-        plan = imagine.AssetPlan(mode="image", prompt="a schoolgirl portrait")
-        with mock.patch.object(imagine, "http_json") as http:
-            with self.assertRaises(imagine.ImagineError):
-                run(imagine.run_asset(plan, "key"))
-            http.assert_not_called()
-
-    def test_slur_and_crude_prompts_pass(self):
-        plan = imagine.plan_asset(f"a protest sign that says {SLUR}")
-        self.assertIn(SLUR, plan.prompt)
-        imagine.plan_asset("image of a kidney bean")
-
-    def test_extra_word_blocks_asset(self):
-        self.save(blocked_words="clown")
-        with self.assertRaises(imagine.ImagineError):
-            imagine.plan_asset("image of a clown")
-
-    def test_asset_tool_refuses_before_fetch_and_api(self):
-        from core import tools_asset
-
-        ctx = SimpleNamespace(message=SimpleNamespace(content="", author=SimpleNamespace(id=1)), bot=None)
-        with mock.patch.object(tools_asset, "_allowed", mock.AsyncMock(return_value=(True, ""))), \
-                mock.patch.object(tools_asset, "source_from_message", mock.AsyncMock()) as fetch, \
-                mock.patch.object(imagine, "http_json") as http:
-            result = run(tools_asset.make_asset(ctx, {"prompt": "two children playing"}))
-        self.assertEqual(result.text, bl.REFUSAL)
-        fetch.assert_not_called()
-        http.assert_not_called()
-
-    def test_asset_command_refuses_before_fetch(self):
-        from cogs import asset as asset_cog
-
-        cog = asset_cog.Asset(SimpleNamespace()) if hasattr(asset_cog, "Asset") else None
-        if cog is None:
-            self.skipTest("asset cog class name changed")
-        ctx = SimpleNamespace(author=SimpleNamespace(id=1), message=SimpleNamespace(), reply=mock.AsyncMock())
-        with mock.patch.object(asset_cog, "speaker_allowed", lambda _o: True), \
-                mock.patch("core.admin_tools.author_is_owner", mock.AsyncMock(return_value=True)), \
-                mock.patch.object(asset_cog, "source_from_message", mock.AsyncMock()) as fetch, \
-                mock.patch.object(asset_cog, "run_asset", mock.AsyncMock()) as make:
-            run(cog.asset.callback(cog, ctx, prompt="an infant in a field"))
-        fetch.assert_not_called()
-        make.assert_not_called()
-        self.assertEqual(ctx.reply.call_args[0][0], bl.REFUSAL)
-
-    def test_asset_command_refuses_teen_prompt(self):
-        """?asset is the command people can type to skip chat; it must refuse too."""
-        from cogs import asset as asset_cog
-
-        cog = asset_cog.Asset(SimpleNamespace()) if hasattr(asset_cog, "Asset") else None
-        if cog is None:
-            self.skipTest("asset cog class name changed")
-        ctx = SimpleNamespace(author=SimpleNamespace(id=1), message=SimpleNamespace(), reply=mock.AsyncMock())
-        with mock.patch.object(asset_cog, "speaker_allowed", lambda _o: True), \
-                mock.patch("core.admin_tools.author_is_owner", mock.AsyncMock(return_value=True)), \
-                mock.patch.object(asset_cog, "source_from_message", mock.AsyncMock()) as fetch, \
-                mock.patch.object(asset_cog, "run_asset", mock.AsyncMock()) as make, \
-                mock.patch.object(imagine, "http_json") as http:
-            run(cog.asset.callback(cog, ctx, prompt="a teenager twerking"))
-        fetch.assert_not_called()
-        make.assert_not_called()
-        http.assert_not_called()
-        self.assertEqual(ctx.reply.call_args[0][0], bl.REFUSAL)
-
-    def test_request_for_refuses_blocked_prompt(self):
-        plan = imagine.AssetPlan(mode="image", prompt="a teenager at the beach")
-        with self.assertRaises(imagine.ImagineError) as caught:
-            imagine.request_for(plan)
-        self.assertEqual(caught.exception.text, bl.REFUSAL)
-
-    def test_http_json_refuses_blocked_body_prompt(self):
-        with mock.patch.object(imagine.urllib.request, "urlopen") as opener:
-            with self.assertRaises(imagine.ImagineError) as caught:
-                imagine.http_json(
-                    "POST",
-                    "https://api.x.ai/v1/images/generations",
-                    "key",
-                    {"model": "x", "prompt": "csam drawing"},
-                )
-            opener.assert_not_called()
-        self.assertEqual(caught.exception.text, bl.REFUSAL)
-
-    def test_rewritten_prompt_and_caption_are_refused(self):
-        payload = {
-            "data": [{
-                "url": "https://api.x.ai/v1/files/ok",
-                "revised_prompt": "a 15 year old on the beach",
-            }]
-        }
-        with self.assertRaises(imagine.ImagineError) as caught:
-            imagine.image_url(payload)
-        self.assertEqual(caught.exception.text, bl.REFUSAL)
-        video = {"status": "done", "video": {"url": "https://api.x.ai/v1/files/ok", "caption": "teens dancing"}}
-        with self.assertRaises(imagine.ImagineError) as caught:
-            imagine.video_poll(video)
-        self.assertEqual(caught.exception.text, bl.REFUSAL)
-
-    def test_clean_caption_still_returns_the_file(self):
-        url = imagine.image_url({"data": [{"url": "https://api.x.ai/v1/files/ok", "revised_prompt": "a red boat"}]})
-        self.assertEqual(url, "https://api.x.ai/v1/files/ok")
-
-    def test_adult_prompts_still_pass(self):
-        imagine.plan_asset("image of an 18 year old on a beach")
-        imagine.plan_asset("sexy adult woman, nsfw")
-        imagine.request_for(imagine.AssetPlan(mode="image", prompt="a kidney-shaped pool"))
 
 
 # ------------------------------------------------------------------ threads

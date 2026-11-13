@@ -1,6 +1,6 @@
 # tests/test_memory_reset.py
-# Offline checks for the memory reset, the memory filters, the own-context
-# tool, and the picture/video prompt check. No network, no Discord, no model.
+# Offline checks for the memory reset, the memory filters, and the own-context
+# tool. No network, no Discord, no model.
 #
 # Run from eche_source:  python -m unittest tests.test_memory_reset -v
 
@@ -27,7 +27,6 @@ from core import content_filter as cf  # noqa: E402
 from core import context_summarizer as cs  # noqa: E402
 from core import discord_store as ds  # noqa: E402
 from core import episodic  # noqa: E402
-from core import imagine  # noqa: E402
 from core import memory_wipe as mw  # noqa: E402
 from core import personal_recent as pr  # noqa: E402
 from core import summarizer_prompt as sp  # noqa: E402
@@ -463,52 +462,13 @@ class ContextToolTests(TempRoot):
         self.assertEqual(tools_context.own_memory_text(fresh), tools_context.NOTHING_STORED)
 
 
-# --------------------------------------------------- picture/video prompts
 
+# ----------------------------------------------------------- content filter
 
-class AssetPromptTests(TempRoot):
-    """Slurs no longer refuse a picture. Only the minors block does (test_blocklist)."""
-
-    def test_slur_prompt_is_not_refused(self):
-        plan = imagine.plan_asset(f"image of a sign that says {SLUR}")
-        self.assertIn(SLUR, plan.prompt)
-        imagine.check_prompt(f"a {WORD_SLUR} cartoon")  # no raise
-
+class ContentFilterAssetAbsence(unittest.TestCase):
     def test_content_filter_has_no_asset_refusal(self):
         self.assertFalse(hasattr(cf, "ASSET_REFUSAL"))
         self.assertFalse(hasattr(cf, "prompt_allowed"))
-
-    def test_clean_prompt_passes(self):
-        plan = imagine.plan_asset("image of a raccoon eating spice cake")
-        self.assertIn("raccoon", plan.prompt)
-
-    def test_character_lock_needs_source(self):
-        with self.assertRaises(imagine.ImagineError) as ctx:
-            imagine.plan_asset(
-                "video of Female Lead A: Image 1 leaning on a railing, character lock"
-            )
-        self.assertIn("Attach or reply", str(ctx.exception.text))
-
-    def test_character_lock_with_source_ok(self):
-        source = imagine.SourceMedia(data=b"\x89PNG\r\n\x1a\n" + b"\x00" * 16, mime="image/png")
-        plan = imagine.plan_asset(
-            "video of Female Lead A: Image 1 leaning on a railing",
-            kind="video",
-            source=source,
-        )
-        self.assertEqual(plan.mode, "image_video")
-
-    def test_moderation_error_is_mapped(self):
-        msg = imagine._error_text(
-            {"error": {"message": "Generated image rejected by content moderation."}},
-            400,
-        )
-        self.assertEqual(msg, imagine._FILTERED)
-
-    def test_empty_batch_is_filtered(self):
-        with self.assertRaises(imagine.ImagineError) as ctx:
-            imagine.image_url({"data": []})
-        self.assertEqual(ctx.exception.text, imagine._FILTERED)
 
 
 # ----------------------------------------------------------- reply style
