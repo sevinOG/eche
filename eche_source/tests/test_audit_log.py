@@ -462,6 +462,8 @@ REVIEWED_ENTRYPOINTS = {
     "_age_vision_post": "age-vision HTTP call",
     "_post_ollama_chat": "local Llama Guard 3 classify HTTP call",
     "_post_ollama_child": "local Llama Guard 3 child-check HTTP call",
+    "_post_ollama_generate": "local Llama Guard 3 raw classify HTTP call",
+    "_post_with_images": "image content-check HTTP call",
 }
 
 
@@ -2274,6 +2276,37 @@ class AuditCompletenessTests(AuditLogTests):
             leaked_ol = " ".join((ol_blob, ol_child_blob, ol_err_blob))
             if "secret-ollama-prompt-xyz" in leaked_ol:
                 gaps.append("_post_ollama:prompt-or-key-logged")
+
+            secret_raw = "secret-ollama-raw-xyz"
+            gen_spec = C.CheckerSpec(
+                "content_filter", provider="ollama", model="llama-guard3:8b",
+                fmt="llama_guard", field="content_filter_model",
+            )
+            gen_rows, gen_blob = _probe_classifier_http(
+                lambda _payload: C._post_ollama_generate(
+                    C._official_llama_guard3_prompt(_payload),
+                    spec=gen_spec, kind="classifier", timeout=C.CLASSIFIER_TIMEOUT,
+                ),
+                "classifier", "safe", secret_raw, endpoint=("", C.OLLAMA_GENERATE_URL),
+            )
+            if not gen_rows:
+                gaps.append("_post_ollama_generate")
+            if "secret-ollama-raw-xyz" in gen_blob:
+                gaps.append("_post_ollama_generate:prompt-or-key-logged")
+
+            secret_img = "secret-image-check-xyz"
+            img_spec = C.CheckerSpec(
+                "image_check", provider="cloud", model="meta-llama/llama-guard-4-12b",
+                fmt="llama_guard", field="image_check_model",
+            )
+            img_rows, img_blob = _probe_classifier_http(
+                lambda payload: C._post_with_images(payload, img_spec),
+                "image-check", "safe", secret_img,
+            )
+            if not img_rows:
+                gaps.append("_post_with_images")
+            if "secret-image-check-xyz" in img_blob or "gsk_test_audit_key" in img_blob:
+                gaps.append("_post_with_images:prompt-or-key-logged")
 
             return gaps
 

@@ -149,6 +149,9 @@ CONTENT_FILTER_PROVIDER_KEY = "content_filter_provider"
 CONTENT_FILTER_MODEL_KEY = "content_filter_model"
 CHILD_CHECK_PROVIDER_KEY = "child_check_provider"
 CHILD_CHECK_MODEL_KEY = "child_check_model"
+IMAGE_CHECK_PROVIDER_KEY = "image_check_provider"
+IMAGE_CHECK_MODEL_KEY = "image_check_model"
+TEXT_SAFETY_CHECKS_KEY = "text_safety_checks"
 _CHECKER_PROVIDERS = frozenset({"cloud", "openrouter", "ollama"})
 _THINK_BLOCK = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
 _MISSING_MODEL_MARKERS = (
@@ -185,10 +188,150 @@ class CheckerSpec:
         self.problem = problem
 
 
+
+_DISABLE_TOKENS = frozenset({"0", "false", "no", "off"})
+_ENABLE_TOKENS = frozenset({"1", "true", "yes", "on"})
+_TEXT_CHECKS_CTX = None  # set to a contextvars.ContextVar on first use
+
+
+def parse_default_on_flag(stored) -> tuple[bool, bool]:
+    """Default-ON flag. Only an explicit 0/false/no/off turns it off.
+
+    Returns (value, invalid). Unreadable or unrecognised values stay ON.
+    """
+    text = str(stored if stored is not None else "").strip().lower()
+    if not text:
+        return True, False
+    if text in _DISABLE_TOKENS:
+        return False, False
+    if text in _ENABLE_TOKENS:
+        return True, False
+    return True, True
+
+
+def _text_checks_var():
+    global _TEXT_CHECKS_CTX
+    if _TEXT_CHECKS_CTX is None:
+        import contextvars
+        _TEXT_CHECKS_CTX = contextvars.ContextVar("text_safety_checks", default=None)
+    return _TEXT_CHECKS_CTX
+
+
+def read_text_safety_checks() -> bool:
+    """Current saved value. Missing, blank, or unreadable settings mean ON."""
+    if settings_file_problem():
+        return True
+    try:
+        raw = _checker_setting(TEXT_SAFETY_CHECKS_KEY)
+    except Exception:
+        return True
+    value, _invalid = parse_default_on_flag(raw)
+    return value
+
+
+def begin_request_text_checks() -> bool:
+    """Read the toggle once for this request and remember it."""
+    value = read_text_safety_checks()
+    _text_checks_var().set(value)
+    return value
+
+
+def request_text_checks() -> bool:
+    """The snapshot from begin_request_text_checks, or a fresh read."""
+    current = _text_checks_var().get()
+    if current is None:
+        return read_text_safety_checks()
+    return current
+
+
+def reset_request_text_checks() -> None:
+    """Tests only."""
+    try:
+        _text_checks_var().set(None)
+    except Exception:
+        pass
+
+
+def log_text_safety_checks(*, startup: bool = False, skipped: list[str] | None = None, enabled: bool | None = None) -> None:
+    """Startup or per-message line naming which model text checks run or are skipped."""
+    on = read_text_safety_checks() if enabled is None else enabled
+    if skipped is None:
+        skipped = [] if on else ["content_filter", "child_check"]
+    if startup:
+        if on:
+            message = (
+                "Text safety checks are on. Chat input and output still run "
+                "the content filter and the child check."
+            )
+        else:
+            message = (
+                "Text safety checks are off. Skipping content_filter and "
+                "child_check on chat text. The footer, blocklist, keyword "
+                "filters, and the image/asset path (content filter, child "
+                "check, Scout) still run."
+            )
+    elif on:
+        message = "Text safety checks ran content_filter and child_check on this message."
+    else:
+        names = ", ".join(skipped) or "content_filter, child_check"
+        message = (
+            f"Text safety checks skipped {names} on this chat text. "
+            "The footer, blocklist, and keyword filters still apply."
+        )
+    try:
+        from core.audit import safe_activity
+        safe_activity(
+            "text-safety-checks",
+            outcome="start" if startup else ("success" if on else "skipped"),
+            enabled="1" if on else "0",
+            skipped=",".join(skipped),
+        )
+    except Exception:
+        pass
+    try:
+        from core.gui_bridge import log
+        log(message, channel="bot")
+    except Exception:
+        print(f"[classifier] {message}", flush=True)
+    try:
+        import logging
+        logging.getLogger("classifier").info(message)
+    except Exception:
+        pass
+
+
+def settings_file_problem(root: str | None = None) -> str:
+    """Why settings.json cannot be used, or '' if it is missing or valid."""
+    try:
+        from core.secrets import settings_path
+        path = settings_path(root)
+    except Exception:
+        return ""
+    import os
+    if not os.path.isfile(path):
+        return ""
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        if not isinstance(data, dict):
+            return "invalid"
+        return ""
+    except Exception:
+        return "unreadable"
+
+
 def _checker_setting(key: str) -> str:
     try:
-        from core.secrets import public_value
+        from core.secrets import public_value, SettingsUnreadable
+    except Exception:
+        SettingsUnreadable = Exception  # type: ignore
+        public_value = None
+    try:
+        if public_value is None:
+            return ""
         return (public_value(key) or "").strip()
+    except SettingsUnreadable:
+        raise
     except Exception:
         return ""
 
@@ -238,33 +381,167 @@ def _chat_model() -> str:
     return _checker_setting("cloud_model") or _checker_setting("groq_model")
 
 
+# Exact name, or an org prefix plus a tag / size suffix. Never a substring.
+_LLAMA_GUARD_NAME = re.compile(
+    r"(?i)^(?:[\w.-]+/)*llama-guard-?[34](?::[\w.-]+|-\d+b(?:-[\w.-]+)?)?$"
+)
+_PROMPT_GUARD_NAME = re.compile(
+    r"(?i)^(?:[\w.-]+/)*(?:llama-)?prompt-guard(?:-\d+)?(?::[\w.-]+|-\d+m(?:-[\w.-]+)?)?$"
+)
+
+
 def format_from_model_name(model: str) -> str:
     """Pick the prompt format from the model id. Nothing is pinned by provider."""
     low = (model or "").strip().lower()
     if not low:
         return "yes_no"
-    compact = low.replace("_", "-")
-    if "prompt-guard" in compact or "promptguard" in compact:
+    if _PROMPT_GUARD_NAME.fullmatch(low):
         return "prompt_guard"
-    # llama-guard3*, llama-guard-3*, llama-guard-4*, llama-guard4*
-    if re.search(r"llama-guard-?3", compact) or re.search(r"llama-guard-?4", compact):
+    if _LLAMA_GUARD_NAME.fullmatch(low):
         return "llama_guard"
     return "yes_no"
 
 
 def _field_for(kind: str) -> str:
-    return CONTENT_FILTER_MODEL_KEY if kind == "content_filter" else CHILD_CHECK_MODEL_KEY
+    if kind == "child_check":
+        return CHILD_CHECK_MODEL_KEY
+    if kind == "image_check":
+        return IMAGE_CHECK_MODEL_KEY
+    return CONTENT_FILTER_MODEL_KEY
+
+
+
+# Vision-capable content checkers only. Age vision stays on the pinned Scout path.
+_VISION_MODEL_NAME = re.compile(
+    r"(?i)(?:^|.*/)?(?:"
+    r"llama-guard-4"
+    r"|llama-4(?:-|:|$)"
+    r"|llava"
+    r"|bakllava"
+    r"|moondream"
+    r"|pixtral"
+    r"|internvl"
+    r"|minicpm-v"
+    r"|qwen(?:2(?:\.5)?)?-vl"
+    r"|qwen-vl"
+    r"|llama3\.2-vision"
+    r"|llama-3\.2-vision"
+    r"|gpt-4o"
+    r"|claude-3"
+    r"|scout"
+    r")"
+)
+
+
+def model_is_vision_capable(model: str) -> bool:
+    """True only for a known vision-capable model id."""
+    low = (model or "").strip().lower()
+    if not low:
+        return False
+    return bool(_VISION_MODEL_NAME.search(low))
+
+
+_CHECKER_WATCH_KEYS = (
+    CONTENT_FILTER_PROVIDER_KEY,
+    CONTENT_FILTER_MODEL_KEY,
+    CHILD_CHECK_PROVIDER_KEY,
+    CHILD_CHECK_MODEL_KEY,
+    IMAGE_CHECK_PROVIDER_KEY,
+    IMAGE_CHECK_MODEL_KEY,
+    TEXT_SAFETY_CHECKS_KEY,
+    "provider_backend",
+    "groq_model",
+    "cloud_model",
+    "ollama_model",
+    "openrouter_model",
+)
+_LAST_SEEN_SETTINGS: dict[str, str] | None = None
+
+
+def _settings_snapshot(root: str | None = None) -> dict[str, str]:
+    try:
+        from core.secrets import load_all
+        data = load_all(root) or {}
+    except Exception:
+        data = {}
+    return {key: str(data.get(key) or "").strip() for key in _CHECKER_WATCH_KEYS}
+
+
+def reset_observed_checker_settings(snapshot: dict[str, str] | None = None) -> None:
+    """Tests only."""
+    global _LAST_SEEN_SETTINGS
+    _LAST_SEEN_SETTINGS = snapshot
+
+
+def mark_checker_settings_saved(data: dict | None = None, root: str | None = None) -> None:
+    """Call after a successful save_all so the save is not also a hand-edit."""
+    global _LAST_SEEN_SETTINGS
+    if data is None:
+        _LAST_SEEN_SETTINGS = _settings_snapshot(root)
+        return
+    _LAST_SEEN_SETTINGS = {key: str((data or {}).get(key) or "").strip() for key in _CHECKER_WATCH_KEYS}
+
+
+def observe_checker_settings(root: str | None = None) -> None:
+    """Audit a hand edit when the bot next reads settings.json."""
+    global _LAST_SEEN_SETTINGS
+    if tests_are_allowing():
+        return
+    if settings_file_problem(root):
+        return
+    current = _settings_snapshot(root)
+    previous = _LAST_SEEN_SETTINGS
+    _LAST_SEEN_SETTINGS = current
+    if previous is None or previous == current:
+        return
+    fields = {}
+    for key in _CHECKER_WATCH_KEYS:
+        old = previous.get(key, "")
+        new = current.get(key, "")
+        if old != new:
+            fields[f"{key}_old"] = old
+            fields[f"{key}_new"] = new
+    if not fields:
+        return
+    try:
+        from core.audit import record
+        record("settings-changed", outcome="success", source="file", **fields)
+    except Exception:
+        pass
 
 
 def _resolve_checker(kind: str) -> CheckerSpec:
-    """Settings if set, otherwise the current chat provider and model."""
-    kind = "child_check" if kind == "child_check" else "content_filter"
-    p_key = CONTENT_FILTER_PROVIDER_KEY if kind == "content_filter" else CHILD_CHECK_PROVIDER_KEY
+    """Settings if set, otherwise the current chat provider and model.
+
+    image_check never falls back to the chat model. A missing or
+    non-vision model fails closed. A settings.json that exists but
+    cannot be read also fails closed for every checker.
+    """
+    if kind not in {"child_check", "image_check"}:
+        kind = "content_filter"
+    try:
+        observe_checker_settings()
+    except Exception:
+        pass
+    problem = settings_file_problem()
+    if problem:
+        return CheckerSpec(kind, field=_field_for(kind), problem="settings_unreadable")
+
+    p_key = {
+        "content_filter": CONTENT_FILTER_PROVIDER_KEY,
+        "child_check": CHILD_CHECK_PROVIDER_KEY,
+        "image_check": IMAGE_CHECK_PROVIDER_KEY,
+    }[kind]
     m_key = _field_for(kind)
-    cfg_provider = _checker_setting(p_key).lower()
+    try:
+        cfg_provider = _checker_setting(p_key).lower()
+        cfg_model = _checker_setting(m_key)
+    except Exception as exc:
+        if type(exc).__name__ == "SettingsUnreadable":
+            return CheckerSpec(kind, field=m_key, problem="settings_unreadable")
+        cfg_provider, cfg_model = "", ""
     if cfg_provider == "groq":
         cfg_provider = "cloud"
-    cfg_model = _checker_setting(m_key)
     chat_provider = _chat_provider()
     chat_model = _chat_model()
 
@@ -273,12 +550,21 @@ def _resolve_checker(kind: str) -> CheckerSpec:
     elif cfg_provider:
         provider = cfg_provider
     else:
-        provider = chat_provider
+        provider = chat_provider if kind != "image_check" else ""
 
     field = m_key
     if cfg_model:
         model = cfg_model
         field = m_key
+    elif kind == "image_check":
+        return CheckerSpec(
+            kind,
+            provider=provider if provider in _CHECKER_PROVIDERS else "",
+            model="",
+            fmt="",
+            field=m_key,
+            problem="blank_model",
+        )
     elif cfg_provider and not cfg_model:
         return CheckerSpec(
             kind,
@@ -300,6 +586,8 @@ def _resolve_checker(kind: str) -> CheckerSpec:
     fmt = format_from_model_name(model)
     if fmt == "prompt_guard":
         return CheckerSpec(kind, provider=provider, model=model, fmt=fmt, field=field, problem="prompt_guard")
+    if kind == "image_check" and not model_is_vision_capable(model):
+        return CheckerSpec(kind, provider=provider, model=model, fmt=fmt, field=field, problem="not_vision")
     return CheckerSpec(kind, provider=provider, model=model, fmt=fmt, field=field)
 
 
@@ -402,6 +690,19 @@ def report_checker_problem(spec: CheckerSpec) -> None:
             f" Model: (none)."
             f" Update {_field_update_phrase(spec)}."
         )
+    elif spec.problem == "settings_unreadable":
+        message = (
+            "Safety checker settings could not be read."
+            f" Update {spec.field or 'settings.json'} in Settings after fixing the file."
+            " The check does not fall back to the chat model."
+        )
+    elif spec.problem == "not_vision":
+        message = (
+            "The image content check needs a vision-capable model."
+            f" Backend: {spec.provider or 'unknown'}."
+            f" Model: {spec.model or '(none)'}."
+            f" Update {_field_update_phrase(spec)}."
+        )
     else:
         message = (
             "Safety checker provider is not recognised."
@@ -464,11 +765,75 @@ def _has_text_backend() -> bool:
     return bool(key)
 
 
+def _log_no_backend(spec: CheckerSpec) -> None:
+    message = (
+        "Safety checker has no usable backend."
+        f" Backend: {spec.provider or 'unknown'}."
+        f" Model: {spec.model or '(none)'}."
+        f" Update {_field_update_phrase(spec)}."
+    )
+    try:
+        from core.audit import api as audit_api
+        audit_api(
+            "safety-check",
+            outcome="error",
+            backend=spec.provider or "unknown",
+            model=spec.model or "",
+            format=spec.fmt or "unknown",
+            kind=spec.kind,
+            field=spec.field,
+            error_type="no-backend",
+        )
+    except Exception:
+        pass
+    try:
+        import logging
+        logging.getLogger("classifier").error(
+            "Safety check has no backend kind=%s backend=%s model=%s field=%s",
+            spec.kind, spec.provider, spec.model, spec.field,
+        )
+    except Exception:
+        pass
+    _emit_checker_error(message)
+
+
+def _log_cache_hit(spec: CheckerSpec, verdict: str) -> None:
+    try:
+        from core.audit import api as audit_api
+        audit_api(
+            "safety-check",
+            outcome="cache",
+            backend=spec.provider or "unknown",
+            model=spec.model,
+            format=spec.fmt or "unknown",
+            kind=spec.kind,
+            verdict=verdict,
+        )
+    except Exception:
+        pass
+    try:
+        import logging
+        logging.getLogger("classifier").info(
+            "Safety check cache hit kind=%s backend=%s model=%s format=%s verdict=%s",
+            spec.kind, spec.provider, spec.model, spec.fmt, verdict,
+        )
+    except Exception:
+        pass
+
+
 def warn_if_unconfigured() -> None:
     """Log once at startup when no real Groq or OpenRouter key is available."""
     global _warned_missing_key
+    try:
+        observe_checker_settings()
+    except Exception:
+        pass
     if tests_are_allowing():
         return
+    try:
+        log_text_safety_checks(startup=True)
+    except Exception:
+        pass
     try:
         log_safety_models()
     except Exception:
@@ -486,26 +851,23 @@ def warn_if_unconfigured() -> None:
         print(f"[classifier] {MISSING_KEY_MESSAGE}", flush=True)
 
 
+_SAFE_VERDICT = re.compile(r"(?is)^safe$")
+_UNSAFE_VERDICT = re.compile(r"(?is)^unsafe(?:\n\s*S\d+(?:,\s*S\d+)*)?$")
+
+
 def _parse_verdict(text: str) -> bool | None:
-    """True = unsafe (block), False = safe, None = unreadable (fail closed)."""
-    if not text or not str(text).strip():
+    """True = unsafe (block), False = safe, None = unreadable (fail closed).
+
+    Only an exact 'safe', or 'unsafe' plus an optional category line
+    matching S\\d+(,\\s*S\\d+)*, counts. Extra words or extra lines fail closed.
+    """
+    cleaned = str(text or "").replace("\r", "\n").strip()
+    if not cleaned:
         return None
-    lines = [ln.strip().lower() for ln in str(text).replace("\r", "\n").split("\n") if ln.strip()]
-    if not lines:
-        return None
-    first = lines[0]
-    if first == "safe" or first.startswith("safe"):
-        if first == "safe" or first.startswith("safe "):
-            return False
-        if first == "safe":
-            return False
-    if first == "unsafe" or first.startswith("unsafe"):
-        return True
-    compact = " ".join(lines)
-    if compact.startswith("unsafe"):
-        return True
-    if compact == "safe" or compact.startswith("safe\n") or compact.startswith("safe "):
+    if _SAFE_VERDICT.fullmatch(cleaned):
         return False
+    if _UNSAFE_VERDICT.fullmatch(cleaned):
+        return True
     return None
 
 
@@ -549,7 +911,7 @@ def escape_template_text(text: str) -> str:
 
 
 def _content_with_images(text: str, images: list | None):
-    escaped = escape_template_text(text or "")
+    escaped = _sanitize_child_text(text or "") if not images else escape_template_text(_prepare_child_body(text or ""))
     if not images:
         return escaped
     parts = [{"type": "text", "text": escaped}]
@@ -686,7 +1048,7 @@ def _ollama_child_prompt(escaped_body: str) -> str:
     still parse as exact safe/unsafe.
     """
     return (
-        "<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n"
+        "<|start_header_id|>user<|end_header_id|>\n\n"
         "Task: Check if there is unsafe content in 'User' messages in "
         "conversations according to our safety policy with the below "
         "categories.\n\n"
@@ -763,21 +1125,172 @@ def _post_ollama_child(escaped_body: str, model: str | None = None, *, spec: Che
         raise RuntimeError("child-check response unreadable") from exc
 
 
-def _post(messages: list) -> str:
-    spec = _resolve_checker("content_filter")
+
+LLAMA_GUARD3_CATEGORIES = (
+    "S1: Violent Crimes.\n"
+    "S2: Non-Violent Crimes.\n"
+    "S3: Sex Crimes.\n"
+    "S4: Child Exploitation.\n"
+    "S5: Defamation.\n"
+    "S6: Specialized Advice.\n"
+    "S7: Privacy.\n"
+    "S8: Intellectual Property.\n"
+    "S9: Indiscriminate Weapons.\n"
+    "S10: Hate.\n"
+    "S11: Self-Harm.\n"
+    "S12: Sexual Content.\n"
+    "S13: Elections.\n"
+    "S14: Code Interpreter Abuse."
+)
+
+
+def _llama_guard_agent_type(messages: list) -> str:
+    last = None
+    for msg in messages or []:
+        if isinstance(msg, dict):
+            last = msg
+    role = str((last or {}).get("role") or "user").strip().lower()
+    return "Agent" if role == "assistant" else "User"
+
+
+def _official_llama_guard3_prompt(messages: list, *, categories: str | None = None) -> str:
+    """Meta official Llama Guard 3 prompt (PROMPT_INSTRUCTIONS_2).
+
+    Built here so Ollama's stock template cannot force the last *User*
+    message. $agent_type is User for input checks and Agent for reply
+    checks. Sent in raw mode; no begin-of-text token (Ollama adds BOS).
+    Each turn is role-label neutralized first.
+    """
+    agent_type = _llama_guard_agent_type(messages)
+    turns: list[str] = []
+    for msg in messages or []:
+        if not isinstance(msg, dict):
+            continue
+        role = str(msg.get("role") or "user").strip().lower()
+        raw = msg.get("content")
+        text = raw if isinstance(raw, str) else ""
+        # If content is already a multimodal list, keep any text parts.
+        if not text and isinstance(raw, list):
+            bits = []
+            for part in raw:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    bits.append(str(part.get("text") or ""))
+                elif isinstance(part, str):
+                    bits.append(part)
+            text = "\n".join(bits)
+        cleaned = _sanitize_child_text(text)
+        label = "Agent" if role == "assistant" else "User"
+        turns.append(f"{label}: {cleaned}")
+    conversation = "\n\n".join(turns)
+    cats = categories if categories is not None else LLAMA_GUARD3_CATEGORIES
+    return (
+        "<|start_header_id|>user<|end_header_id|>\n\n"
+        f"Task: Check if there is unsafe content in '{agent_type}' messages in "
+        "conversations according our safety policy with the below categories.\n\n"
+        "<BEGIN UNSAFE CONTENT CATEGORIES>\n"
+        f"{cats}\n"
+        "<END UNSAFE CONTENT CATEGORIES>\n\n"
+        "<BEGIN CONVERSATION>\n\n"
+        f"{conversation}\n\n"
+        "<END CONVERSATION>\n\n"
+        f"Provide your safety assessment for ONLY THE LAST {agent_type} message "
+        "in the above conversation:\n"
+        " - First line must read 'safe' or 'unsafe'.\n"
+        " - If unsafe, a second line must include a comma-separated list "
+        "of violated categories."
+        "<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n"
+    )
+
+
+def _post_ollama_generate(
+    prompt: str,
+    *,
+    spec: CheckerSpec,
+    kind: str,
+    timeout: int,
+) -> str:
+    model = spec.model
+    if not model:
+        report_checker_problem(spec)
+        raise RuntimeError("checker model missing")
+    body = json.dumps(
+        {
+            "model": model,
+            "prompt": prompt,
+            "raw": True,
+            "stream": False,
+            "think": False,
+            "options": {"temperature": 0, "num_predict": 64},
+        }
+    ).encode("utf-8")
+    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    req = urllib.request.Request(OLLAMA_GENERATE_URL, data=body, headers=headers, method="POST")
+    started = time.perf_counter()
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read()
+            http_resp = resp
+    except Exception as exc:
+        status, err_body = _http_error_payload(exc)
+        if is_missing_model_error(exc, err_body, status):
+            report_missing_model(spec, status=status, detail=err_body)
+        try:
+            from core.audit import api as audit_api
+            audit_api(kind, outcome="error", backend="ollama", model=model, format=spec.fmt)
+        except Exception:
+            pass
+        raise RuntimeError(f"{kind} request failed: {type(exc).__name__}") from exc
+    finally:
+        if kind == "child-check":
+            global _last_child_check_ms
+            _last_child_check_ms = (time.perf_counter() - started) * 1000.0
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+        try:
+            from core.audit import api_from_http
+            api_from_http(kind, http_resp, payload, outcome="success", backend="ollama", model=model, format=spec.fmt)
+        except Exception:
+            pass
+        return _ollama_message_text(payload)
+    except Exception as exc:
+        try:
+            from core.audit import api_from_http
+            api_from_http(kind, http_resp, outcome="error", backend="ollama", model=model, format=spec.fmt)
+        except Exception:
+            pass
+        raise RuntimeError(f"{kind} response unreadable") from exc
+
+
+def _post(messages: list, *, spec: CheckerSpec | None = None) -> str:
+    spec = spec or _resolve_checker("content_filter")
     if spec.problem:
         report_checker_problem(spec)
         raise RuntimeError("classifier configuration error")
-    key, url = _endpoint()
+    key, url = _endpoint_for(spec)
+    if not url:
+        hook = _child_endpoint() if spec.kind == "child_check" else _endpoint()
+        key, url = hook
     _log_checker(spec, url or "")
+    kind = "classifier" if spec.kind != "child_check" else "child-check"
+    timeout = CLASSIFIER_TIMEOUT if spec.kind != "child_check" else CHILD_CHECK_TIMEOUT
     if _is_ollama_url(url):
-        return _post_ollama_chat(messages, model=spec.model, spec=spec, kind="classifier", timeout=CLASSIFIER_TIMEOUT)
+        if spec.fmt == "llama_guard":
+            return _post_ollama_generate(
+                _official_llama_guard3_prompt(messages),
+                spec=spec,
+                kind=kind,
+                timeout=timeout,
+            )
+        return _post_ollama_chat(messages, model=spec.model, spec=spec, kind=kind, timeout=timeout)
     if not key or not url:
         raise RuntimeError("classifier key missing")
+    payload_messages = messages
+    if spec.fmt == "llama_guard":
+        payload_messages = [{"role": "user", "content": _official_llama_guard3_prompt(messages)}]
     body = json.dumps(
         {
             "model": spec.model,
-            "messages": messages,
+            "messages": payload_messages,
             "temperature": 0,
             "max_tokens": 64,
         }
@@ -825,7 +1338,7 @@ def _post(messages: list) -> str:
 def _content_filter_yesno_messages(text: str) -> list[dict]:
     from core.safety import SAFETY_CATEGORIES
     cats = "\n".join(f"- {name}: {desc}" for name, desc in SAFETY_CATEGORIES)
-    escaped = _escape_child_text(text or "")
+    escaped = _sanitize_child_text(text or "")
     user = (
         "You are a content classifier. Answer with only YES or NO, on the "
         "first line, with no punctuation or explanation.\n"
@@ -872,22 +1385,17 @@ def _classify_sync(text: str, *, images: list | None = None) -> str:
         )
         if check:
             return check
-        if not vision_backend_available():
-            return "classifier-vision-unavailable"
-    if not _has_text_backend():
-        return "classifier-error"
+        image_result = _classify_images_sync(text, images)
+    else:
+        image_result = ""
     spec = _resolve_checker("content_filter")
     if spec.problem:
         report_checker_problem(spec)
         return "classifier-error"
-    if images:
-        messages, check = _prepare_messages(
-            [{"role": "user", "content": text or ""}],
-            images=images,
-        )
-        if check:
-            return check
-    elif spec.fmt == "yes_no":
+    if not _has_text_backend() and not _has_backend(spec):
+        _log_no_backend(spec)
+        return "classifier-error"
+    if spec.fmt == "yes_no":
         messages = _content_filter_yesno_messages(text)
     else:
         messages, check = _prepare_messages(
@@ -896,17 +1404,18 @@ def _classify_sync(text: str, *, images: list | None = None) -> str:
         )
         if check:
             return check
-    cache_key = _cache_key(messages, images)
+    cache_key = _cache_key(messages, None)
     cached = _cache_get(cache_key)
     if cached is not None:
+        _log_cache_hit(spec, cached)
         return _with_child_check(cached, text, images=images)
     try:
-        result = _verdict_to_check(_post(messages), spec.fmt)
+        result = _verdict_to_check(_post(messages, spec=spec), spec.fmt)
     except Exception:
         result = "classifier-error"
     if result and result != "classifier-error":
         _cache_put(cache_key, result)
-    return _with_child_check(result, text, images=images)
+    return image_result or _with_child_check(result, text, images=images)
 
 
 def classify(text: str, *, images: list | None = None) -> str:
@@ -955,18 +1464,39 @@ async def classify_async(text: str, *, images: list | None = None) -> str:
     """
     if tests_are_allowing():
         return ""
-    if images and not vision_backend_available():
-        return "classifier-vision-unavailable"
-    messages, check = _prepare_messages(
-        [{"role": "user", "content": text or ""}],
-        images=images,
-    )
-    if check:
-        return check
-    return await _first_blocking(
-        _classify_messages(messages, images=images),
+    spec = _resolve_checker("content_filter")
+    if spec.problem:
+        report_checker_problem(spec)
+        return "classifier-error"
+    image_fail = ""
+    if images:
+        # Image content check is a separate settings-only route. It never
+        # follows content_filter_model. Age vision stays on Scout.
+        image_spec = _resolve_checker("image_check")
+        if image_spec.problem:
+            report_checker_problem(image_spec)
+            image_fail = (
+                "classifier-vision-unavailable"
+                if image_spec.problem in {"blank_model", "not_vision"}
+                else "classifier-error"
+            )
+    if spec.fmt == "yes_no":
+        messages = _content_filter_yesno_messages(text)
+    else:
+        messages, check = _prepare_messages(
+            [{"role": "user", "content": text or ""}],
+            images=None,
+        )
+        if check:
+            return check
+    tasks = [
+        _classify_messages(messages, images=None, spec=spec),
         _with_child_check_async("", text, images=images),
-    )
+    ]
+    if images and not image_fail:
+        tasks.insert(0, _classify_images_async(text, images))
+    result = await _first_blocking(*tasks)
+    return result or image_fail
 
 
 def _prepare_messages(turns: list, *, images: list | None = None) -> tuple[list, str]:
@@ -999,22 +1529,22 @@ def _prepare_messages(turns: list, *, images: list | None = None) -> tuple[list,
     return prepared, ""
 
 
-async def _classify_messages(messages: list, *, images: list | None = None) -> str:
-    spec = _resolve_checker("content_filter")
+async def _classify_messages(messages: list, *, images: list | None = None, spec: CheckerSpec | None = None) -> str:
+    spec = spec or _resolve_checker("content_filter")
     if spec.problem:
         report_checker_problem(spec)
         return "classifier-error"
-    if images and not vision_backend_available():
-        return "classifier-vision-unavailable"
-    if not _has_text_backend():
+    if not _has_backend(spec) and not _has_text_backend():
+        _log_no_backend(spec)
         return "classifier-error"
     cache_key = _cache_key(messages, images)
     cached = _cache_get(cache_key)
     if cached is not None:
+        _log_cache_hit(spec, cached)
         return cached
     try:
         raw = await asyncio.wait_for(
-            asyncio.to_thread(_post, messages),
+            asyncio.to_thread(_post, messages, spec=spec),
             timeout=CLASSIFIER_DEADLINE,
         )
         result = _verdict_to_check(raw, spec.fmt)
@@ -1025,6 +1555,100 @@ async def _classify_messages(messages: list, *, images: list | None = None) -> s
     if result and result != "classifier-error":
         _cache_put(cache_key, result)
     return result
+
+
+def _classify_images_sync(text: str, images: list) -> str:
+    spec = _resolve_checker("image_check")
+    if spec.problem:
+        report_checker_problem(spec)
+        return "classifier-vision-unavailable" if spec.problem in {"blank_model", "not_vision"} else "classifier-error"
+    if not _has_backend(spec):
+        _log_no_backend(spec)
+        return "classifier-error"
+    messages, check = _prepare_messages(
+        [{"role": "user", "content": text or ""}],
+        images=images,
+    )
+    if check:
+        return check
+    try:
+        raw = _post_with_images(messages, spec)
+        return _verdict_to_check(raw, spec.fmt)
+    except Exception:
+        return "classifier-error"
+
+
+async def _classify_images_async(text: str, images: list) -> str:
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(_classify_images_sync, text, images),
+            timeout=CLASSIFIER_DEADLINE,
+        )
+    except Exception:
+        return "classifier-error"
+
+
+def _post_with_images(messages: list, spec: CheckerSpec) -> str:
+    """Image content check. Never uses the raw Guard-3 text prompt."""
+    if spec.problem:
+        report_checker_problem(spec)
+        raise RuntimeError("image-check configuration error")
+    key, url = _endpoint_for(spec)
+    if not url:
+        key, url = _endpoint()
+    _log_checker(spec, url or "")
+    if _is_ollama_url(url):
+        return _post_ollama_chat(
+            messages, model=spec.model, spec=spec, kind="image-check", timeout=CLASSIFIER_TIMEOUT
+        )
+    if not key or not url:
+        raise RuntimeError("image-check key missing")
+    body = json.dumps(
+        {
+            "model": spec.model,
+            "messages": messages,
+            "temperature": 0,
+            "max_tokens": 64,
+        }
+    ).encode("utf-8")
+    headers = {
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    if url.startswith(OPENROUTER_URL):
+        headers["HTTP-Referer"] = "https://github.com/sevinOG/eche"
+        headers["X-Title"] = "Eche"
+    req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=CLASSIFIER_TIMEOUT) as resp:
+            raw = resp.read()
+            http_resp = resp
+    except Exception as exc:
+        status, err_body = _http_error_payload(exc)
+        if is_missing_model_error(exc, err_body, status):
+            report_missing_model(spec, status=status, detail=err_body)
+        try:
+            from core.audit import api as audit_api
+            audit_api("image-check", outcome="error", backend=spec.provider, model=spec.model, format=spec.fmt)
+        except Exception:
+            pass
+        raise RuntimeError(f"image-check request failed: {type(exc).__name__}") from exc
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+        try:
+            from core.audit import api_from_http
+            api_from_http("image-check", http_resp, payload, outcome="success", backend=spec.provider, model=spec.model, format=spec.fmt)
+        except Exception:
+            pass
+        return str(payload["choices"][0]["message"]["content"] or "")
+    except Exception as exc:
+        try:
+            from core.audit import api_from_http
+            api_from_http("image-check", http_resp, outcome="error", backend=spec.provider, model=spec.model, format=spec.fmt)
+        except Exception:
+            pass
+        raise RuntimeError("image-check response unreadable") from exc
 
 
 async def classify_turns_async(turns: list, *, images: list | None = None) -> str:
@@ -1167,7 +1791,7 @@ _LOOKALIKE_BRACKETS = str.maketrans({
 # Role / verdict labels only count with a word boundary and a real separator.
 _ROLE_WORDS = (
     "system", "assistant", "user", "human", "model",
-    "developer", "instruction",
+    "developer", "instruction", "agent",
 )
 _ROLE_ALT = "|".join(_ROLE_WORDS)
 _VERDICT_LABEL_ALT = (
@@ -1405,11 +2029,14 @@ def _child_messages(text: str) -> list[dict]:
 
 
 def _parse_child_verdict(text: str) -> bool | None:
-    """True = references a child (block), False = no. Only exact YES or NO count."""
-    if not text or not str(text).strip():
+    """True = references a child (block), False = no. Only exact YES or NO count.
+
+    Extra lines after YES or NO fail closed.
+    """
+    cleaned = str(text or "").replace("\r", "\n").strip()
+    if not cleaned:
         return None
-    first = str(text).replace("\r", "\n").strip().split("\n", 1)[0].strip()
-    token = first.upper()
+    token = cleaned.upper()
     if token == "YES":
         return True
     if token == "NO":
@@ -1513,6 +2140,7 @@ def _child_check_sync(text: str) -> str:
         report_checker_problem(spec)
         return "child-check-error"
     if not _has_backend(spec) and not _has_text_backend():
+        _log_no_backend(spec)
         return "child-check-error"
     prepared = _prepare_child_body(text)
     for chunk in _child_chunks(prepared):
@@ -1537,7 +2165,12 @@ def _child_check_sync(text: str) -> str:
 async def _child_check_async(text: str) -> str:
     if tests_are_allowing():
         return ""
-    if not _has_text_backend():
+    spec = _resolve_checker("child_check")
+    if spec.problem:
+        report_checker_problem(spec)
+        return "child-check-error"
+    if not _has_backend(spec) and not _has_text_backend():
+        _log_no_backend(spec)
         return "child-check-error"
     try:
         return await asyncio.wait_for(

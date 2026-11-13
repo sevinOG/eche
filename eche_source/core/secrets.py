@@ -84,6 +84,9 @@ PUBLIC_KEYS = (
     "content_filter_model",         # Model id. Blank uses the chat model.
     "child_check_provider",
     "child_check_model",
+    "image_check_provider",         # settings-only vision content check. Blank is off/fail-closed.
+    "image_check_model",            # Must be vision-capable. Does not follow content_filter_model.
+    "text_safety_checks",           # Default ON. Off skips chat text model checks only.
 )
 
 # Map settings key -> environment variable used by the bot
@@ -106,6 +109,10 @@ ENV_MAP = {
 
 _SECRETS_FILENAME = "secrets.dpapi.json"
 _SETTINGS_FILENAME = "settings.json"
+
+
+class SettingsUnreadable(Exception):
+    """settings.json exists but cannot be read or parsed."""
 
 
 def _user_root() -> str:
@@ -580,6 +587,9 @@ def save_all(data: dict[str, Any], root: str | None = None) -> None:
             "content_filter_model",
             "child_check_provider",
             "child_check_model",
+            "image_check_provider",
+            "image_check_model",
+            "text_safety_checks",
         ):
             old_val = str(existing_public.get(key) or "").strip()
             new_val = str(public.get(key) or "").strip()
@@ -597,6 +607,11 @@ def save_all(data: dict[str, Any], root: str | None = None) -> None:
             xai_key_set=key_set,
             **fields,
         )
+        try:
+            from core.classifier import mark_checker_settings_saved
+            mark_checker_settings_saved(public, root)
+        except Exception:
+            pass
     except Exception:
         pass
 

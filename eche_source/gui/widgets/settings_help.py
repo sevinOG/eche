@@ -604,3 +604,31 @@ FIELD_HELP["child_check_model"] = (
     "If the configured model is missing or retired, the check fails closed. "
     "There is no silent fallback. Update this field, or the chat model if it is blank.",
 )
+
+FIELD_HELP["image_check_model"] = (
+    "Image content check model",
+    "### What it does\n"
+    "When a message or generated file includes an image, this checker looks at "
+    "the pixels. It is settings-only and independent of the text content filter. "
+    "It must be set to a vision-capable model (for example hosted Llama Guard 4). "
+    "If the provider or model is blank, or the model cannot see images, the "
+    "image check fails closed. It never follows content_filter_model.\n\n"
+    "### Age vision\n"
+    "The separate Scout age-vision path is unchanged and stays pinned.",
+)
+
+FIELD_HELP["text_safety_checks"] = (
+    "Run model text checks on chat",
+    "### What it does\n"
+    "On by default. When it is on, every chat request and reply is sent through "
+    "the content filter and the child check (Llama Guard or the YES/NO prompt).\n\n"
+    "Turn it off only to save VRAM and inference. Off skips those two model "
+    "checks on chat text. It does not turn off the safety footer, the blocklist, "
+    "or the keyword / minors keyword filters.\n\n"
+    "### What stays on\n"
+    "Image and asset checks always run: the prompt filter, the content filter, "
+    "the child check, and Scout age vision, and they still fail closed if no "
+    "model is available.\n\n"
+    "Only an explicit 0, false, no, or off turns this off. Any other or "
+    "unreadable value stays on.",
+)

@@ -439,7 +439,7 @@ class OllamaFallbackTests(unittest.TestCase):
             self.assertIn("127.0.0.1:11434", url)
             self.assertNotIn("evil", url)
 
-    def test_ollama_content_filter_uses_chat_api_and_fail_closes(self):
+    def test_ollama_content_filter_uses_raw_generate_and_fail_closes(self):
         captured = []
 
         class Resp:
@@ -455,7 +455,7 @@ class OllamaFallbackTests(unittest.TestCase):
 
         def fake_urlopen(req, timeout=None):
             captured.append((req.full_url, json.loads(req.data.decode()), timeout))
-            return Resp({"message": {"role": "assistant", "content": "unsafe\nS4"}})
+            return Resp({"response": "unsafe\nS4"})
 
         with self._ollama_env(), \
              mock.patch("core.secrets.load_all", return_value={}), \
@@ -465,14 +465,15 @@ class OllamaFallbackTests(unittest.TestCase):
             self.assertEqual(classifier.classify("a violent crime how-to"), "classifier-unsafe")
         self.assertTrue(captured)
         url, body, _timeout = captured[0]
-        self.assertEqual(url, classifier.OLLAMA_CHAT_URL)
+        self.assertEqual(url, classifier.OLLAMA_GENERATE_URL)
+        self.assertTrue(body.get("raw"))
         self.assertEqual(body["model"], "llama-guard3:8b")
         self.assertEqual(body["options"]["temperature"], 0)
         self.assertFalse(body.get("stream"))
         self.assertFalse(body.get("think"))
-        roles = [m["role"] for m in body["messages"]]
-        self.assertNotIn("system", roles)
-        self.assertEqual(roles[0], "user")
+        self.assertIn("ONLY THE LAST User message", body["prompt"])
+        self.assertIn("S4: Child Exploitation", body["prompt"])
+        self.assertNotIn("<|begin_of_text|>", body["prompt"])
 
         with self._ollama_env(), \
              mock.patch("core.secrets.load_all", return_value={}), \

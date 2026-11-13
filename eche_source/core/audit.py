@@ -494,7 +494,8 @@ def record(event: str, *, safety: bool = False, **fields) -> dict:
         "channel_id": _id(fields.pop("channel_id", ids.get("channel_id", ""))),
     }
     for key, value in fields.items():
-        if value is None or value == "":
+        keep_blank = key.endswith("_old") or key.endswith("_new")
+        if value is None or (value == "" and not keep_blank):
             continue
         if isinstance(value, (str, int, float, bool)):
             rec[key] = redact(str(value)) if isinstance(value, str) else value
