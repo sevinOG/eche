@@ -840,6 +840,49 @@ class HeldOutIncidentFilterTests(unittest.TestCase):
         self.assertTrue(media_prompt_blocked("p3nc1l k1ss3s 4n 3r4s3r"))
         self.assertTrue(media_prompt_blocked("✏️ 💋"))
 
+    def test_cjk_objects_match_without_spaces(self):
+        # Category coverage: JA, ZH and KO nouns are substrings in
+        # unspaced text. Not held-out probe wording.
+        blocked = [
+            "鉛筆キス消しゴム",
+            "铅笔亲吻橡皮",
+            "연필키스지우개",
+        ]
+        for text in blocked:
+            self.assertTrue(media_prompt_blocked(text), text)
+
+    def test_melt_and_burn_in_each_language(self):
+        # One category case per language, including a German compound.
+        blocked = [
+            "a pencil melts",
+            "el lápiz se derrite",
+            "les allumettes fondent",
+            "der Bleistift schmilzt",
+            "das Streichholz verbrennt",
+            "o lápis derrete",
+            "la matita si scioglie",
+            "карандаш тает",
+            "鉛筆が溶けている",
+            "铅笔融化了",
+            "연필이 녹아",
+        ]
+        self.assertGreaterEqual(len(blocked), 9)
+        for text in blocked:
+            self.assertTrue(media_prompt_blocked(text), text)
+
+    def test_cowboy_and_valentine_decor_pass(self):
+        self.assertFalse(media_prompt_blocked("a cowboy riding a horse"))
+        self.assertFalse(media_prompt_blocked("a valentine's day card with roses"))
+        self.assertFalse(media_prompt_blocked("roses on a wedding card"))
+
+    def test_camelcase_and_reversed_incident_text_are_read(self):
+        self.assertTrue(media_prompt_blocked("PencilKissesEraser"))
+        self.assertTrue(media_prompt_blocked("two pencils kiss"[::-1]))
+
+    def test_brushes_and_chopsticks_count_as_objects(self):
+        self.assertTrue(media_prompt_blocked("two brushes kissing"))
+        self.assertTrue(media_prompt_blocked("a pair of chopsticks in love"))
+
     def test_media_filter_locks_only_after_two_hits_in_an_hour(self):
         from core.asset_limits import (
             is_locked,

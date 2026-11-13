@@ -246,6 +246,10 @@ _OBJECT_LEXICON = frozenset({
     "bagel", "waffle", "pancake", "cereal",
     "crayonbox", "actionfigure", "stuffed", "plush", "plushie",
     "ball", "balloon", "kite", "yoyo", "block", "blocks",
+    "brush", "paintbrush", "chopstick", "chopsticks", "tongs",
+    "peeler", "wok", "strainer", "corkscrew", "palette", "easel",
+    "canvas", "napkin", "coaster", "hairbrush",
+    "card", "bouquet", "petal", "ribbon", "wreath", "garland",
     "sockpuppet", "handpuppet",
     "tazon", "tazón", "taza", "cuchara", "cuchillo", "tenedor", "plato",
     "manzana", "muneca", "muñeca", "juguete", "calcetin", "calcetín",
@@ -300,6 +304,12 @@ _CANDLE_LEXICON = frozenset({
     "candle", "wick", "vela", "candela", "bougie", "chandelle", "kerze",
     "свеча", "свечка", "蜡烛", "蠟燭", "ろうそく", "キャンドル", "양초",
 })
+# Occasion decor, so a valentine card with roses is not an incident.
+_DECOR_LEXICON = frozenset({
+    "rose", "tulip", "daisy", "flower", "vase", "card", "envelope",
+    "letter", "bouquet", "petal", "ribbon", "wreath", "garland",
+    "stamp",
+})
 
 _JOB_STEMS = frozenset({
     "fire", "police", "sales", "business", "chair", "sports", "stunt",
@@ -315,6 +325,14 @@ _HUMAN_COMPOUND_ALLOW = frozenset({
     "spider", "fish", "horse", "ant", "cat", "bat", "iron", "star",
     "pan", "wolf", "bird", "sun", "moon", "ice", "sand", "sea",
     "super", "wonder", "aqua", "air", "snow", "business",
+})
+# Lexicalized X-boy / X-girl words that are not a personified object.
+_HUMAN_COMPOUND_WORDS = frozenset({
+    "cowboy", "cowboys", "cowgirl", "cowgirls",
+    "paperboy", "paperboys", "papergirl", "papergirls",
+    "busboy", "busboys",
+    "tomboy", "tomboys",
+    "playboy", "playboys",
 })
 
 _PERSON_WORDS = frozenset(p.lower() for p in _PERSON) | {
@@ -363,11 +381,19 @@ _HARM_RE = re.compile(
     r"brenn(?:en|t|end)?|verbrannt|in\s+brand|"
     r"queim(?:ar|ado|ando)|em\s+chamas|"
     r"bruci(?:are|ato|ata|ando)|in\s+fiamme|"
-    r"поджиг(?:ать|ает)?|сжиг(?:ать|ает|ая)?|горит|горение"
+    r"поджиг(?:ать|ает)?|сжиг(?:ать|ает|ая)?|горит|горение|"
+    r"derret(?:ir(?:se)?|ido|ida|iendo|e|em|endo)?|derrite[ns]?|"
+    r"fondre|fondent|fondu(?:e|s)?|"
+    r"schmelz(?:en|t|te|end)?|schmilzt|"
+    r"verbrenn(?:t|en|te|ter|tes)?|"
+    r"sciogli(?:e|ersi|endo|ono|a)?|sciolto|"
+    r"тает|таять|тают|таял(?:а|о|и)?|растая(?:л|ла|ть)?"
     r")\b"
     r"|セット.*火|燃(?:え|やす|えている)|炎に|"
-    r"燃烧|着火|放火|火焰|"
-    r"불타|불태|화염|감전"
+    r"燃烧|着火|放火|火焰|融化|熔化|"
+    r"불타|불태|화염|감전|"
+    r"溶け|溶か|"
+    r"녹아|녹는|녹여|녹고|녹인|녹였|녹는다"
     r")"
 )
 _ROMANCE_RE = re.compile(
@@ -523,6 +549,13 @@ def _flatten_screenplay(text: str) -> str:
     return re.sub(r"\s+", " ", raw).strip()
 
 
+def _split_camel(text: str) -> str:
+    """Insert spaces at lower-to-upper boundaries: PencilKissesEraser."""
+    if not text:
+        return ""
+    return re.sub(r"([a-z])([A-Z])", r"\1 \2", text)
+
+
 def _singular_forms(token: str) -> list[str]:
     """Token plus a simple English singular, including irregulars."""
     word = (token or "").lower()
@@ -560,6 +593,15 @@ def _forms(text: str) -> list[str]:
         seeds.append(flat)
         if _map_emoji(flat) != flat:
             seeds.append(_map_emoji(flat))
+    camel = _split_camel(raw)
+    if camel != raw:
+        seeds.append(camel)
+        mapped_camel = _map_emoji(camel)
+        if mapped_camel != camel:
+            seeds.append(mapped_camel)
+        flat_camel = _flatten_screenplay(camel)
+        if flat_camel and flat_camel != camel:
+            seeds.append(flat_camel)
     # Reverse only when bidi controls were present, so ordinary sentences
     # are not inspected backwards (that invented "nina" inside "cleaning").
     stripped = _strip_bidi(raw)
@@ -617,6 +659,9 @@ def _object_stems(text: str) -> set[str]:
     """Nouns marked as objects by a humanizer pattern (POS-free)."""
     found: set[str] = set()
     for m in _COMPOUND_RE.finditer(text or ""):
+        full = re.sub(r"[\s\-]+", "", m.group(0).lower())
+        if full in _HUMAN_COMPOUND_WORDS:
+            continue
         stem = m.group(1).lower()
         if (
             stem in _OBJECT_LEXICON
@@ -645,6 +690,28 @@ def _object_stems(text: str) -> set[str]:
     return found
 
 
+# Scripts that do not use spaces between words. Minors matching already
+# treats these lexicon terms as substrings; the incident rule must too.
+_CJK_CHAR_RE = re.compile(
+    r"[\u1100-\u11ff\u3040-\u30ff\u3130-\u318f"
+    r"\u3400-\u9fff\uac00-\ud7af\uf900-\ufaff]"
+)
+_CJK_OBJECT_TERMS = tuple(
+    sorted(
+        (word for word in _OBJECT_LEXICON if _CJK_CHAR_RE.search(word)),
+        key=len,
+        reverse=True,
+    )
+)
+
+
+def _cjk_lexicon_hits(text: str) -> set[str]:
+    raw = text or ""
+    if not raw or not _CJK_CHAR_RE.search(raw):
+        return set()
+    return {term for term in _CJK_OBJECT_TERMS if term in raw}
+
+
 def _lexicon_hits(text: str) -> set[str]:
     found: set[str] = set()
     raw = (text or "").lower()
@@ -655,6 +722,7 @@ def _lexicon_hits(text: str) -> set[str]:
         for form in _singular_forms(token):
             if form in _OBJECT_LEXICON:
                 found.add(form)
+    found |= _cjk_lexicon_hits(text or "")
     return found
 
 
@@ -683,11 +751,14 @@ def _anthro_incident(text: str) -> bool:
     distress = bool(_DISTRESS_RE.search(raw))
     animals = objects & _ANIMAL_LEXICON
     foods_candles = objects & (_FOOD_LEXICON | _CANDLE_LEXICON)
-    other = objects - animals - foods_candles
+    decor = objects & _DECOR_LEXICON
+    soft = foods_candles | decor
+    other = objects - animals - soft
 
-    # Food or candles + cut/melt/catch-fire only count with distress or
-    # object-directed romance, so cooking and decor scenes stay allowed.
-    if foods_candles and not other and not animals:
+    # Food, candles or decor + cut/melt/catch-fire only count with
+    # distress or object-directed romance, so cooking, decor and
+    # wedding/valentine scenes stay allowed.
+    if soft and not other and not animals:
         mild_only = bool(_MILD_HARM_RE.search(raw)) and not (
             harm and _HARM_RE.search(_MILD_HARM_RE.sub(" ", raw))
         )
@@ -705,7 +776,7 @@ def _anthro_incident(text: str) -> bool:
 
     # Pets cuddling is not an incident. Animal + romance needs harm too,
     # or a humanizer (already handled above).
-    if animals and not other and not foods_candles:
+    if animals and not other and not soft:
         if romance and not harm:
             romance = False
 
@@ -759,5 +830,16 @@ def media_prompt_blocked(text: str) -> bool:
     for form in _structural_forms(raw):
         inspect = _masked(form)
         if inspect.strip() and _anthro_incident(inspect):
+            return True
+    # Reversed form of the whole string, incident rule only. Do not run
+    # the always-list on it, and do not reverse each token (that invented
+    # "nina" inside "cleaning").
+    whole = _masked(raw).strip()
+    if whole and _anthro_incident(whole[::-1]):
+        return True
+    camel = _split_camel(whole)
+    if camel != whole:
+        flipped = _masked(camel).strip()
+        if flipped and _anthro_incident(flipped[::-1]):
             return True
     return False
