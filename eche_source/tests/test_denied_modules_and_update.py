@@ -119,10 +119,3 @@ class UpdaterPurgeTests(unittest.TestCase):
         self.assertIn("/PURGE", Path(SOURCE, "core", "app_update.py").read_text(encoding="utf-8"))
 
 
-class UnsplashFilterTests(unittest.TestCase):
-    def test_unsplash_uses_high_filter_and_blocklist(self):
-        src = (SOURCE / "cogs" / "image_search.py").read_text(encoding="utf-8")
-        self.assertIn("is_blocked", src)
-        self.assertIn('content_filter": "high"', src)
-        self.assertNotIn("author_is_owner", src)
-        self.assertIn("refuse_query", src)

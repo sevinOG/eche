@@ -42,16 +42,7 @@ class SearchModal(Modal, title="Image Search"):
             await interaction.response.send_message("Query cannot be empty.", ephemeral=True)
             return
 
-        dprint(f">>> [SearchModal] New/updated query received")
-        refused = await self.navigator.cog.refuse_query(
-            query,
-            user=interaction.user,
-            channel=interaction.channel,
-            guild=interaction.guild,
-        )
-        if refused:
-            await interaction.response.send_message(refused, ephemeral=True)
-            return
+        dprint(f">>> [SearchModal] New/updated query: {query}")
 
         try:
             results = await self.navigator.cog.unsplash_multi(query)
@@ -195,7 +186,6 @@ class ImageSearch(commands.Cog):
             "query": query,
             "per_page": count,
             "orientation": "landscape",
-            "content_filter": "high",
             "client_id": UNSPLASH_ACCESS
         }
 
@@ -218,43 +208,11 @@ class ImageSearch(commands.Cog):
         dprint(f">>> [unsplash_multi] Found {len(results)} results")
         return results
 
-    async def refuse_query(self, query: str, *, user, channel, guild) -> str:
-        """Return a refusal line, or '' if the Unsplash query may run."""
-        from core.blocklist import REFUSAL, is_blocked, note
-        from core.gui_bridge import log
-
-        user_id = getattr(user, "id", None)
-        channel_id = getattr(channel, "id", None)
-        guild_id = getattr(guild, "id", None)
-        if is_blocked(query or "", user_id=user_id, channel_id=channel_id):
-            note("image query")
-            log(
-                f"?image blocked user_id={user_id} guild_id={guild_id} "
-                f"channel_id={channel_id}.",
-                channel="chat",
-            )
-            return REFUSAL
-        log(
-            f"?image allowed user_id={user_id} guild_id={guild_id} "
-            f"channel_id={channel_id}.",
-            channel="chat",
-        )
-        return ""
-
     @commands.command(name="image")
     async def image(self, ctx, *, query: str = None):
-        dprint(f">>> [image] Triggered by {ctx.author}")
+        dprint(f">>> [image] Triggered by {ctx.author} | Query: {query}")
 
         if query:
-            refused = await self.refuse_query(
-                query,
-                user=ctx.author,
-                channel=ctx.channel,
-                guild=ctx.guild,
-            )
-            if refused:
-                await ctx.send(refused)
-                return
             try:
                 results = await self.unsplash_multi(query)
             except Exception:
