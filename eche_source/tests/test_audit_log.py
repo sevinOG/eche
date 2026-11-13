@@ -96,14 +96,8 @@ def _collect_command(item, found: list[str], state: dict) -> None:
 
 
 def _records(path: Path) -> list[dict]:
-    if not path.exists():
-        return []
-    rows = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        rows.append(json.loads(line))
-    return rows
+    from core import audit as audit_mod
+    return list(audit_mod.iter_records(str(path)))
 
 
 class AuditLogTests(unittest.TestCase):
@@ -337,6 +331,80 @@ class AuditLogTests(unittest.TestCase):
         image_src = image
         # ?image itself is unchanged as a command; generic audit is the hook.
         self.assertIn('name="image"', image_src)
+        self.assertIn("on_message_edit", bot)
+        self.assertIn("on_app_command_completion", bot)
+        events = (SOURCE / "cogs" / "events" / "on_message.py").read_text(encoding="utf-8")
+        self.assertIn("audit_chat", events)
+
+    def test_safety_write_error_is_loud(self):
+        alerts = []
+        def boom(*a, **k):
+            raise OSError("disk full")
+        with mock.patch.object(self.audit_mod, "_write_once", side_effect=boom), \
+             mock.patch.object(self.audit_mod, "_alert_write_failure", side_effect=lambda exc, safety: alerts.append((str(exc), safety))):
+            with self.assertRaises(OSError):
+                self.audit_mod.block("llm-input-always", user_id=1, channel_id=2)
+        self.assertTrue(alerts)
+        self.assertTrue(alerts[0][1])
+
+    def test_ordinary_write_is_best_effort_after_alert(self):
+        def boom(*a, **k):
+            raise OSError("disk full")
+        with mock.patch.object(self.audit_mod, "_write_once", side_effect=boom):
+            rec = self.audit_mod.command("ping", "success", user_id=1, channel_id=2)
+        self.assertEqual(rec.get("name"), "ping")
+        self.assertTrue((self.root / "logs" / "audit.alert").exists())
+
+    def test_rotate_renames_without_truncating_blocks(self):
+        self.audit_mod.AUDIT_MAX_BYTES = 200
+        try:
+            self.audit_mod.block("keep-me-" + ("x" * 80), user_id=1, channel_id=2)
+            first = self.audit.read_text(encoding="utf-8")
+            self.audit_mod.block("second-block-" + ("y" * 80), user_id=1, channel_id=2)
+        finally:
+            self.audit_mod.AUDIT_MAX_BYTES = 5 * 1024 * 1024
+        rotated = list((self.root / "logs").glob("audit.jsonl.*"))
+        self.assertTrue(rotated, "expected a renamed archive")
+        archive_text = rotated[0].read_text(encoding="utf-8")
+        current = self.audit.read_text(encoding="utf-8") if self.audit.exists() else ""
+        combined = archive_text + current
+        self.assertIn("keep-me-", combined)
+        self.assertIn("second-block-", combined)
+        # Nothing was truncated away
+        self.assertIn("x" * 80, combined)
+
+    def test_value_scrub_covers_webhooks_and_bot_tokens(self):
+        webhook = "https://discord.com/api/webhooks/123456789012345678/abcdefghijklmnopqrstuvwxyzABCDEFGH"
+        token = ".".join((
+            "MTIzNDU2Nzg5MDEyMzQ1Njc4",
+            "GHijkl",
+            "mnopqrstuvwxyzABCDEFGHIJKLMNO123456",
+        ))
+        cleaned = self.audit_mod.redact(f"hook={webhook} raw={token}")
+        self.assertNotIn("abcdefghijklmnopqrstuvwxyzABCDEFGH", cleaned)
+        self.assertNotIn(token, cleaned)
+        self.assertIn("[redacted]", cleaned)
+        with mock.patch.dict(os.environ, {"DISCORD_TOKEN": "super-secret-discord-token-value"}):
+            cleaned = self.audit_mod.redact("leaked super-secret-discord-token-value in a log")
+            self.assertNotIn("super-secret-discord-token-value", cleaned)
+
+    def test_chat_event_and_torn_last_line(self):
+        self.audit_mod.chat(kind="mention", user_id=11, channel_id=22)
+        rec = [r for r in _records(self.audit) if r.get("event") == "chat"][-1]
+        self.assertEqual(rec.get("kind"), "mention")
+        self.assertEqual(rec.get("user_id"), "11")
+        with self.audit.open("a", encoding="utf-8") as fh:
+            fh.write('{"event":"torn","ts":"')
+        rows = _records(self.audit)
+        self.assertTrue(any(r.get("event") == "chat" for r in rows))
+        self.assertFalse(any(r.get("event") == "torn" for r in rows))
+
+    def test_command_completion_logs_refusal_after_guardrail(self):
+        self.audit_mod.block("llm-output-always", user_id=1, channel_id=2)
+        self.audit_mod.command("ask", "success", user_id=1, channel_id=2)
+        rec = [r for r in _records(self.audit) if r.get("event") == "command"][-1]
+        self.assertEqual(rec.get("outcome"), "refusal")
+        self.assertEqual(rec.get("name"), "ask")
 
 
 if __name__ == "__main__":

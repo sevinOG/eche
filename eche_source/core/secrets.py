@@ -248,6 +248,8 @@ def _restrict_acl_windows(path: str) -> None:
                 "/inheritance:r",
                 "/grant:r",
                 f"{user}:(R,W)",
+                "/grant:r",
+                "SYSTEM:(R,W)",
             ],
             check=False,
             capture_output=True,

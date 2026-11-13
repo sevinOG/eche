@@ -18,10 +18,14 @@ import json
 import os
 import re
 import threading
+import time
 from datetime import datetime, timezone
 from typing import Any
 
 AUDIT_RELATIVE = os.path.join("logs", "audit.jsonl")
+AUDIT_FALLBACK_RELATIVE = os.path.join("logs", "audit.fallback.jsonl")
+AUDIT_ALERT_RELATIVE = os.path.join("logs", "audit.alert")
+AUDIT_MAX_BYTES = 5 * 1024 * 1024
 
 _lock = threading.Lock()
 _bound: contextvars.ContextVar[dict[str, Any]] = contextvars.ContextVar(
@@ -42,6 +46,20 @@ _SECRET_TOKEN = re.compile(
     r"(?i)\b(?:bearer\s+[A-Za-z0-9\-._~+/]+=*|sk-[A-Za-z0-9\-._]+|gsk_[A-Za-z0-9]+|"
     r"sk-or-[A-Za-z0-9\-._]+)\b"
 )
+# Discord webhooks, bare or hook=...
+_WEBHOOK_RE = re.compile(
+    r"(?i)(?:https?://)?(?:(?:canary|ptb)\.)?discord(?:app)?\.com/api/webhooks/\d+/[A-Za-z0-9_-]+"
+    r"|(?:\bhook\s*=\s*)(?:https?://\S+|\S+)"
+)
+# Discord bot token shape, with or without a "Bot " prefix.
+_BOT_TOKEN_RE = re.compile(
+    r"(?:\bBot\s+)?[A-Za-z0-9_-]{23,28}\.[A-Za-z0-9_-]{6,7}\.[A-Za-z0-9_-]{27,}"
+)
+_refusal: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "eche_audit_refusal", default=False
+)
+_write_alerted = False
+
 _HEADER_ID_KEYS = (
     "x-request-id",
     "x-groq-id",
@@ -86,11 +104,64 @@ def _id(value) -> str:
     return str(value)
 
 
+def mark_refusal() -> None:
+    """A guardrail fired during this command; completion should log refusal."""
+    _refusal.set(True)
+
+
+def consume_refusal() -> bool:
+    if _refusal.get(False):
+        _refusal.set(False)
+        return True
+    return False
+
+
+def _configured_secret_values() -> list[str]:
+    values: list[str] = []
+    try:
+        from core.secrets import ENV_MAP, SECRET_KEYS, load_all
+
+        cfg = load_all() or {}
+        for key in (*SECRET_KEYS, "discord_token", "inf_api_key", "openrouter_api_key"):
+            val = str(cfg.get(key) or "").strip()
+            if len(val) >= 8:
+                values.append(val)
+        for env_name in ENV_MAP.values():
+            val = str(os.environ.get(env_name) or "").strip()
+            if len(val) >= 8:
+                values.append(val)
+    except Exception:
+        pass
+    # Optional GUI sentinel, only when present in this tree / environment.
+    for name in ("ECHE_GUI_SENTINEL",):
+        val = str(os.environ.get(name) or "").strip()
+        if len(val) >= 8:
+            values.append(val)
+        try:
+            from core import secrets as secrets_mod
+            if hasattr(secrets_mod, "public_value"):
+                sent = str(secrets_mod.public_value("eche_gui_sentinel") or "").strip()
+                if len(sent) >= 8:
+                    values.append(sent)
+        except Exception:
+            pass
+    # Unique longest-first so a short value does not mask a longer one.
+    uniq = []
+    for val in sorted(set(values), key=len, reverse=True):
+        uniq.append(val)
+    return uniq
+
+
 def redact(text: str) -> str:
     """Strip secrets, tokens, and nonces. Safe to run on any log payload."""
     raw = "" if text is None else str(text)
     raw = _SECRET_ASSIGN.sub(lambda m: m.group(0).split("=")[0].split(":")[0].rstrip() + "=[redacted]", raw)
     raw = _SECRET_TOKEN.sub("[redacted]", raw)
+    raw = _WEBHOOK_RE.sub("[redacted]", raw)
+    raw = _BOT_TOKEN_RE.sub("[redacted]", raw)
+    for val in _configured_secret_values():
+        if val and val in raw:
+            raw = raw.replace(val, "[redacted]")
     return raw
 
 
@@ -105,6 +176,124 @@ def audit_path() -> str:
     path = os.path.join(root, AUDIT_RELATIVE)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     return path
+
+
+
+def _fallback_path() -> str:
+    from core.paths import ensure_user_layout
+    root = ensure_user_layout()
+    path = os.path.join(root, AUDIT_FALLBACK_RELATIVE)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    return path
+
+
+def _alert_path() -> str:
+    from core.paths import ensure_user_layout
+    root = ensure_user_layout()
+    path = os.path.join(root, AUDIT_ALERT_RELATIVE)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    return path
+
+
+def _apply_acl(path: str) -> None:
+    try:
+        from core.secrets import _restrict_acl_windows
+        _restrict_acl_windows(path)
+    except Exception:
+        try:
+            os.chmod(path, 0o600)
+        except Exception:
+            pass
+
+
+def _rotate_if_needed(path: str) -> None:
+    """Rename a full log aside. Never truncate, including block events."""
+    try:
+        if not os.path.isfile(path) or os.path.getsize(path) < AUDIT_MAX_BYTES:
+            return
+    except OSError:
+        return
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    dest = f"{path}.{stamp}"
+    n = 1
+    while os.path.exists(dest):
+        n += 1
+        dest = f"{path}.{stamp}-{n}"
+    os.rename(path, dest)
+    _apply_acl(dest)
+
+
+def _write_once(path: str, line: str) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write(line + "\n")
+        fh.flush()
+        os.fsync(fh.fileno())
+    _apply_acl(path)
+
+
+def _append_line(path: str, line: str, *, safety: bool, rotate: bool = True, retries: int = 3) -> None:
+    last: Exception | None = None
+    for attempt in range(max(1, retries)):
+        try:
+            with _lock:
+                if rotate:
+                    _rotate_if_needed(path)
+                _write_once(path, line)
+            return
+        except Exception as exc:
+            last = exc
+            time.sleep(0.05 * (attempt + 1))
+    assert last is not None
+    raise last
+
+
+def _alert_write_failure(exc: Exception, *, safety: bool) -> None:
+    global _write_alerted
+    kind = "Safety audit" if safety else "Audit"
+    message = f"{kind} write failed: {type(exc).__name__}: {exc}"
+    try:
+        path = _alert_path()
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(f"{_now()} {message}\n")
+            fh.flush()
+        _apply_acl(path)
+    except Exception:
+        pass
+    try:
+        from core.gui_bridge import log
+        log(message, channel="chat")
+    except Exception:
+        print(f"[audit] {message}", flush=True)
+    _write_alerted = True
+
+
+def iter_records(path: str | None = None):
+    """Yield parsed audit records, skipping a torn last line."""
+    target = path or audit_path()
+    try:
+        with open(target, "r", encoding="utf-8") as fh:
+            raw = fh.read()
+    except OSError:
+        return
+    lines = raw.splitlines()
+    for i, line in enumerate(lines):
+        if not line.strip():
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            # A torn last line is dropped; earlier complete lines stay.
+            if i == len(lines) - 1:
+                continue
+            continue
+        if isinstance(rec, dict):
+            yield rec
+
+
+def chat(*, kind: str = "mention", **extra) -> dict:
+    """LLM mention or reply turn (not a slash/prefix command)."""
+    return record("chat", kind=kind, **extra)
 
 
 def _ids_from_ctx(ctx) -> dict[str, str]:
@@ -133,7 +322,13 @@ def _qualified_command(ctx) -> str:
 
 
 def record(event: str, *, safety: bool = False, **fields) -> dict:
-    """Append one audit record and emit a GUI log line. Never raises."""
+    """Append one audit record and emit a GUI log line.
+
+    Ordinary command/tool/API writes are best-effort after a persistent
+    alert exists. Safety/block writes retry, fall back to a sidecar file,
+    raise a persistent GUI/owner alert, and then raise if the write still
+    failed. Block events are never truncated or discarded silently.
+    """
     ids = bound_ids()
     rec: dict[str, Any] = {
         "ts": _now(),
@@ -158,15 +353,22 @@ def record(event: str, *, safety: bool = False, **fields) -> dict:
         if key.lower() in _SECRET_KEYS or "nonce" in key.lower():
             rec.pop(key, None)
     line = json.dumps(rec, ensure_ascii=False, separators=(",", ":"))
+    is_safety = bool(safety or event == "block")
+    write_error: Exception | None = None
     try:
-        path = audit_path()
-        with _lock:
-            with open(path, "a", encoding="utf-8") as fh:
-                fh.write(line + "\n")
-                fh.flush()
-                os.fsync(fh.fileno())
-    except Exception:
-        pass
+        _append_line(audit_path(), line, safety=is_safety)
+    except Exception as exc:
+        write_error = exc
+        if is_safety:
+            try:
+                _append_line(_fallback_path(), line, safety=True, rotate=False)
+                write_error = None
+            except Exception as fallback_exc:
+                write_error = fallback_exc
+        _alert_write_failure(write_error or exc, safety=is_safety)
+        if is_safety and write_error is not None:
+            raise
+
     try:
         from core.gui_bridge import log
 
@@ -204,6 +406,8 @@ def _merge_ids(ids: dict, extra: dict) -> dict:
 
 
 def command(name: str, outcome: str, *, ctx=None, **extra) -> dict:
+    if consume_refusal() and (outcome or "").lower() == "success":
+        outcome = "refusal"
     ids = _merge_ids(_ids_from_ctx(ctx), extra)
     return record(
         "command",
@@ -228,6 +432,7 @@ def tool(name: str, outcome: str, *, ctx=None, message=None, **extra) -> dict:
 
 
 def block(category: str, *, footer_hash: str = "", **extra) -> dict:
+    mark_refusal()
     digest = footer_hash
     if not digest:
         try:

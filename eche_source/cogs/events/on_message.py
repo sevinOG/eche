@@ -326,6 +326,17 @@ class OnMessage(commands.Cog):
             await self._record_server_line(message, (message.content or "").strip())
             return
 
+        try:
+            from core.audit import chat as audit_chat
+            audit_chat(
+                kind="reply" if is_reply else "mention",
+                user_id=getattr(getattr(message, "author", None), "id", None),
+                guild_id=getattr(getattr(message, "guild", None), "id", None),
+                channel_id=getattr(getattr(message, "channel", None), "id", None),
+            )
+        except Exception:
+            pass
+
         # Link embeds show up just after the create event. Attachments and
         # forwards are already on the message.
         try:

@@ -272,6 +272,36 @@ class Eche(commands.Bot):
         except Exception:
             pass
 
+    async def on_message_edit(self, before, after):
+        try:
+            from core.audit import bind_from_message, record
+            bind_from_message(after)
+            record(
+                "message_edit",
+                user_id=getattr(getattr(after, "author", None), "id", None),
+                guild_id=getattr(getattr(after, "guild", None), "id", None),
+                channel_id=getattr(getattr(after, "channel", None), "id", None),
+            )
+        except Exception:
+            pass
+
+    async def on_app_command_completion(self, interaction, command):
+        try:
+            from core.audit import command as audit_command
+            user = getattr(interaction, "user", None)
+            guild = getattr(interaction, "guild", None)
+            channel = getattr(interaction, "channel", None)
+            name = getattr(command, "qualified_name", None) or getattr(command, "name", None) or "app"
+            audit_command(
+                str(name),
+                "success",
+                user_id=getattr(user, "id", None),
+                guild_id=getattr(guild, "id", None),
+                channel_id=getattr(channel, "id", None),
+            )
+        except Exception:
+            pass
+
     async def on_command_error(self, ctx, error):
         if isinstance(error, commands.CommandNotFound):
             return
