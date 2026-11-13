@@ -230,6 +230,20 @@ class NoMediaGenerationTests(unittest.TestCase):
             "wan2.2-t2v",
             "minimax/hailuo-video",
             "some-i2v-model",
+            "v-e-o-3",
+            "s.o.r.a",
+            "kl1ng",
+            "hai_luo",
+            "ѕora",
+            "veo\u200b3",
+            "sora\u00ad2",
+            "runway/gen-4",
+            "luma/ray-2",
+            "pika-2.2",
+            "seedance-1-pro",
+            "wan-2.5",
+            "mochi-1",
+            "hunyuanvideo",
         ):
             self.assertTrue(is_image_model_id(model), model)
             self.assertEqual(reject_image_model(model, "llama3"), "llama3")
@@ -239,6 +253,11 @@ class NoMediaGenerationTests(unittest.TestCase):
         self.assertFalse(is_image_model_id("llama-3.2-11b-vision-preview"))
         self.assertFalse(is_image_model_id("llama-4-scout"))
         self.assertFalse(is_image_model_id("qwen2.5-vl"))
+        self.assertFalse(is_image_model_id("qwen2.5-vl-72b"))
+        self.assertFalse(is_image_model_id("meta-llama/llama-4-maverick"))
+        self.assertFalse(is_image_model_id("openai/gpt-oss-120b"))
+        self.assertFalse(is_image_model_id("deepseek/deepseek-v3"))
+        self.assertFalse(is_image_model_id("kimi-k2"))
 
         with tempfile.TemporaryDirectory(prefix="eche-model-") as raw:
             root = Path(raw)
