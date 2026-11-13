@@ -370,6 +370,28 @@ def _model() -> str:
     return raw
 
 
+def _chat_fallback() -> str:
+    backend = _provider_backend()
+    if backend == "ollama":
+        return DEFAULT_OLLAMA_MODEL
+    if backend == "openrouter":
+        return DEFAULT_OPENROUTER_MODEL
+    return DEFAULT_MODEL
+
+
+def _safe_chat_model(model: str) -> str:
+    """Never send an image/video generator id. Used by every request path."""
+    raw = (model or "").strip()
+    try:
+        from core.media_scan import usable_chat_model
+        raw = usable_chat_model(raw, "")
+    except Exception:
+        pass
+    if _model_is_unset(raw):
+        return _chat_fallback()
+    return raw
+
+
 def _headers() -> dict:
     headers = {
         "Authorization": f"Bearer {_api_key()}",
@@ -959,7 +981,7 @@ async def _build_payload(
 ) -> dict:
     messages = await _outgoing_messages_async(messages)
     payload = {
-        "model": model,
+        "model": _safe_chat_model(model),
         "messages": messages,
         "max_tokens": max_tokens,
         "temperature": temperature,
@@ -2139,7 +2161,7 @@ async def _groq_sdk_call(
     client = AsyncGroq(api_key=api_key)
 
     kwargs: dict = {
-        "model": model,
+        "model": _safe_chat_model(model),
         "messages": messages,
         "temperature": temperature,
         "max_completion_tokens": max_completion_tokens,

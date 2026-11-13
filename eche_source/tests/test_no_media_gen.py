@@ -8,6 +8,7 @@ import ast
 import importlib
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -249,6 +250,23 @@ class NoMediaGenerationTests(unittest.TestCase):
             "gemini-omni",
             "midjourney",
             "seedream-4",
+            "1mage",
+            "gpt_1mage",
+            "cogvideox",
+            "veo3fast",
+            "xsora2",
+            "rayflash",
+            "sora2pro",
+            "text2video",
+            "img2vid",
+            "sd3.5",
+            "ideogram-v3",
+            "recraft-v3",
+            "mj-v7",
+            "v\u1d07o",
+            "\ua731ora",
+            "pik@",
+            "$ora",
         ):
             self.assertTrue(is_image_model_id(model), model)
             # Saved settings are kept; only usable_chat_model swaps in a fallback.
@@ -355,6 +373,40 @@ class NoMediaGenerationTests(unittest.TestCase):
                     if not modality or "text" in modality or "chat" in str(item).lower():
                         blocked.append(model_id)
         self.assertEqual(blocked, [], "chat models wrongly rejected: " + repr(blocked[:20]))
+
+    def test_payload_and_summarizer_reject_image_model_ids(self):
+        import os
+        from core.client import _build_payload
+        from core.media_scan import is_image_model_id
+        from core.summarizer_prompt import get_summarizer_model
+
+        body = _build_payload(
+            [{"role": "user", "content": "hi"}],
+            "openai/gpt-image-1",
+            128,
+            0.2,
+        )
+        self.assertFalse(is_image_model_id(body["model"]), body["model"])
+        self.assertTrue(body["model"])
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "GROQ_MODEL": "google/gemini-2.5-flash-image",
+                "SUMMARIZER_MODEL": "openai/gpt-image-1",
+            },
+            clear=False,
+        ):
+            summary = get_summarizer_model()
+            self.assertFalse(is_image_model_id(summary), summary)
+            self.assertTrue(summary)
+            again = _build_payload(
+                [{"role": "user", "content": "hi"}],
+                os.environ["GROQ_MODEL"],
+                128,
+                0.2,
+            )
+            self.assertFalse(is_image_model_id(again["model"]), again["model"])
 
     def test_runtime_urls_do_not_build_generation_paths(self):
         fragments = (
