@@ -172,6 +172,11 @@ def purge_removed_program_files(stage: str | Path, target: str | Path) -> list[s
             f"(not on the removed-files list): {sample}{extra}",
             flush=True,
         )
+    try:
+        from core.audit import safe_activity
+        safe_activity("updater", action="purge", outcome="success", removed=len(removed))
+    except Exception:
+        pass
     return removed
 
 
@@ -421,6 +426,11 @@ del "%~f0"
 exit /b 0
 """
     Path(path).write_text(script, encoding="utf-8")
+    try:
+        from core.audit import safe_activity
+        safe_activity("updater", action="write-handoff", outcome="success")
+    except Exception:
+        pass
     return path
 
 
@@ -428,6 +438,11 @@ def launch_handoff(script_path: str) -> None:
     """Start the script in its own console so it survives this process exiting."""
     if not os.path.isfile(script_path):
         raise FileNotFoundError(script_path)
+    try:
+        from core.audit import safe_activity
+        safe_activity("updater", action="launch-handoff", outcome="success")
+    except Exception:
+        pass
     flags = 0
     if sys.platform.startswith("win"):
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)

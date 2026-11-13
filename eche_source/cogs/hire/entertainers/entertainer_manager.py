@@ -155,6 +155,11 @@ async def entertainer_background_loop(bot):
     """
 
     await bot.wait_until_ready()
+    try:
+        from core.audit import safe_activity
+        safe_activity("entertainer-loop", outcome="success", action="start")
+    except Exception:
+        pass
     bank: Bank = bot.get_cog("Bank")
 
     await rebuild_jobs_from_pins(bot)
@@ -217,6 +222,17 @@ async def entertainer_background_loop(bot):
 
                 if channel:
                     await channel.send(f"<@{user_id}> {msg} (Batch: `{batch_id}`)")
+                    try:
+                        from core.audit import safe_activity
+                        safe_activity(
+                            "entertainer-tick",
+                            outcome="success",
+                            user_id=user_id,
+                            guild_id=invoke_guild_id,
+                            channel_id=invoke_channel_id,
+                        )
+                    except Exception:
+                        pass
 
                 # If no ticks left or expired, mark for removal
                 if job["ticks_remaining"] <= 0 or datetime.utcnow() >= job["expires_at"]:

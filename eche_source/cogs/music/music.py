@@ -11,6 +11,22 @@ from contextlib import contextmanager
 
 from core.paths import ensure_user_layout, find_ffmpeg
 
+def audit_after_playback(ctx=None, error=None) -> None:
+    """Audit hook for the voice client after_playback callback."""
+    try:
+        from core.audit import safe_activity
+        safe_activity(
+            "music-after-playback",
+            outcome="error" if error else "success",
+            error_type=type(error).__name__ if error else "",
+            user_id=getattr(getattr(ctx, "author", None), "id", None),
+            guild_id=getattr(getattr(ctx, "guild", None), "id", None),
+            channel_id=getattr(getattr(ctx, "channel", None), "id", None),
+        )
+    except Exception:
+        pass
+
+
 _ffmpeg_path = find_ffmpeg()
 if _ffmpeg_path:
     _ff_dir = os.path.dirname(_ffmpeg_path)
@@ -773,6 +789,7 @@ class Music(commands.Cog):
             return
 
         def after_playback(error):
+            audit_after_playback(ctx, error)
             asyncio.run_coroutine_threadsafe(
                 self.play_next(ctx),
                 self.bot.loop

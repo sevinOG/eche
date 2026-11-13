@@ -544,6 +544,11 @@ def save_all(data: dict[str, Any], root: str | None = None) -> None:
 
     _save_public(root, public)
     _save_encrypted_secrets(root, secrets)
+    try:
+        from core.audit import safe_activity
+        safe_activity("settings-save", outcome="success")
+    except Exception:
+        pass
 
 
 def apply_to_environ(root: str | None = None, override_existing: bool = False) -> dict[str, str]:

@@ -170,11 +170,20 @@ async def _toggle_cog(bot, module: str) -> None:
         if loaded:
             await bot.unload_extension(full)
             log(f"Unloaded cog: {full}", channel="cogs")
+            from core.audit import safe_activity
+            safe_activity("cog-toggle", module=full, action="unload", outcome="success")
         else:
             await bot.load_extension(full)
             log(f"Loaded cog: {full}", channel="cogs")
+            from core.audit import safe_activity
+            safe_activity("cog-toggle", module=full, action="load", outcome="success")
     except Exception as e:
         log(f"Cog toggle failed for {full}: {e}", channel="cogs")
+        try:
+            from core.audit import safe_activity
+            safe_activity("cog-toggle", module=full, action="toggle", outcome="error", error_type=type(e).__name__)
+        except Exception:
+            pass
     await _emit_cog_list(bot)
 
 
@@ -312,11 +321,20 @@ async def _handle_line(bot, line: str) -> None:
             if module in bot.extensions:
                 await bot.reload_extension(module)
                 log(f"Reloaded cog: {module}", channel="cogs")
+                from core.audit import safe_activity
+                safe_activity("cog-toggle", module=module, action="reload", outcome="success")
             else:
                 await bot.load_extension(module)
                 log(f"Loaded cog: {module}", channel="cogs")
+                from core.audit import safe_activity
+                safe_activity("cog-toggle", module=module, action="load", outcome="success")
         except Exception as e:
             log(f"Load cog failed for {module}: {e}", channel="cogs")
+            try:
+                from core.audit import safe_activity
+                safe_activity("cog-toggle", module=module, action="load", outcome="error", error_type=type(e).__name__)
+            except Exception:
+                pass
         await _emit_cog_list(bot)
         return
 
@@ -326,10 +344,17 @@ async def _handle_line(bot, line: str) -> None:
             if module in bot.extensions:
                 await bot.unload_extension(module)
                 log(f"Unloaded cog: {module}", channel="cogs")
+                from core.audit import safe_activity
+                safe_activity("cog-toggle", module=module, action="unload", outcome="success")
             else:
                 log(f"Cog not loaded: {module}", channel="cogs")
         except Exception as e:
             log(f"Unload cog failed for {module}: {e}", channel="cogs")
+            try:
+                from core.audit import safe_activity
+                safe_activity("cog-toggle", module=module, action="unload", outcome="error", error_type=type(e).__name__)
+            except Exception:
+                pass
         await _emit_cog_list(bot)
         return
 

@@ -28,6 +28,10 @@ AUDIT_ALERT_RELATIVE = os.path.join("logs", "audit.alert")
 AUDIT_MAX_BYTES = 5 * 1024 * 1024
 # Rotated archives: cap count and total bytes of *non-safety* records.
 # Safety lines (blocks, refusals) are always kept.
+# Safety-only archives are unbounded by design: once a file has been rewritten
+# so that only safety records remain, it is excluded from these caps and is
+# never deleted. Disk use can grow with block volume; that is intentional so
+# safety lines are never dropped.
 AUDIT_MAX_ARCHIVES = 8
 AUDIT_MAX_ARCHIVE_BYTES = 20 * 1024 * 1024
 
@@ -314,7 +318,11 @@ def _rewrite_safety_only(path: str) -> None:
 
 
 def _prune_archives(folder: str) -> None:
-    """Cap non-safety archive volume; never drop safety lines."""
+    """Cap non-safety archive volume; never drop safety lines.
+
+    Safety-only archives are unbounded by design: they do not count toward
+    AUDIT_MAX_ARCHIVES or AUDIT_MAX_ARCHIVE_BYTES and are never removed.
+    """
     while True:
         paths = [p for p in _archive_paths(folder) if os.path.isfile(p)]
         bulky = [p for p in paths if _non_safety_size(p) > 0]
@@ -429,6 +437,19 @@ def iter_records(path: str | None = None):
 def chat(*, kind: str = "mention", **extra) -> dict:
     """LLM mention or reply turn (not a slash/prefix command)."""
     return record("chat", kind=kind, **extra)
+
+
+def activity(name: str, *, outcome: str = "success", **extra) -> dict:
+    """Background, GUI, lifecycle, view, or other non-command action."""
+    return record("activity", name=name, outcome=outcome, **extra)
+
+
+def safe_activity(name: str, *, outcome: str = "success", **extra) -> dict | None:
+    """Best-effort activity record. Never raises into a caller."""
+    try:
+        return activity(name, outcome=outcome, **extra)
+    except Exception:
+        return None
 
 
 def _ids_from_ctx(ctx) -> dict[str, str]:
