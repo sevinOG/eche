@@ -52,14 +52,19 @@ def set_sentinel(value: str) -> None:
     """Install the nonce for this process. Do not log `value`."""
     global _sentinel
     _sentinel = str(value or "")
+    os.environ.pop(SENTINEL_ENV, None)
 
 
 def get_sentinel() -> str:
-    """The nonce for this process, or '' if the GUI did not provide one."""
+    """The nonce for this process, or '' if the GUI did not provide one.
+
+    After the first read, the value is cached and ECHE_GUI_SENTINEL is
+    removed from os.environ so later child processes do not inherit it.
+    """
     global _sentinel
-    if _sentinel is not None:
-        return _sentinel
-    _sentinel = os.environ.get(SENTINEL_ENV, "") or ""
+    if _sentinel is None:
+        _sentinel = os.environ.get(SENTINEL_ENV, "") or ""
+    os.environ.pop(SENTINEL_ENV, None)
     return _sentinel
 
 
@@ -67,6 +72,23 @@ def reset_sentinel() -> None:
     """Test helper: forget a cached nonce so the next get_sentinel() rereads env."""
     global _sentinel
     _sentinel = None
+    os.environ.pop(SENTINEL_ENV, None)
+
+
+def child_environ(env=None) -> dict:
+    """Copy of env (or os.environ) with the GUI sentinel removed."""
+    out = dict(os.environ if env is None else env)
+    out.pop(SENTINEL_ENV, None)
+    return out
+
+
+def redact_sentinel(text: str) -> str:
+    """Replace the cached nonce in text. Never log the nonce itself."""
+    raw = "" if text is None else str(text)
+    token = get_sentinel()
+    if not token or token not in raw:
+        return raw
+    return raw.replace(token, "•" * 8)
 
 
 class _LockedStream:
@@ -99,6 +121,42 @@ class _LockedStream:
         return getattr(self._inner, name)
 
 
+_child_filter_installed = False
+
+
+def install_child_env_filter() -> None:
+    """Drop the GUI sentinel from every subprocess env, including ffmpeg."""
+    global _child_filter_installed
+    if _child_filter_installed:
+        return
+    import subprocess
+    import asyncio
+
+    orig_popen = subprocess.Popen
+
+    class _FilteredPopen(orig_popen):
+        def __init__(self, *args, **kwargs):
+            kwargs["env"] = child_environ(kwargs.get("env"))
+            super().__init__(*args, **kwargs)
+
+    subprocess.Popen = _FilteredPopen
+
+    orig_exec = asyncio.create_subprocess_exec
+    orig_shell = asyncio.create_subprocess_shell
+
+    async def _filtered_exec(*args, **kwargs):
+        kwargs["env"] = child_environ(kwargs.get("env"))
+        return await orig_exec(*args, **kwargs)
+
+    async def _filtered_shell(*args, **kwargs):
+        kwargs["env"] = child_environ(kwargs.get("env"))
+        return await orig_shell(*args, **kwargs)
+
+    asyncio.create_subprocess_exec = _filtered_exec
+    asyncio.create_subprocess_shell = _filtered_shell
+    _child_filter_installed = True
+
+
 def install_locked_writers() -> None:
     """Serialize print/dprint/sys.stdout with the same lock emit() uses."""
     global _writers_installed, _orig_print
@@ -124,6 +182,8 @@ def install_locked_writers() -> None:
 def configure_stdio() -> None:
     """Use UTF-8 for the GUI pipe. A Windows cp1252 stdout would drop emoji
     and typical model punctuation when emit() writes a chat line."""
+    get_sentinel()
+    install_child_env_filter()
     for stream in (sys.stdout, sys.stderr, sys.stdin):
         inner = getattr(stream, "_inner", stream)
         reconfigure = getattr(inner, "reconfigure", None) or getattr(stream, "reconfigure", None)

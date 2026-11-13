@@ -84,8 +84,11 @@ def _emit_fatal(message: str, *, code: str = "config") -> None:
         emit("fatal", {"message": message, "code": code, "channel": "bot"})
     except Exception:
         import json
-        import os
-        token = os.environ.get("ECHE_GUI_SENTINEL", "") or ""
+        try:
+            from core.gui_bridge import get_sentinel
+            token = get_sentinel()
+        except Exception:
+            token = ""
         payload = {
             "event": "fatal",
             "data": {

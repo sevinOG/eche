@@ -12,6 +12,7 @@ import tempfile
 from core.paths import find_ffmpeg
 from core.ffmpeg_fetch import ensure_ffmpeg
 from core.chat_panel import send_visible
+from core.gui_bridge import child_environ
 
 
 class Convert(commands.Cog):
@@ -33,7 +34,8 @@ class Convert(commands.Cog):
         process = await asyncio.create_subprocess_exec(
             ffmpeg, *args,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
+            stderr=asyncio.subprocess.PIPE,
+            env=child_environ(),
         )
         stdout, stderr = await process.communicate()
         return process.returncode, stdout, stderr
@@ -53,7 +55,8 @@ class Convert(commands.Cog):
         process = await asyncio.create_subprocess_exec(
             ffmpeg, *args,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
+            stderr=asyncio.subprocess.PIPE,
+            env=child_environ(),
         )
         _, stderr = await process.communicate()
 

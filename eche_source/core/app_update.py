@@ -10,6 +10,7 @@ import io
 import os
 import shutil
 import subprocess
+from core.gui_bridge import child_environ
 import sys
 import tempfile
 import zipfile
@@ -276,4 +277,5 @@ def launch_handoff(script_path: str) -> None:
         ["cmd.exe", "/c", "start", "Eche update", "cmd.exe", "/c", script_path],
         creationflags=flags,
         close_fds=True,
+        env=child_environ(),
     )

@@ -243,6 +243,7 @@ def _restrict_acl_windows(path: str) -> None:
         flags = 0
         if sys.platform.startswith("win"):
             flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        from core.gui_bridge import child_environ
         subprocess.run(
             [
                 "icacls",
@@ -256,6 +257,7 @@ def _restrict_acl_windows(path: str) -> None:
             text=True,
             timeout=8,
             creationflags=flags,
+            env=child_environ(),
         )
     except Exception:
         try:
@@ -505,11 +507,16 @@ def clear_secrets(root: str | None = None) -> None:
 def scrub_text(text: str, root: str | None = None) -> str:
     if not text:
         return text
+    out = text
+    try:
+        from core.gui_bridge import redact_sentinel
+        out = redact_sentinel(out)
+    except Exception:
+        pass
     try:
         cfg = load_all(root)
     except Exception:
-        return text
-    out = text
+        return out
     for key in SECRET_KEYS:
         val = (cfg.get(key) or "").strip()
         if val and len(val) >= 8 and val in out:

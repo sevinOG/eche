@@ -924,8 +924,9 @@ class MainWindow(QMainWindow):
         env["ECHE_GUI_BRIDGE"] = "1"
         env["PYTHONUNBUFFERED"] = "1"
         env["PYTHONIOENCODING"] = "utf-8"
-        from core.gui_bridge import SENTINEL_ENV, make_sentinel
+        from core.gui_bridge import SENTINEL_ENV, make_sentinel, set_sentinel
         self._bridge_sentinel = make_sentinel()
+        set_sentinel(self._bridge_sentinel)
         env[SENTINEL_ENV] = self._bridge_sentinel
         env["ECHE_USER_ROOT"] = PROJECT_ROOT
         if not is_frozen():
@@ -1400,11 +1401,19 @@ class MainWindow(QMainWindow):
             )
 
     def append_log(self, text: str):
+        text = str(text)
         try:
             from core.secrets import scrub_text
-            text = scrub_text(str(text), PROJECT_ROOT)
+            text = scrub_text(text, PROJECT_ROOT)
         except Exception:
             pass
+        try:
+            from core.gui_bridge import redact_sentinel
+            text = redact_sentinel(text)
+        except Exception:
+            token = getattr(self, "_bridge_sentinel", "") or ""
+            if token:
+                text = text.replace(token, "•" * 8)
 
         self.log_output.append_line(text)
         self._write_log_file(text)

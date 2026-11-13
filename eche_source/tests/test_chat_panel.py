@@ -265,6 +265,48 @@ class ModelAndEmitTests(ChatPanelSetup):
         self.assertEqual(event, "chat")
         self.assertEqual(data.get("text"), "Bot: hi")
 
+    def test_sentinel_is_removed_from_environ_after_cache(self):
+        token = self._sentinel
+        self.assertEqual(gui_bridge.get_sentinel(), token)
+        self.assertNotIn(gui_bridge.SENTINEL_ENV, os.environ)
+        # A later read from env still uses the cache, not a missing or new value.
+        os.environ[gui_bridge.SENTINEL_ENV] = "ECHEshouldnotstick"
+        self.assertEqual(gui_bridge.get_sentinel(), token)
+        self.assertNotIn(gui_bridge.SENTINEL_ENV, os.environ)
+        leaked = gui_bridge.child_environ()
+        self.assertNotIn(gui_bridge.SENTINEL_ENV, leaked)
+        planted = {gui_bridge.SENTINEL_ENV: token, "PATH": "/bin"}
+        self.assertNotIn(gui_bridge.SENTINEL_ENV, gui_bridge.child_environ(planted))
+
+    def test_child_processes_do_not_inherit_the_sentinel(self):
+        import subprocess
+        token = self._sentinel
+        gui_bridge.install_child_env_filter()
+        env = os.environ.copy()
+        env[gui_bridge.SENTINEL_ENV] = token
+        result = subprocess.run(
+            [sys.executable, "-c", "import os; print(os.environ.get('ECHE_GUI_SENTINEL', ''))"],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        self.assertEqual(result.stdout.strip(), "")
+        self.assertNotIn(token, result.stdout)
+        self.assertNotIn(token, result.stderr)
+
+    def test_scrub_text_and_redact_hide_the_nonce(self):
+        from core.secrets import scrub_text
+
+        token = self._sentinel
+        leaked = f"log line with {token} in the middle"
+        hidden = gui_bridge.redact_sentinel(leaked)
+        self.assertNotIn(token, hidden)
+        self.assertIn("log line with ", hidden)
+        self.assertIn(" in the middle", hidden)
+        scrubbed = scrub_text(leaked, self.root)
+        self.assertNotIn(token, scrubbed)
+
     def test_emit_survives_latin1_stdout(self):
         captured = bytearray()
 
@@ -732,17 +774,20 @@ class ProductionSendSiteTests(unittest.TestCase):
         ("core/tools_admin.py", "member"),
     }
 
+    ROUTED = __import__("re").compile(
+        r"(send_visible|edit_visible)\s*\("
+    )
     SEND = __import__("re").compile(
-        r"await\s+([A-Za-z_][\w\.]*)\.(send|reply)\("
+        r"await\s+([A-Za-z_][\w\.]*)\.(send|reply)\s*\("
     )
     EDIT = __import__("re").compile(
-        r"await\s+([A-Za-z_][\w\.]*)\.(edit|edit_message)\("
+        r"await\s+([A-Za-z_][\w\.]*)\.(edit|edit_message)\s*\("
     )
     RESP = __import__("re").compile(
-        r"await\s+[A-Za-z_][\w\.]*\.response\.send_message\("
+        r"await\s+[A-Za-z_][\w\.]*\.response\.send_message\s*\("
     )
     FOLLOW = __import__("re").compile(
-        r"await\s+([A-Za-z_][\w\.]*)\.followup\.send\("
+        r"await\s+([A-Za-z_][\w\.]*)\.followup\.send\s*\("
     )
 
     def test_public_send_sites_use_send_visible(self):
@@ -760,7 +805,7 @@ class ProductionSendSiteTests(unittest.TestCase):
                 text = Path(path).read_text(encoding="utf-8")
                 lines = text.splitlines()
                 for i, line in enumerate(lines, 1):
-                    if "send_visible(" in line or "edit_visible(" in line:
+                    if self.ROUTED.search(line):
                         continue
                     resp = self.RESP.search(line)
                     if resp:
