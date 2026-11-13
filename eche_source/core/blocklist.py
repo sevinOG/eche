@@ -144,6 +144,9 @@ BLOCKED_WORDS = (
     "randoseru",
     "pinocchio",
     "cherub", "cherubs", "cherubim",
+    # Swahili / Indonesian (Latin script, whole words)
+    "mtoto", "watoto", "msichana", "msichana mdogo",
+    "anak kecil", "bocil",
 )
 
 # "baby" is only blocked when the same message is sexual.
@@ -165,7 +168,9 @@ SEXUAL_WORDS = (
 CONTEXT_PHRASES = (
     "in high school", "high school student", "high schooler", "high-schooler",
     "in middle school", "middle school", "middle schooler", "middle-schooler",
-    "elementary school", "grade school", "junior high",
+    "elementary school", "in elementary", "grade school", "junior high",
+    "primary school", "in primary",
+    "lil cutie",
     "looks young", "looks so young", "young looking", "young-looking",
     "looks small", "small looking", "small-looking",
     "child-like", "childlike", "child like",
@@ -194,6 +199,7 @@ _NUMBER_WORDS = (
     "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen",
     "sixteen", "seventeen",
 )
+_NUMBER_WORD_VALUES = {word: i for i, word in enumerate(_NUMBER_WORDS)}
 
 # Same-length read of common letter swaps: "k1d", "ch1ld", "l0li".
 _LEET = str.maketrans({
@@ -217,6 +223,14 @@ _CONFUSABLE_MAP = {
     "κ": "k", "Κ": "k", "μ": "u", "Μ": "m", "γ": "y", "β": "b",
     "δ": "d",
     "օ": "o", "Օ": "o", "ɩ": "i", "ı": "i", "ꮶ": "k",
+    "Ꮮ": "l", "Ꮎ": "o", "Ꮖ": "i", "Ꭷ": "o", "Ꭲ": "i",
+    "Ꮢ": "r", "Ꭼ": "e", "Ꭺ": "a", "Ꮂ": "b",
+    "ⲕ": "k", "Ⲕ": "k", "ⲓ": "i", "Ⲓ": "i",
+    "ⲇ": "d", "Ⲇ": "d", "ⲟ": "o", "Ⲟ": "o",
+    "ⲥ": "c", "Ⲥ": "c", "ⲁ": "a", "Ⲁ": "a",
+    "ⲉ": "e", "Ⲉ": "e", "ⲣ": "p", "Ⲣ": "p",
+    "ⲛ": "n", "Ⲛ": "n", "ⲧ": "t", "Ⲧ": "t",
+    "ⲏ": "h", "Ⲏ": "h",
 }
 
 def _load_confusables() -> dict[str, str]:
@@ -390,6 +404,10 @@ _YOUNG_GIRL_RE = re.compile(
 )
 
 
+# Hangul filler and Braille blank are used as hidden separators (not Cf/Zs).
+_SEPARATOR_STRIP = frozenset({"\u3164", "\u115f", "\u1160", "\u2800"})
+
+
 def normalize(text: str, *, confusable: bool = True) -> str:
     """NFKC, optional confusable fold, strip invisible and diacritic marks, unify dashes."""
     raw = unicodedata.normalize("NFKC", text or "")
@@ -398,8 +416,12 @@ def normalize(text: str, *, confusable: bool = True) -> str:
     raw = unicodedata.normalize("NFD", raw)
     kept: list[str] = []
     for ch in raw:
+        if ch in _SEPARATOR_STRIP:
+            continue
         cat = unicodedata.category(ch)
         if cat in {"Mn", "Cf"}:
+            continue
+        if cat == "Zs" and ch != " ":
             continue
         if cat == "Cc" and ch not in "\t\n\r":
             continue
@@ -490,11 +512,12 @@ _LOOKS_AGE_RE = re.compile(
     re.IGNORECASE,
 )
 _INTL_AGE_RE = re.compile(
-    r"(?<![\w])(?:ist|hat|hatte|a|tem|tiene|ей)\s+"
+    r"(?<![\w])(?:ist|hat|hatte|a|tem|tiene|ей|їй|ей)\s+"
     r"(?:1[0-7]|[0-9]|" + "|".join(_NUMBER_WORDS) + r")"
-    r"\s*(?:jahre|ans|anos|años|лет|jaar|let)(?:\s*alt)?"
+    r"\s*(?:jahre|ans|anos|años|лет|jaar|let|tahun|tuổi|років|ετών|χρόνια)(?:\s*alt)?"
     r"|(?<![\w])(?:1[0-7]|[0-9]|" + "|".join(_NUMBER_WORDS) + r")"
-    r"\s*(?:jahre|ans|anos|años|лет|jaar|let)(?:\s*alt)?(?![\w])",
+    r"\s*(?:jahre|ans|anos|años|лет|jaar|let|tahun|tuổi|років|ετών|χρόνια)(?:\s*alt)?(?![\w])"
+    r"|(?<![\w])(?:בת|בן)\s*(?:1[0-7]|[0-9])(?!\d)",
     re.IGNORECASE,
 )
 _JUST_TURNED_RE = re.compile(
@@ -512,6 +535,58 @@ _MATH_AGE_RE = re.compile(
     r")",
     re.IGNORECASE,
 )
+_ORDINAL_NUM = (
+    r"(?:1[0-7]|[0-9]|first|second|third|fourth|fifth|sixth|seventh|"
+    r"eighth|ninth|tenth|eleventh|twelfth|thirteenth|fourteenth|"
+    r"fifteenth|sixteenth|seventeenth)"
+)
+_ORDINAL_BIRTHDAY_RE = re.compile(
+    r"(?<![\w])(?:1[0-7]|[0-9])(?:st|nd|rd|th)\s+birthday"
+    r"|(?<![\w])(?:first|second|third|fourth|fifth|sixth|seventh|"
+    r"eighth|ninth|tenth|eleventh|twelfth|thirteenth|fourteenth|"
+    r"fifteenth|sixteenth|seventeenth)\s+birthday",
+    re.IGNORECASE,
+)
+_TURNS_LEGAL_IN_RE = re.compile(
+    r"(?<![\w])(?:turns|turning|turn)\s+(?:18|eighteen)\s+in\s+"
+    r"(?P<n>\d+|one|two|three|four|five|six|seven|eight|nine|ten|"
+    r"eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen)"
+    r"\s+years?",
+    re.IGNORECASE,
+)
+_FROM_LEGAL_RE = re.compile(
+    r"(?<![\w])(?:\d+|" + "|".join(_NUMBER_WORDS) + r")\s+years?\s+"
+    r"(?:from|until|before|to)\s+(?:being\s+)?(?:legal|18|eighteen)",
+    re.IGNORECASE,
+)
+_BIRTH_DATE_RE = re.compile(
+    r"(?<![\w])(?:born(?:\s+on)?|dob|d\.o\.b\.?|date\s+of\s+birth)\s*:?\s*"
+    r"(?:"
+    r"(?P<m>\d{1,2})[/\-.](?P<d>\d{1,2})[/\-.](?P<y>(?:19|20)\d{2})"
+    r"|(?P<y2>(?:19|20)\d{2})[/\-.](?P<m2>\d{1,2})[/\-.](?P<d2>\d{1,2})"
+    r")",
+    re.IGNORECASE,
+)
+_STORYBOOK_RE = re.compile(
+    r"(?<![\w])(?:"
+    r"gretel|goldilocks|"
+    r"little\s+red\s+riding\s+hood|red\s+riding\s+hood|"
+    r"wendy\s+darling|peter\s+pan|"
+    r"matilda\s+wormwood|"
+    r"hansel\s+and\s+gretel|"
+    r"heidi(?:\s+the\s+alpine(?:\s+girl)?)?"
+    r")(?![\w])",
+    re.IGNORECASE,
+)
+_MATILDA_RE = re.compile(r"(?<![\w])matilda(?![\w])", re.IGNORECASE)
+_ALICE_STORY_RE = re.compile(
+    r"(?<![\w])alice(?:['’]s)?\s+(?:in\s+wonderland|from\s+alice|"
+    r"liddell|through\s+the\s+looking[- ]glass)"
+    r"|(?<![\w])alice\s+in\s+wonderland"
+    r"|wonderland.{0,80}alice|alice.{0,80}wonderland",
+    re.IGNORECASE,
+)
+
 _HEX_TOKEN_RE = re.compile(r"(?<![\w])(?:0x)?([0-9a-f]{6,})(?![\w])", re.IGNORECASE)
 _B64_TOKEN_RE = re.compile(r"(?<![\w])([A-Za-z0-9+/]{8,}={0,2})(?![\w])")
 _ASCII_CODES_RE = re.compile(r"(?<!\d)((?:1[0-2]\d|12[0-6]|[3-9]\d)(?:\s+(?:1[0-2]\d|12[0-6]|[3-9]\d)){2,})(?!\d)")
@@ -841,6 +916,46 @@ def _underage_age_hit(candidates) -> str:
                     return hit.group(0)
             else:
                 return hit.group(0)
+        hit = _ORDINAL_BIRTHDAY_RE.search(item)
+        if hit:
+            return hit.group(0)
+        hit = _TURNS_LEGAL_IN_RE.search(item)
+        if hit:
+            word = (hit.group("n") or "").lower()
+            years = _NUMBER_WORD_VALUES.get(word)
+            if years is None:
+                try:
+                    years = int(word)
+                except ValueError:
+                    years = 0
+            if years >= 1:
+                return hit.group(0)
+        hit = _FROM_LEGAL_RE.search(item)
+        if hit:
+            return hit.group(0)
+        hit = _BIRTH_DATE_RE.search(item)
+        if hit:
+            year_s = hit.group("y") or hit.group("y2")
+            month_s = hit.group("m") or hit.group("m2")
+            day_s = hit.group("d") or hit.group("d2")
+            try:
+                year, month, day = int(year_s), int(month_s), int(day_s)
+                if month > 12 and day <= 12:
+                    month, day = day, month
+                born = date(year, month, day)
+                today = date.today()
+                age = today.year - born.year - (
+                    (today.month, today.day) < (born.month, born.day)
+                )
+                if 0 <= age < 18:
+                    return hit.group(0)
+            except (TypeError, ValueError):
+                try:
+                    year = int(year_s or 0)
+                except (TypeError, ValueError):
+                    year = 0
+                if year >= cutoff:
+                    return hit.group(0)
     return ""
 
 
@@ -920,6 +1035,17 @@ _NATIVE_TERMS = (
     "幼女", "萝莉", "未成年", "児童", "女子小学生",
     "школьница", "малолетка",
     "Mädchen", "mädchen",
+    # Vietnamese
+    "trẻ em", "bé gái", "nữ sinh cấp 2", "học sinh cấp 2", "nữ sinh cấp 1",
+    "học sinh cấp 1",
+    # Thai
+    "เด็ก", "เด็กผู้หญิง", "นักเรียนหญิง",
+    # Hebrew
+    "ילדה", "קטינה", "ילד", "קטין",
+    # Greek
+    "παιδί", "κοριτσάκι", "ανήλικη", "ανήλικος", "παιδι",
+    # Ukrainian
+    "дитина", "дівчинка", "школярка", "дітей",
 )
 
 def _native_term_hit(text: str) -> str:
@@ -992,6 +1118,20 @@ def match_info(text: str, *, force_context: bool = False) -> tuple[str, str]:
                 hit = _CONTEXT_RE.search(candidate)
                 if hit:
                     return hit.group(0), "context"
+    # Storybook children: distinctive names always; Alice only in story
+    # context; bare Matilda only when the turn is sexual or RP.
+    for candidate in list(candidates) + [text or ""]:
+        hit = _STORYBOOK_RE.search(candidate)
+        if hit:
+            return hit.group(0), "always"
+        hit = _ALICE_STORY_RE.search(candidate)
+        if hit:
+            return hit.group(0), "always"
+    if force_context or _context_applies(candidates) or _has_media_rp(candidates):
+        for candidate in candidates:
+            hit = _MATILDA_RE.search(candidate)
+            if hit:
+                return hit.group(0), "context"
     extra = _extra_re()
     if extra is not None:
         for candidate in candidates:
