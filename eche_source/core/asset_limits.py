@@ -100,6 +100,29 @@ def lockout_user(user_id, *, root: str | None = None) -> None:
     _save(data, root)
 
 
+
+MEDIA_FILTER_STRIKE_WINDOW = WINDOW_SECONDS
+MEDIA_FILTER_STRIKES_TO_LOCK = 2
+
+
+def note_media_filter_block(user_id, *, root: str | None = None) -> bool:
+    """Record a media-filter hit. Lock only after two hits in an hour."""
+    if user_id is None:
+        return False
+    try:
+        data = _load(root)
+    except LimitsCorrupt:
+        return False
+    now = _now()
+    hits = data.setdefault("media_filter_hits", {})
+    key = str(user_id)
+    stamps = _prune(list(hits.get(key) or []), now, MEDIA_FILTER_STRIKE_WINDOW)
+    stamps.append(now)
+    hits[key] = stamps
+    _save(data, root)
+    return len(stamps) >= MEDIA_FILTER_STRIKES_TO_LOCK
+
+
 def lockout_until(user_id, *, root: str | None = None) -> str:
     try:
         data = _load(root)

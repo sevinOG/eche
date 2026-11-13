@@ -33,7 +33,9 @@ CHILD_CHECK_PROMPT = (
     "are included: storybook, fairytale, and canon minors identified "
     "by name or an age tag. Also answer YES for a cute, chibi, or "
     "anthropomorphic character that could read as childlike, and for "
-    "petite or small-fairy phrasings that could read as a child.\n\n"
+    "petite or small-fairy phrasings that could read as a child. "
+    "Also answer YES when an object, food, animal, or toy is shown "
+    "in romance or is being harmed.\n\n"
     "TEXT:\n"
 )
 CLASSIFIER_PROMPT = CHILD_CHECK_PROMPT

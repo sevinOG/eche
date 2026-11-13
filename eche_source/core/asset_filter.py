@@ -95,7 +95,7 @@ _ALWAYS = (
     # PT
     r"menina", r"menino", r"garotinha", r"mocinha", r"bebê", r"bebe",
     r"recém-nascido", r"recem-nascido",
-    r"\bfilho\b", r"\bfilha\b", r"irmã", r"irma", r"irmão", r"irmao",
+    r"\bfilho\b", r"\bfilha\b", r"\birmã\b", r"\birma\b", r"\birmão\b", r"\birmao\b",
     r"jardim\s+de\s+infância", r"jardim\s+de\s+infancia",
     # IT
     r"bambina", r"bambino", r"ragazzina", r"ragazzino", r"neonato", r"neonata",
@@ -175,7 +175,15 @@ _ALWAYS = (
 
 # Idioms that would otherwise trip a family or stage word.
 _BENIGN_RE = re.compile(
-    r"(?is)baby\s*grand|babysitters?|babysitting|scout\s*drones?|son\s*of\s*a\s*gun|el\s*ni[ñn]o"
+    r"(?is)baby\s*grand|babysitters?|babysitting|scout\s*drones?|"
+    r"son\s*of\s*a\s*gun|el\s*ni[ñn]o|"
+    r"fire\s*trucks?|camp\s*fires?|bon\s*fires?|fire\s*places?|"
+    r"by\s+the\s+fire|beside\s+the\s+fire|near\s+the\s+fire|"
+    r"in\s+front\s+of\s+the\s+fire|"
+    r"roast(?:ed)?\s+(?:chicken|beef|pork|turkey|vegetables?|veggies|"
+    r"potatoes|potato|lamb|duck|ham)|"
+    r"pot\s*roast|sunday\s*roast|"
+    r"wedding\s+cakes?|birthday\s+cakes?|engagement\s+cakes?"
 )
 
 
@@ -229,6 +237,27 @@ _OBJECT_LEXICON = frozenset({
     "bug", "insect", "spider", "ant", "worm", "snail", "turtle", "lizard",
     "snake", "dragon", "unicorn", "phoenix",
     "twigg", "twiglet", "stickman", "matchstickman",
+    # Kitchen, office, and generic food / toy classes.
+    "toaster", "oven", "fridge", "freezer", "skillet", "pan", "whisk",
+    "spatula", "colander", "blender", "mixer", "grater", "ladle",
+    "stapler", "pen", "paperclip", "folder", "binder", "clipboard",
+    "fruit", "vegetable", "berry", "berries", "meat", "soup", "sandwich",
+    "noodle", "noodles", "pasta", "rice", "cheese", "muffin", "cupcake",
+    "bagel", "waffle", "pancake", "cereal",
+    "crayonbox", "actionfigure", "stuffed", "plush", "plushie",
+    "ball", "balloon", "kite", "yoyo", "block", "blocks",
+    "sockpuppet", "handpuppet",
+    "tazon", "tazón", "taza", "cuchara", "cuchillo", "tenedor", "plato",
+    "manzana", "muneca", "muñeca", "juguete", "calcetin", "calcetín",
+    "theiere", "théière", "tasse", "cuillere", "cuillère", "assiette",
+    "pomme", "poupee", "poupée", "jouet", "chaussette",
+    "teekanne", "loffel", "löffel", "teller", "apfel", "puppe",
+    "spielzeug", "xicara", "xícara", "colher", "prato", "maca", "maçã",
+    "boneca", "brinquedo", "tazza", "teiera", "cucchiaio", "piatto",
+    "mela", "bambola", "giocattolo",
+    "чашка", "ложка", "тарелка", "яблоко", "кукла", "игрушка",
+    "茶杯", "勺子", "杯子", "玩偶", "玩具", "人形", "おもちゃ",
+    "찻잔", "숟가락", "인형", "장난감",
 })
 
 _JOB_STEMS = frozenset({
@@ -237,6 +266,14 @@ _JOB_STEMS = frozenset({
     "work", "craft", "crew", "door", "watch", "guard", "bar", "super",
     "fore", "hang", "marks", "new", "gentle", "yeo", "mail", "milk",
     "garbage", "refuse", "insurance", "congress", "fresh", "otters",
+})
+
+# Hero and job compounds whose stem is also an object or animal word.
+# Spider-Man, fisherman, horseman, and similar must not count as incidents.
+_HUMAN_COMPOUND_ALLOW = frozenset({
+    "spider", "fish", "horse", "ant", "cat", "bat", "iron", "star",
+    "pan", "wolf", "bird", "sun", "moon", "ice", "sand", "sea",
+    "super", "wonder", "aqua", "air", "snow", "business",
 })
 
 _PERSON_WORDS = frozenset(p.lower() for p in _PERSON) | {
@@ -257,26 +294,65 @@ _STOP = frozenset({
 })
 
 _HARM_RE = re.compile(
-    r"(?i)\b(?:"
+    r"(?i)(?:"
+    r"\b(?:"
     r"fire|fires|firing|burn|burns|burning|burnt|burned|"
     r"ignite|ignites|ignited|igniting|ablaze|blaze|blazing|"
     r"scorch|scorched|charred|smolder|smoldering|smouldering|"
     r"melt|melts|melted|melting|"
     r"scream|screams|screaming|cry|cries|crying|howl|howls|howling|"
-    r"eaten|eating|devour|devoured|devouring|"
+    r"devour|devoured|devouring|"
     r"sliced|slice|slicing|snapped|snap|snapping|"
     r"explode|explodes|exploding|explosion|"
     r"wither|withers|withered|withering|"
     r"drown|drowned|drowning|strangle|strangled|stab|stabbed|"
-    r"crush|crushed|shatter|shattered"
+    r"crush|crushed|shatter|shattered|"
+    r"incinerate|incinerated|incinerating|incinerates|"
+    r"torch(?:ed|es|ing)?|combusts?|combusting|combusted|"
+    r"electrocute|electrocuted|electrocuting|electrocutes|"
+    r"squash(?:ed|es|ing)?|disintegrate[sd]?|disintegrating|"
+    r"fizzle[sd]?|fizzling|alight|"
+    r"on\s+fire|set\s+(?:on\s+fire|alight)|up\s+in\s+flames|"
+    r"goes\s+up\s+in\s+flames|"
+    # ES FR DE PT IT
+    r"quema(?:r|do|da|ndo)?|incendio|incendiar(?:se)?|"
+    r"br[uû]l(?:er|é|ee|és|ée|ant)?|en\s+feu|"
+    r"brenn(?:en|t|end)?|verbrannt|in\s+brand|"
+    r"queim(?:ar|ado|ando)|em\s+chamas|"
+    r"bruci(?:are|ato|ata|ando)|in\s+fiamme|"
+    r"поджиг(?:ать|ает)?|сжиг(?:ать|ает|ая)?|горит|горение"
     r")\b"
+    r"|セット.*火|燃(?:え|やす|えている)|炎に|"
+    r"燃烧|着火|放火|火焰|"
+    r"불타|불태|화염|감전"
+    r")"
 )
 _ROMANCE_RE = re.compile(
-    r"(?i)\b(?:"
-    r"kiss|kisses|kissing|love|loves|loving|lover|lovers|"
-    r"in\s+love|boyfriend|girlfriend|sweetheart|sweethearts|"
-    r"couple|couples|romance|romantic|dating|marry|married|wedding"
+    r"(?i)(?:"
+    r"\b(?:"
+    r"kiss|kisses|kissing|peck|pecks|pecking|smooch|smooches|smooching|"
+    r"love|loves|loving|lover|lovers|in\s+love|"
+    r"boyfriend|girlfriend|sweetheart|sweethearts|"
+    r"couple|couples|romance|romantic|dating|"
+    r"on\s+a\s+date|first\s+date|"
+    r"marry|married|wedding|bride|groom|husband|wife|"
+    r"darling|beloved|valentine|flirt|flirting|flirts|"
+    r"cuddle|cuddles|cuddling|embrace|embraces|embracing|"
+    r"hug|hugs|hugging|snuggle|snuggles|nuzzle|nuzzles|"
+    r"bes(?:o|os|ar|ando|an|a)|enamor(?:ado|ada|ados|adas|ar(?:se)?)|"
+    r"novio|novia|esposo|esposa|cari[ñn]o|"
+    r"embrass(?:er|é|ée|ant|e|ent)|baiser|c[aâ]lin|amoureux|amoureuse|"
+    r"[eé]poux|[eé]pouse|mari(?:age|er|é)|"
+    r"k[uü]ss(?:en|t|end)?|lieb(?:e|t|en|end)?|umarm(?:en|t|ung)|"
+    r"geliebte[rn]?|braut|br[aä]utigam|ehemann|ehefrau|"
+    r"beij(?:o|ar|ando|a)|abra(?:c|ç)(?:ar|ando|o|a)|abraz(?:ar|ando|o|a)|apaixonad[oa]|namorad[oa]|espos[oa]|"
+    r"baci(?:o|are|ando)|innamorat[oa]|spos[oa]|abbracci(?:o|are|ando|a)|"
+    r"поцелуй|целова(?:ть|л|ла)|целу(?:ет|ют|ющ(?:ий|ая|ее|ие)?)|влюбленн(?:ый|ая)|любовь|обнимать|жених|невеста"
     r")\b"
+    r"|キス|恋愛|抱きし|恋人|"
+    r"亲吻|接吻|恋爱|拥抱|新婚|"
+    r"키스|사랑|포옹|연인|신혼"
+    r")"
 )
 _HUMANIZER_RE = re.compile(
     r"(?i)\b(?:"
@@ -372,12 +448,36 @@ def _forms(text: str) -> list[str]:
     return out
 
 
+def _structural_forms(text: str) -> list[str]:
+    """Forms for the incident rule, without dropping spaces or hyphens.
+
+    Despaced text would turn 'fisherman' and 'Spider-Man' into a substring
+    of an object word, which over-blocks ordinary adult prompts.
+    """
+    compact = re.sub(r"[\s_\-]+", "", (text or "").lower())
+    out: list[str] = []
+    for form in _forms(text):
+        if re.sub(r"[\s_\-]+", "", (form or "").lower()) == compact and compact and (
+            " " not in form and "-" not in form and form.lower() != (text or "").lower()
+            and len(form) == len(compact)
+        ):
+            continue
+        out.append(form)
+    return out
+
+
 def _object_stems(text: str) -> set[str]:
     """Nouns marked as objects by a humanizer pattern (POS-free)."""
     found: set[str] = set()
     for m in _COMPOUND_RE.finditer(text or ""):
         stem = m.group(1).lower()
-        if stem not in _JOB_STEMS and stem not in _PERSON_WORDS and stem not in _STOP:
+        if (
+            stem in _OBJECT_LEXICON
+            and stem not in _HUMAN_COMPOUND_ALLOW
+            and stem not in _JOB_STEMS
+            and stem not in _PERSON_WORDS
+            and stem not in _STOP
+        ):
             found.add(stem)
     # "living room", "living wages", etc. are not personified objects.
     living_idiom = {
@@ -403,19 +503,17 @@ def _lexicon_hits(text: str) -> set[str]:
     for token in re.findall(r"[^\W\d_]{3,}", (text or "").lower()):
         if token in _OBJECT_LEXICON:
             found.add(token)
-    compact = re.sub(r"[\s_\-]+", "", (text or "").lower())
-    for word in _OBJECT_LEXICON:
-        if len(word) >= 4 and word in compact:
-            found.add(word)
     return found
 
 
 def _anthro_incident(text: str) -> bool:
-    """Object/animal + humanizer, plus romance or harm, over cue classes.
+    """A non-human subject (object, food, animal or toy) in romance or harm.
 
-    A strong humanizer (compound -man/-woman, living/sentient X, X with a
-    face or big eyes, anthropomorphic X) is enough on its own. A weaker
-    lexicon object still needs romance or harm plus a humanizer cue.
+    A strong humanizer (living/sentient X, X with a face or big eyes,
+    anthropomorphic X, or X-man when X is on the object list) is enough
+    on its own. Romance or harm on a lexicon object no longer needs a
+    face or living word. Ordinary adult compounds (Spider-Man,
+    fisherman, snowman) are not subjects.
     """
     raw = text or ""
     if not raw.strip():
@@ -425,16 +523,37 @@ def _anthro_incident(text: str) -> bool:
     objects = stems | lexicon
     if not objects:
         return False
-    humanizer = bool(stems) or bool(_HUMANIZER_RE.search(raw))
-    if not humanizer:
-        return False
-    if stems:
+    if stems or _HUMANIZER_RE.search(raw):
+        # Personified object: enough on its own, or with romance/harm.
         return True
     return bool(_ROMANCE_RE.search(raw) or _HARM_RE.search(raw))
 
 
 def _masked(text: str) -> str:
     return _BENIGN_RE.sub(" ", text or "")
+
+
+def _is_mostly_single_letters(raw: str) -> bool:
+    tokens = re.findall(r"[^\W\d_]+", raw or "")
+    if len(tokens) < 4:
+        return False
+    singles = sum(1 for tok in tokens if len(tok) == 1)
+    return singles * 2 >= len(tokens)
+
+
+def _is_despaced_copy(raw: str, form: str) -> bool:
+    """True when form is the original with spaces/hyphens removed, or its reverse.
+
+    Spaced-letter evasions such as 'a n e w b o r n' must still be
+    inspected in compact form.
+    """
+    if not raw or not form or not re.search(r"[\s\-]", raw):
+        return False
+    if _is_mostly_single_letters(raw):
+        return False
+    compact = re.sub(r"[\s_\-]+", "", raw.lower())
+    low = form.lower()
+    return bool(compact) and (low == compact or low == compact[::-1])
 
 
 def media_prompt_blocked(text: str) -> bool:
@@ -446,11 +565,16 @@ def media_prompt_blocked(text: str) -> bool:
         inspect = _masked(form)
         if not inspect.strip():
             continue
+        if _is_despaced_copy(raw, form) or _is_despaced_copy(raw, inspect):
+            continue
         if (
             _ALWAYS_RE.search(inspect)
             or _NEAR.search(inspect)
             or _ANTHRO_RE.search(inspect)
-            or _anthro_incident(inspect)
         ):
+            return True
+    for form in _structural_forms(raw):
+        inspect = _masked(form)
+        if inspect.strip() and _anthro_incident(inspect):
             return True
     return False
