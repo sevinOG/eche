@@ -771,6 +771,11 @@ class SettingsWindow(QWidget):
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
+        try:
+            from core.audit import safe_activity
+            safe_activity("memory-access", action="request", outcome="success")
+        except Exception:
+            pass
         main = self.main_window
         running = bool(main and hasattr(main, "_bot_is_running") and main._bot_is_running())
         if running:
@@ -834,6 +839,11 @@ class SettingsWindow(QWidget):
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
+        try:
+            from core.audit import safe_activity
+            safe_activity("memory-wipe", action="request", outcome="success")
+        except Exception:
+            pass
         main = self.main_window
         running = bool(main and hasattr(main, "_bot_is_running") and main._bot_is_running())
         if running:

@@ -437,17 +437,35 @@ exit /b 0
 def launch_handoff(script_path: str) -> None:
     """Start the script in its own console so it survives this process exiting."""
     if not os.path.isfile(script_path):
+        try:
+            from core.audit import safe_activity
+            safe_activity("updater", action="launch-handoff", outcome="error", error_type="FileNotFoundError")
+        except Exception:
+            pass
         raise FileNotFoundError(script_path)
+    flags = 0
+    if sys.platform.startswith("win"):
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        subprocess.Popen(
+            ["cmd.exe", "/c", "start", "Eche update", "cmd.exe", "/c", script_path],
+            creationflags=flags,
+            close_fds=True,
+        )
+    except Exception as exc:
+        try:
+            from core.audit import safe_activity
+            safe_activity(
+                "updater",
+                action="launch-handoff",
+                outcome="error",
+                error_type=type(exc).__name__,
+            )
+        except Exception:
+            pass
+        raise
     try:
         from core.audit import safe_activity
         safe_activity("updater", action="launch-handoff", outcome="success")
     except Exception:
         pass
-    flags = 0
-    if sys.platform.startswith("win"):
-        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    subprocess.Popen(
-        ["cmd.exe", "/c", "start", "Eche update", "cmd.exe", "/c", script_path],
-        creationflags=flags,
-        close_fds=True,
-    )

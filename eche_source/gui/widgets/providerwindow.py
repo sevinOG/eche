@@ -97,6 +97,20 @@ def _write_path() -> str:
         return _read_path()
 
 
+def save_provider_prompt(text: str) -> str:
+    """Write the provider module; returns the path written. Does not log content."""
+    target = _write_path()
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    with open(target, "w", encoding="utf-8") as f:
+        f.write(text)
+    try:
+        from core.audit import safe_activity
+        safe_activity("prompt-save", action="save-provider-prompt", outcome="success")
+    except Exception:
+        pass
+    return target
+
+
 class ProviderWindow(QWidget):
     def __init__(self, settings_window=None):
         super().__init__()
@@ -212,10 +226,7 @@ class ProviderWindow(QWidget):
 
     def _commit_save(self):
         try:
-            target = _write_path()
-            os.makedirs(os.path.dirname(target), exist_ok=True)
-            with open(target, "w", encoding="utf-8") as f:
-                f.write(self.editor.toPlainText())
+            target = save_provider_prompt(self.editor.toPlainText())
         except Exception as exc:
             self._finish_save(False, str(exc))
             return

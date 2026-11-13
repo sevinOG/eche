@@ -233,6 +233,19 @@ async def entertainer_background_loop(bot):
                         )
                     except Exception:
                         pass
+                else:
+                    try:
+                        from core.audit import safe_activity
+                        safe_activity(
+                            "entertainer-tick",
+                            outcome="skipped",
+                            action="missing-channel",
+                            user_id=user_id,
+                            guild_id=invoke_guild_id,
+                            channel_id=invoke_channel_id,
+                        )
+                    except Exception:
+                        pass
 
                 # If no ticks left or expired, mark for removal
                 if job["ticks_remaining"] <= 0 or datetime.utcnow() >= job["expires_at"]:

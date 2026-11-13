@@ -20,6 +20,85 @@ LISTENER_SUCCESS_ALLOWLIST: dict[str, str] = {
 # BACKGROUND_PROBES are checked by calling the probe instead.
 BACKGROUND_ALLOWLIST: dict[str, str] = {}
 
+# Qt slots that are UI chrome only. Operator slots must be reviewed and probed
+# instead. Each entry needs a reason.
+QT_SLOT_ALLOWLIST: dict[str, str] = {
+    "_bootstrap": "window layout bootstrap",
+    "_browse_data_folder": "folder picker dialog",
+    "_browse_files": "file picker dialog",
+    "_browse_project": "folder picker dialog",
+    "_copy": "copy-to-clipboard UI",
+    "_move_data_folder": "data-folder move dialog; no secret values",
+    "_on_admin_tools_toggled": "checkbox state in settings form",
+    "_on_default_tools_toggled": "checkbox state in settings form",
+    "_on_fetched": "async fetch finished UI callback",
+    "_on_finished": "worker finished UI callback",
+    "_on_item_clicked": "list navigation",
+    "_on_kind_selected": "dropdown selection UI",
+    "_on_local_clear": "desktop chat clear display",
+    "_on_local_err": "desktop chat error display",
+    "_on_local_reply": "desktop chat reply display; turns are probed via reply_local",
+    "_on_local_send": "desktop chat send click; turns are probed via reply_local",
+    "_on_local_worker_done": "desktop chat worker finished UI",
+    "_on_memory_access_done": "memory-access worker finished UI; action is probed via unlock_memory",
+    "_on_nav": "settings section navigation",
+    "_on_provider_backend_changed": "provider dropdown UI",
+    "_on_reader_finished": "bot log reader finished UI",
+    "_on_reasoning_mode_picked": "reasoning dropdown UI",
+    "_on_reasoning_toggled": "reasoning checkbox UI",
+    "_on_reset_memory_done": "memory-wipe worker finished UI; action is probed via wipe_memory",
+    "_on_saved": "settings save finished UI; persist is probed via save_all",
+    "_on_security_admin_toggled": "checkbox state in settings form",
+    "_on_settings_saved": "settings save finished UI; persist is probed via save_all",
+    "_on_update_log": "updater log display",
+    "_on_update_mode": "update-mode dropdown UI",
+    "_on_update_ready": "updater finished UI; handoff is probed via launch_handoff",
+    "_on_user": "user-picker UI",
+    "_on_users": "user-list UI",
+    "_open_cookies_folder": "opens a folder in the file manager",
+    "_open_secrets_folder": "opens a folder in the file manager",
+    "_redetect_path": "path rediscovery UI",
+    "_refresh_ollama_models": "model list refresh UI",
+    "_reset_context_caps": "resets numeric fields in the form",
+    "_save": "settings persist is probed via save_all",
+    "_show_format_help": "help dialog",
+    "_show_help": "help dialog",
+    "_sync_editor_from_spin": "spinbox-to-editor UI sync",
+    "_sync_spin_from_editor": "editor-to-spinbox UI sync",
+    "_tick": "UI timer tick",
+    "_toggle_secret_visibility": "show/hide a field; does not log the value",
+    "accept": "dialog accept",
+    "check_for_updates": "starts the updater flow; handoff is probed via launch_handoff",
+    "clear": "clears a text field",
+    "close": "closes a dialog",
+    "fetch_pin": "loads a pin for display; writes are probed via write_pinned",
+    "handle_bot_output": "bot log display",
+    "load_file": "loads a prompt file for display; writes are probed via save_*_prompt",
+    "note_reasoning": "reasoning pane display",
+    "on_cog_manager_clicked": "opens the Cog Manager window",
+    "on_donate_clicked": "opens the donate dialog",
+    "on_save_clicked": "settings persist is probed via save_all",
+    "on_settings_clicked": "opens the Settings window",
+    "on_unifier_content_saved": "unifier editor saved UI notice",
+    "on_update_clicked": "opens the updater flow; handoff is probed via launch_handoff",
+    "open_context_editor": "opens the context editor window",
+    "open_economy_window": "opens the economy window",
+    "open_provider_window": "opens the provider editor; saves are probed via save_provider_prompt",
+    "open_reasoning_window": "opens the reasoning window",
+    "open_summarizer_window": "opens the summarizer editor; saves are probed via save_summarizer_prompt",
+    "reject": "dialog reject",
+    "request_refresh": "requests a UI refresh",
+    "reset_default": "restores editor defaults for display",
+    "reset_pin": "pin reset UI; writes are probed via write_pinned",
+    "save": "settings persist is probed via save_all",
+    "save_pin": "pin save UI; writes are probed via write_pinned",
+    "setValue": "numeric field write in a form",
+}
+
+# stdin commands that do not need a success-path record. Each entry needs a
+# reason. Operator commands must be reviewed and probed instead.
+STDIN_ALLOWLIST: dict[str, str] = {}
+
 
 def _safe_log(kind: str, event: str, **extra: Any) -> None:
     try:
@@ -66,16 +145,36 @@ def wrap_callable(fn: Callable, event: str, kind: str) -> Callable:
     if inspect.iscoroutinefunction(fn):
         @functools.wraps(fn)
         async def async_wrapped(*args, **kwargs):
-            _safe_log(kind, event, method=getattr(fn, "__name__", event), **_ids_from_args(args))
-            return await fn(*args, **kwargs)
+            ids = _ids_from_args(args)
+            method = getattr(fn, "__name__", event)
+            try:
+                result = await fn(*args, **kwargs)
+            except Exception as exc:
+                _safe_log(
+                    kind, event, outcome="error",
+                    error_type=type(exc).__name__, method=method, **ids,
+                )
+                raise
+            _safe_log(kind, event, outcome="success", method=method, **ids)
+            return result
 
         async_wrapped._audit_wrapped = True  # type: ignore[attr-defined]
         return async_wrapped
 
     @functools.wraps(fn)
     def sync_wrapped(*args, **kwargs):
-        _safe_log(kind, event, method=getattr(fn, "__name__", event), **_ids_from_args(args))
-        return fn(*args, **kwargs)
+        ids = _ids_from_args(args)
+        method = getattr(fn, "__name__", event)
+        try:
+            result = fn(*args, **kwargs)
+        except Exception as exc:
+            _safe_log(
+                kind, event, outcome="error",
+                error_type=type(exc).__name__, method=method, **ids,
+            )
+            raise
+        _safe_log(kind, event, outcome="success", method=method, **ids)
+        return result
 
     sync_wrapped._audit_wrapped = True  # type: ignore[attr-defined]
     return sync_wrapped

@@ -208,10 +208,12 @@ async def _announce(bot, text: str) -> None:
     home_id = home_server_id_from_env()
     if not home_id:
         log("ANNOUNCE failed: HOME_SERVER_ID not set", channel="bridge")
+        _audit_announce(None, None, "error")
         return
     guild = bot.get_guild(home_id)
     if guild is None:
         log("ANNOUNCE failed: home guild not found", channel="bridge")
+        _audit_announce(home_id, None, "error")
         return
     from core.discord_store import find_category
 
@@ -229,12 +231,15 @@ async def _announce(bot, text: str) -> None:
                 break
     if channel is None:
         log("ANNOUNCE failed: no sendable channel", channel="bridge")
+        _audit_announce(home_id, None, "error")
         return
     try:
         await channel.send(text)
         log(f"Announced: {text}", channel="bridge")
+        _audit_announce(home_id, getattr(channel, "id", None), "success")
     except Exception as e:
         log(f"ANNOUNCE failed: {e}", channel="bridge")
+        _audit_announce(home_id, getattr(channel, "id", None), "error")
 
 
 async def _reset_memory(bot) -> None:
@@ -242,13 +247,20 @@ async def _reset_memory(bot) -> None:
         from core.context_manager import get_home_guild
         from core.memory_wipe import wipe_memory
 
+        guild = get_home_guild(bot)
         report = await wipe_memory(
-            get_home_guild(bot),
+            guild,
             log=lambda text: log(text, channel="memory"),
         )
         emit("memory_reset", {"ok": report.ok, "summary": report.summary()})
+        _audit_stdin(
+            "RESET_MEMORY",
+            outcome="success" if report.ok else "error",
+            guild_id=getattr(guild, "id", None),
+        )
     except Exception as e:
         log(f"Memory reset failed: {e}", channel="memory")
+        _audit_stdin("RESET_MEMORY", outcome="error", error_type=type(e).__name__)
 
 
 async def _unlock_memory(bot) -> None:
@@ -256,13 +268,35 @@ async def _unlock_memory(bot) -> None:
         from core.context_manager import get_home_guild
         from core.memory_access import unlock_memory
 
+        guild = get_home_guild(bot)
         report = await unlock_memory(
-            get_home_guild(bot),
+            guild,
             log=lambda text: log(text, channel="memory"),
         )
         emit("memory_access", {"ok": report.ok, "summary": report.summary()})
+        # Action and ids only; never the report text.
+        _audit_stdin(
+            "UNLOCK_MEMORY",
+            outcome="success" if report.ok else "error",
+            guild_id=getattr(guild, "id", None),
+        )
     except Exception as e:
         log(f"Memory access failed: {e}", channel="memory")
+        _audit_stdin("UNLOCK_MEMORY", outcome="error", error_type=type(e).__name__)
+
+
+def _audit_announce(guild_id, channel_id, outcome: str) -> None:
+    # Ids and the action only. Never the announcement text.
+    _audit_stdin("ANNOUNCE", outcome=outcome, guild_id=guild_id, channel_id=channel_id)
+
+
+def _audit_stdin(action: str, *, outcome: str = "success", **extra) -> None:
+    # Ids and the action only. Never the command payload or secret values.
+    try:
+        from core.audit import safe_activity
+        safe_activity("stdin", action=action, outcome=outcome, **extra)
+    except Exception:
+        pass
 
 
 async def _handle_line(bot, line: str) -> None:
@@ -274,30 +308,36 @@ async def _handle_line(bot, line: str) -> None:
 
     if upper == "PING":
         emit("log", {"message": "PONG", "channel": "bridge"})
+        _audit_stdin("PING")
         return
 
     if upper == "LIST_COGS" or upper == "COG_LIST":
         await _emit_cog_list(bot)
+        _audit_stdin("LIST_COGS" if upper == "LIST_COGS" else "COG_LIST")
         return
 
     if upper == "STATUS":
         emit("status", _bot_busy(bot))
+        _audit_stdin("STATUS")
         return
 
     if upper == "RESET_MEMORY":
         # Only the desktop app writes this pipe. There is no Discord command.
         await _reset_memory(bot)
+        _audit_stdin("RESET_MEMORY")
         return
 
     if upper == "UNLOCK_MEMORY":
         # Only the desktop app writes this pipe. There is no Discord command.
         await _unlock_memory(bot)
+        _audit_stdin("UNLOCK_MEMORY")
         return
 
     if upper.startswith("ANNOUNCE "):
         text = line[len("ANNOUNCE "):].strip()
         if text:
             await _announce(bot, text)
+        _audit_stdin("ANNOUNCE")
         return
 
     if upper.startswith("TOGGLE_COG "):
@@ -306,8 +346,10 @@ async def _handle_line(bot, line: str) -> None:
         if denied:
             log(denied, channel="cogs")
             await _emit_cog_list(bot)
+            _audit_stdin("TOGGLE_COG", outcome="error")
             return
         await _toggle_cog(bot, module)
+        _audit_stdin("TOGGLE_COG")
         return
 
     if upper.startswith("LOAD_COG "):
@@ -316,6 +358,7 @@ async def _handle_line(bot, line: str) -> None:
         if denied:
             log(denied, channel="cogs")
             await _emit_cog_list(bot)
+            _audit_stdin("LOAD_COG", outcome="error")
             return
         try:
             if module in bot.extensions:
@@ -336,6 +379,7 @@ async def _handle_line(bot, line: str) -> None:
             except Exception:
                 pass
         await _emit_cog_list(bot)
+        _audit_stdin("LOAD_COG")
         return
 
     if upper.startswith("UNLOAD_COG "):
@@ -356,6 +400,7 @@ async def _handle_line(bot, line: str) -> None:
             except Exception:
                 pass
         await _emit_cog_list(bot)
+        _audit_stdin("UNLOAD_COG")
         return
 
     log(f"Unknown stdin command: {line}", channel="bridge")
