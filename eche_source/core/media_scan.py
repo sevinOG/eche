@@ -98,6 +98,20 @@ IMAGE_MODEL_MARKERS = (
     "lmage",
     "krea",
     "firefly",
+    "cogview",
+    "craiyon",
+    "playground",
+    "pixart",
+    "janus-pro",
+    "januspro",
+    "sd-turbo",
+    "sdturbo",
+    "nova-canvas",
+    "novacanvas",
+    "gpt-img",
+    "gptimg",
+    "dal-e",
+    "dale",
 )
 
 
@@ -158,6 +172,23 @@ VIDEO_MODEL_MARKERS = (
     "vidu",
     "novareel",
     "nova-reel",
+    "ltxv",
+    "ltx-2",
+    "ltx2",
+    "zeroscope",
+    "sadtalker",
+    "heygen",
+    "wav2lip",
+    "liveportrait",
+    "hallo2",
+    "hallo-2",
+    "omnihuman",
+    "i2vgen",
+    "pyramid-flow",
+    "pyramidflow",
+    "dynamicrafter",
+    "genmo",
+    "aurora",
 )
 
 # Lookalike letters that show up in evasive model ids (Cyrillic ѕora, etc.).
@@ -173,8 +204,29 @@ _MODEL_CONFUSABLES = str.maketrans({
     "к": "k", "К": "k",
     "Ι": "i", "ı": "i",
     "ꓢ": "s", "ꮪ": "s", "ꓦ": "v", "ꓗ": "k",
+    "๐": "o", "ƒ": "f", "ꮩ": "v", "ꓜ": "m",
     "$": "s",
 })
+def _load_model_confusables() -> dict[str, str]:
+    """Extra letters from core/confusables.txt, layered on _MODEL_CONFUSABLES."""
+    mapping: dict[str, str] = {}
+    path = Path(__file__).with_name("confusables.txt")
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return mapping
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split("\t")
+        if len(parts) >= 2 and parts[0] and len(parts[0]) == 1 and parts[1]:
+            mapping[parts[0]] = parts[1][0] if parts[1] else parts[1]
+    return mapping
+
+
+_FILE_CONFUSABLES = str.maketrans(_load_model_confusables())
+
 _MODEL_LEET = str.maketrans({
     "0": "o", "1": "i", "3": "e", "4": "a", "5": "s", "7": "t",
 })
@@ -183,14 +235,14 @@ _MODEL_LEET = str.maketrans({
 # Short markers must match a whole token, not a substring of a compact id
 # ("deepseek-chat-v3-0324" must not become veo via leet on version digits;
 # "inkling" must not match kling).
-_SHORT_MODEL_MARKERS = frozenset({"veo", "sora", "ray", "pika", "t2v", "i2v"})
+_SHORT_MODEL_MARKERS = frozenset({"veo", "sora", "ray", "pika", "t2v", "i2v", "svd", "flux"})
 _TOKEN_SPLIT = re.compile(r"[-_/./@]+")
 
 
 def normalize_model_id(model: str) -> str:
     """Lowercase, NFKC, fold confusables, keep letters and digits only."""
     text = unicodedata.normalize("NFKC", model or "")
-    text = text.translate(_MODEL_CONFUSABLES).lower()
+    text = text.translate(_MODEL_CONFUSABLES).translate(_FILE_CONFUSABLES).lower()
     text = unicodedata.normalize("NFD", text)
     kept: list[str] = []
     for ch in text:
@@ -204,7 +256,7 @@ def normalize_model_id(model: str) -> str:
 
 def _folded_for_tokens(model: str) -> str:
     text = unicodedata.normalize("NFKC", model or "")
-    text = text.translate(_MODEL_CONFUSABLES).lower()
+    text = text.translate(_MODEL_CONFUSABLES).translate(_FILE_CONFUSABLES).lower()
     text = unicodedata.normalize("NFD", text)
     kept: list[str] = []
     for ch in text:
@@ -297,7 +349,7 @@ def _long_markers() -> list[str]:
 
 
 _SHORT_SUFFIXES = ("pro", "fast", "turbo", "flash", "lite", "ultra", "mini", "max", "hd", "labs")
-_SHORT_PREFIXES = ("super", "pro", "my", "x")
+_SHORT_PREFIXES = ("super", "pro", "my", "x", "the")
 
 
 def _suffix_is_version_or_tier(text: str) -> bool:

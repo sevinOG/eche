@@ -1,0 +1,346 @@
+# Confusable / lookalike folding for the minors matcher.
+# Format: <source><TAB><replacement><TAB>optional note
+# Regular Latin letters are not remapped, except via lookalikes.
+а	a	cyrillic
+е	e	cyrillic
+о	o	cyrillic
+р	p	cyrillic
+с	c	cyrillic
+у	y	cyrillic
+х	x	cyrillic
+і	i	cyrillic
+ї	i	cyrillic
+ј	j	cyrillic
+ѕ	s	cyrillic
+һ	h	cyrillic
+ѵ	v	cyrillic
+ԁ	d	cyrillic
+Ԍ	g	cyrillic
+ԛ	q	cyrillic
+т	t	cyrillic
+п	n	cyrillic
+н	h	cyrillic
+и	n	cyrillic
+к	k	cyrillic
+м	m	cyrillic
+г	r	cyrillic
+б	b	cyrillic
+л	l	cyrillic
+д	d	cyrillic
+ф	o	cyrillic
+ц	u	cyrillic
+ж	x	cyrillic
+ш	w	cyrillic
+щ	w	cyrillic
+з	z	cyrillic
+ч	c	cyrillic
+ы	y	cyrillic
+ь		cyrillic
+ъ		cyrillic
+э	e	cyrillic
+ю	u	cyrillic
+я	r	cyrillic
+А	a	cyrillic
+Е	e	cyrillic
+О	o	cyrillic
+Р	p	cyrillic
+С	c	cyrillic
+У	y	cyrillic
+Х	x	cyrillic
+І	i	cyrillic
+К	k	cyrillic
+Н	h	cyrillic
+Т	t	cyrillic
+П	n	cyrillic
+М	m	cyrillic
+В	b	cyrillic
+Б	b	cyrillic
+Л	l	cyrillic
+α	a	greek
+ο	o	greek
+ε	e	greek
+ι	i	greek
+ν	v	greek
+ρ	p	greek
+τ	t	greek
+χ	x	greek
+η	n	greek
+κ	k	already
+μ	u	greek
+γ	y	greek
+β	b	greek
+δ	d	greek
+λ	l	greek
+σ	o	greek
+ς	s	greek
+ζ	z	greek
+π	n	greek
+φ	o	greek
+ψ	y	greek
+ω	w	greek
+θ	o	greek
+ξ	e	greek
+Α	a	greek
+Ο	o	greek
+Ε	e	greek
+Ι	i	greek
+Κ	k	greek
+Ν	n	greek
+Ρ	p	greek
+Τ	t	greek
+Η	h	greek
+Μ	m	greek
+Β	b	greek
+Δ	d	greek
+օ	o	armenian
+Օ	o	armenian
+ս	u	armenian
+հ	h	armenian
+տ	n	armenian
+ի	i	armenian
+ք	q	armenian
+գ	g	armenian
+ꮶ	k	cherokee
+ꮕ	l	cherokee
+ı	i	upside
+ɩ	i	latin iota
+ɪ	i	small-caps
+ᴀ	a	small-caps
+ʙ	b	small-caps
+ᴄ	c	small-caps
+ᴅ	d	small-caps
+ᴇ	e	small-caps
+ꜰ	f	small-caps
+ɢ	g	small-caps
+ʜ	h	small-caps
+ᴊ	j	small-caps
+ᴋ	k	small-caps
+ʟ	l	small-caps
+ᴍ	m	small-caps
+ɴ	n	small-caps
+ᴏ	o	small-caps
+ᴘ	p	small-caps
+ǫ	q	small-caps
+ʀ	r	small-caps
+ꜱ	s	small-caps
+ᴛ	t	small-caps
+ᴜ	u	small-caps
+ᴠ	v	small-caps
+ᴡ	w	small-caps
+ʏ	y	small-caps
+ᴢ	z	small-caps
+ᵃ	a	super/sub
+ᵇ	b	super/sub
+ᶜ	c	super/sub
+ᵈ	d	super/sub
+ᵉ	e	super/sub
+ᶠ	f	super/sub
+ᵍ	g	super/sub
+ʰ	h	super/sub
+ⁱ	i	super/sub
+ʲ	j	super/sub
+ᵏ	k	super/sub
+ˡ	l	super/sub
+ᵐ	m	super/sub
+ⁿ	n	super/sub
+ᵒ	o	super/sub
+ᵖ	p	super/sub
+ʳ	r	super/sub
+ˢ	s	super/sub
+ᵗ	t	super/sub
+ᵘ	u	super/sub
+ᵛ	v	super/sub
+ʷ	w	super/sub
+ˣ	x	super/sub
+ʸ	y	super/sub
+ᶻ	z	super/sub
+⁰	0	super/sub
+¹	1	super/sub
+²	2	super/sub
+³	3	super/sub
+⁴	4	super/sub
+⁵	5	super/sub
+⁶	6	super/sub
+⁷	7	super/sub
+⁸	8	super/sub
+⁹	9	super/sub
+ₐ	a	super/sub
+ₑ	e	super/sub
+ₕ	h	super/sub
+ᵢ	i	super/sub
+ⱼ	j	super/sub
+ₖ	k	super/sub
+ₗ	l	super/sub
+ₘ	m	super/sub
+ₙ	n	super/sub
+ₒ	o	super/sub
+ₚ	p	super/sub
+ᵣ	r	super/sub
+ₛ	s	super/sub
+ₜ	t	super/sub
+ᵤ	u	super/sub
+ᵥ	v	super/sub
+ₓ	x	super/sub
+ⓐ	a	circled
+Ⓐ	a	circled-cap
+ⓑ	b	circled
+Ⓑ	b	circled-cap
+ⓒ	c	circled
+Ⓒ	c	circled-cap
+ⓓ	d	circled
+Ⓓ	d	circled-cap
+ⓔ	e	circled
+Ⓔ	e	circled-cap
+ⓕ	f	circled
+Ⓕ	f	circled-cap
+ⓖ	g	circled
+Ⓖ	g	circled-cap
+ⓗ	h	circled
+Ⓗ	h	circled-cap
+ⓘ	i	circled
+Ⓘ	i	circled-cap
+ⓙ	j	circled
+Ⓙ	j	circled-cap
+ⓚ	k	circled
+Ⓚ	k	circled-cap
+ⓛ	l	circled
+Ⓛ	l	circled-cap
+ⓜ	m	circled
+Ⓜ	m	circled-cap
+ⓝ	n	circled
+Ⓝ	n	circled-cap
+ⓞ	o	circled
+Ⓞ	o	circled-cap
+ⓟ	p	circled
+Ⓟ	p	circled-cap
+ⓠ	q	circled
+Ⓠ	q	circled-cap
+ⓡ	r	circled
+Ⓡ	r	circled-cap
+ⓢ	s	circled
+Ⓢ	s	circled-cap
+ⓣ	t	circled
+Ⓣ	t	circled-cap
+ⓤ	u	circled
+Ⓤ	u	circled-cap
+ⓥ	v	circled
+Ⓥ	v	circled-cap
+ⓦ	w	circled
+Ⓦ	w	circled-cap
+ⓧ	x	circled
+Ⓧ	x	circled-cap
+ⓨ	y	circled
+Ⓨ	y	circled-cap
+ⓩ	z	circled
+Ⓩ	z	circled-cap
+⒜	a	paren
+⒝	b	paren
+⒞	c	paren
+⒟	d	paren
+⒠	e	paren
+⒡	f	paren
+⒢	g	paren
+⒣	h	paren
+⒤	i	paren
+⒥	j	paren
+⒦	k	paren
+⒧	l	paren
+⒨	m	paren
+⒩	n	paren
+⒪	o	paren
+⒫	p	paren
+⒬	q	paren
+⒭	r	paren
+⒮	s	paren
+⒯	t	paren
+⒰	u	paren
+⒱	v	paren
+⒲	w	paren
+⒳	x	paren
+⒴	y	paren
+⒵	z	paren
+🇦	a	regional
+🇧	b	regional
+🇨	c	regional
+🇩	d	regional
+🇪	e	regional
+🇫	f	regional
+🇬	g	regional
+🇭	h	regional
+🇮	i	regional
+🇯	j	regional
+🇰	k	regional
+🇱	l	regional
+🇲	m	regional
+🇳	n	regional
+🇴	o	regional
+🇵	p	regional
+🇶	q	regional
+🇷	r	regional
+🇸	s	regional
+🇹	t	regional
+🇺	u	regional
+🇻	v	regional
+🇼	w	regional
+🇽	x	regional
+🇾	y	regional
+🇿	z	regional
+ɐ	a	upside
+ɔ	c	upside
+ə	e	upside
+ɟ	f	upside
+ƃ	g	upside
+ɥ	h	upside
+ɾ	j	upside
+ʞ	k	upside
+ɯ	m	upside
+ɹ	r	upside
+ʇ	t	upside
+ʌ	v	upside
+ʍ	w	upside
+ʎ	y	upside
+ø	o	latin
+Ø	o	latin
+ℓ	l	latin
+K	k	kelvin
+ﬀ	ff	lig
+ﬁ	fi	lig
+ﬂ	fl	lig
+
+# Cherokee lookalikes (ᏞᎾᏞᏆ → loli)
+Ꮮ	l	cherokee tle
+Ꮎ	o	cherokee na
+Ꮖ	i	cherokee qua
+Ꭷ	o	cherokee o
+Ꮂ	b	cherokee hv
+Ꭲ	i	cherokee i
+Ꮢ	r	cherokee sv
+Ꭼ	e	cherokee e
+Ꭺ	a	cherokee go
+# Coptic lookalikes (ⲕⲓⲇ → kid)
+ⲕ	k	coptic kapa
+Ⲕ	k	coptic kapa cap
+ⲓ	i	coptic iauda
+Ⲓ	i	coptic iauda cap
+ⲇ	d	coptic dalda
+Ⲇ	d	coptic dalda cap
+ⲟ	o	coptic o
+Ⲟ	o	coptic o cap
+ⲥ	c	coptic sima
+Ⲥ	c	coptic sima cap
+ⲁ	a	coptic alfa
+Ⲁ	a	coptic alfa cap
+ⲉ	e	coptic ei
+Ⲉ	e	coptic ei cap
+ⲣ	p	coptic ro
+Ⲣ	p	coptic ro cap
+ⲛ	n	coptic ni
+Ⲛ	n	coptic ni cap
+ⲧ	t	coptic tau
+Ⲧ	t	coptic tau cap
+ⲏ	h	coptic eta
+Ⲏ	h	coptic eta cap
+๐	o	thai-digit
+ƒ	f	florin
+ꮩ	v	cherokee-lookalike
+ꓜ	m	lisu-lookalike
