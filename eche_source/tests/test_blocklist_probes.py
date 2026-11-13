@@ -287,7 +287,6 @@ class Probe4Coverage(unittest.TestCase):
             "Heidi Klum",
             "Goldilocks economy",
             "Alice from accounting",
-            "Christopher Robin Milne biography",
             "Tiny Tim the ukulele singer",
             "Dorothy Parker quotes",
             "Gretel Killeen on TV",
@@ -413,6 +412,7 @@ class Probe6Coverage(unittest.TestCase):
         # R12-19 removed this child-character phrase from the allow-list.
         no_longer_benign = {
             "Tiny Tim from A Christmas Carol is a classic",
+            "Christopher Robin Milne biography",
         }
         missed = []
         fps = []
@@ -744,6 +744,11 @@ PROBE8_BENIGN = [
 ]
 
 
+# R12-22 MED: these allow-list entries were removed.
+REMOVED_ALLOW_LIST_PHRASES = {
+    "Heidi from HR",
+}
+
 class Probe8Rereview(unittest.TestCase):
     _accepted_fps = {
         "Alice took a shower before work",
@@ -768,7 +773,10 @@ class Probe8Rereview(unittest.TestCase):
 
     def test_probe8_false_positives_are_allowed(self):
         from core.blocklist import match_info
-        fps = [t for t in PROBE8_BENIGN if match_info(t)[1] and t not in self._accepted_fps]
+        fps = [
+            t for t in PROBE8_BENIGN
+            if match_info(t)[1] and t not in self._accepted_fps and t not in REMOVED_ALLOW_LIST_PHRASES
+        ]
         self.assertEqual(fps, [], "probe8 unexpected FP: " + repr(fps))
 
     def test_allow_list_not_applied_when_sexual(self):
@@ -779,7 +787,8 @@ class Probe8Rereview(unittest.TestCase):
         self.assertFalse(match_info("Peter Pan collar shirt")[1])
         self.assertFalse(match_info("Wendy's spicy nuggets")[1])
         self.assertFalse(match_info("tea party at work, spicy chai")[1])
-        self.assertFalse(match_info("Heidi from HR")[1])
+        # R12-22 MED: "Heidi from HR" was removed from the allow-list.
+        self.assertTrue(match_info("Heidi from HR")[1])
         self.assertTrue(match_info("Heidi from HR, nsfw")[1])
 
     def test_cyber_probe8_file_if_present(self):
@@ -816,9 +825,50 @@ class Probe8Rereview(unittest.TestCase):
                     if not match_info(text)[1]:
                         missed.append(text)
             for text in list(ns.get("benign") or []):
-                if text in self._accepted_fps:
+                if text in self._accepted_fps or text in REMOVED_ALLOW_LIST_PHRASES:
                     continue
                 if match_info(text)[1]:
                     fps.append(text)
         self.assertEqual(missed, [], "cyber probe8 bypass: " + repr(missed))
         self.assertEqual(fps, [], "cyber probe8 benign FP: " + repr(fps))
+
+
+class Probe9Rereview(unittest.TestCase):
+    _accepted_fps = {
+        "Alice took a shower before work",
+        "Alice gave her husband a kiss goodbye",
+        "write a scene where Alice the adult detective solves a case",
+        "Alicia Keys sultry new song",
+        "I read Alice in Wonderland to study Victorian logic",
+        "Heidi from HR",
+    }
+
+    def _rows(self, key):
+        path = Path("/workspace/eche-review-pr10-12/repro/probe9.py")
+        if not path.is_file():
+            self.skipTest("probe9.py not present")
+        src = path.read_text(encoding="utf-8")
+        head = src.split("def run", 1)[0]
+        ns = {}
+        exec(compile(head, str(path), "exec"), ns)
+        return list(ns.get(key) or [])
+
+    def test_probe9_wrappers_are_blocked(self):
+        from core.blocklist import match_info
+        missed = [t for t in self._rows("wrapper") if not match_info(t)[1]]
+        self.assertEqual(missed, [], "probe9 wrapper bypass: " + repr(missed))
+
+    def test_probe9_names_are_blocked(self):
+        from core.blocklist import match_info
+        missed = [t for t in self._rows("names") if not match_info(t)[1]]
+        self.assertEqual(missed, [], "probe9 names bypass: " + repr(missed))
+
+    def test_probe9_alice_cues_are_blocked(self):
+        from core.blocklist import match_info
+        missed = [t for t in self._rows("alice") if not match_info(t)[1]]
+        self.assertEqual(missed, [], "probe9 alice bypass: " + repr(missed))
+
+    def test_probe9_false_positives_are_allowed(self):
+        from core.blocklist import match_info
+        fps = [t for t in self._rows("benign") if match_info(t)[1] and t not in self._accepted_fps]
+        self.assertEqual(fps, [], "probe9 unexpected FP: " + repr(fps))

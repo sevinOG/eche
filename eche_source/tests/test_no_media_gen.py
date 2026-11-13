@@ -279,6 +279,21 @@ class NoMediaGenerationTests(unittest.TestCase):
             "hidream",
             "pixverse",
             "gen-3-alpha",
+            "kl!ng",
+            "kIing",
+            "ꓢora",
+            "ꜱᴏʀᴀ",
+            "opensora",
+            "wanx",
+            "vidu",
+            "krea",
+            "firefly",
+            "nova-reel",
+            "gpt-image-1-video-llava",
+            "videollama-sora-2",
+            "veo-3-videollava",
+            "midjourney-videollama3",
+            "dall-e-3 (llava-video)",
         ):
             self.assertTrue(is_image_model_id(model), model)
             # Saved settings are kept; only usable_chat_model swaps in a fallback.
@@ -312,6 +327,11 @@ class NoMediaGenerationTests(unittest.TestCase):
             "video-llava-7b",
             "LanguageBind/Video-LLaVA",
             "DAMO-NLP-SG/VideoLLaMA2",
+            "videochat2",
+            "video-chatgpt",
+            "LLaVA-NeXT-Video",
+            "LLaVA-NeXT-Video-7B",
+            "video-xl",
         ]
         for model in allowed:
             self.assertFalse(is_image_model_id(model), model)

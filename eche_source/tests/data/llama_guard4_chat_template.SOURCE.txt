@@ -1,0 +1,3 @@
+Official Llama Guard 4 chat template, fetched 2026-11-13 from
+https://huggingface.co/RedHatAI/Llama-Guard-4-12B/raw/main/chat_template.jinja
+mirror of meta-llama/Llama-Guard-4-12B.

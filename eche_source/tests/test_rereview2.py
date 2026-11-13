@@ -101,7 +101,10 @@ class Cache(Base):
             calls.append(1); return _ok("safe")
         with mock.patch("urllib.request.urlopen", side_effect=ok):
             asyncio.run(C.classify_async("hello")); asyncio.run(C.classify_async("hello"))
-        self.assertEqual(len(calls), 2)
+        # Each classify_async does Llama Guard 4 plus the fail-closed
+        # child check. Safe verdicts are not cached, so two calls make
+        # four HTTP requests.
+        self.assertEqual(len(calls), 4)
 
     def test_unsafe_cached_exact_only(self):
         with mock.patch("urllib.request.urlopen", side_effect=lambda *a, **k: _ok("unsafe\nS1")):

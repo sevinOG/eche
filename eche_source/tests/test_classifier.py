@@ -56,7 +56,8 @@ class ClassifierContractTests(unittest.TestCase):
 
     def test_safe_and_unsafe_verdicts(self):
         with mock.patch.object(classifier, "_endpoint", return_value=("k", classifier.GROQ_URL)), \
-                mock.patch.object(classifier, "_post", return_value="safe"):
+                mock.patch.object(classifier, "_post", return_value="safe"), \
+                mock.patch.object(classifier, "_child_check_sync", return_value=""):
             self.assertEqual(classifier.classify("hello"), "")
         classifier.clear_cache()
         with mock.patch.object(classifier, "_endpoint", return_value=("k", classifier.GROQ_URL)), \
@@ -141,20 +142,205 @@ class HistoryQuarantineDropsLines(unittest.TestCase):
 class ClassifierPromptCoversFictionalChildren(unittest.TestCase):
     def test_prompt_covers_named_fictional_child_characters(self):
         from core import safety as sf
-        from core.classifier import CLASSIFIER_PROMPT, _prepare_messages
+        from core.classifier import (
+            CHILD_CHECK_PROMPT,
+            CLASSIFIER_PROMPT,
+            _prepare_messages,
+        )
 
         phrase = "named fictional child characters"
-        self.assertIn(phrase, CLASSIFIER_PROMPT)
-        footer = sf.SAFETY_FOOTER
+        self.assertIn(phrase, CHILD_CHECK_PROMPT)
+        self.assertEqual(CLASSIFIER_PROMPT, CHILD_CHECK_PROMPT)
         self.assertEqual(
             sf.footer_sha256(),
             "66e2062573080eb6f55015acabf38fc33848fbfa8d450a2821918196b464d7f1",
         )
         self.assertTrue(
-            phrase in CLASSIFIER_PROMPT or phrase in footer,
-            "classifier prompt or footer must explicitly cover named fictional child characters",
+            phrase in CHILD_CHECK_PROMPT or phrase in sf.SAFETY_FOOTER,
+            "second-check prompt or footer must explicitly cover named fictional child characters",
         )
         messages, err = _prepare_messages([{"role": "user", "content": "hello"}])
         self.assertEqual(err, "")
-        self.assertEqual(messages[0]["role"], "system")
-        self.assertIn(phrase, messages[0]["content"])
+        self.assertTrue(messages)
+        self.assertEqual(messages[0]["role"], "user")
+        self.assertFalse(any(m.get("role") == "system" for m in messages))
+        # The second-check prompt is not sent to Llama Guard 4.
+        self.assertNotIn(phrase, str(messages[0]["content"]))
+
+
+def _lg4_template_source() -> str:
+    path = HERE / "data" / "llama_guard4_chat_template.jinja"
+    return path.read_text(encoding="utf-8")
+
+
+def _as_template_messages(messages: list) -> list:
+    """LG4's official template reads content as typed parts."""
+    out = []
+    for msg in messages:
+        content = msg.get("content")
+        if isinstance(content, str):
+            parts = [{"type": "text", "text": content}]
+        elif isinstance(content, list):
+            parts = []
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                typ = part.get("type")
+                if typ == "text":
+                    parts.append({"type": "text", "text": part.get("text") or ""})
+                elif typ in {"image", "image_url", "input_image"}:
+                    parts.append({"type": "image"})
+                else:
+                    parts.append(part)
+        else:
+            parts = [{"type": "text", "text": str(content or "")}]
+        out.append({"role": msg.get("role"), "content": parts})
+    return out
+
+
+def _render_lg4(messages: list) -> str:
+    import jinja2
+
+    def raise_exception(msg):
+        raise ValueError(msg)
+
+    env = jinja2.Environment(loader=jinja2.BaseLoader())
+    env.globals["raise_exception"] = raise_exception
+    template = env.from_string(_lg4_template_source())
+    return template.render(
+        messages=_as_template_messages(messages),
+        excluded_category_keys=[],
+    )
+
+
+class LlamaGuard4TemplateTests(unittest.TestCase):
+    """Render the real LG4 chat template against every request shape Eche sends."""
+
+    def _shapes(self):
+        from core.classifier import _prepare_messages
+
+        shapes = {}
+        user_only, err = _prepare_messages([{"role": "user", "content": "hello there"}])
+        self.assertEqual(err, "")
+        shapes["user"] = user_only
+
+        turns, err = _prepare_messages([
+            {"role": "user", "content": "a prompt"},
+            {"role": "assistant", "content": "a reply"},
+        ])
+        self.assertEqual(err, "")
+        shapes["user_assistant"] = turns
+
+        history, err = _prepare_messages([
+            {"role": "system", "content": "Persona: Eche."},
+            {"role": "user", "content": "one"},
+            {"role": "assistant", "content": "two"},
+            {"role": "user", "content": "three"},
+        ])
+        self.assertEqual(err, "")
+        shapes["history_drops_system"] = history
+
+        images = [{"type": "image_url", "image_url": {"url": "https://example.com/x.png"}}]
+        imaged, err = _prepare_messages(
+            [{"role": "user", "content": "look at this"}],
+            images=images,
+        )
+        self.assertEqual(err, "")
+        shapes["user_with_image"] = imaged
+        return shapes
+
+    def test_every_request_shape_renders_without_errors(self):
+        for name, messages in self._shapes().items():
+            self.assertTrue(messages, name)
+            self.assertEqual(messages[0]["role"], "user", name)
+            self.assertFalse(any(m.get("role") == "system" for m in messages), name)
+            roles = [m["role"] for m in messages]
+            for i, role in enumerate(roles):
+                expected = "user" if i % 2 == 0 else "assistant"
+                self.assertEqual(role, expected, f"{name} role {i}: {roles}")
+            rendered = _render_lg4(messages)
+            self.assertIn("<BEGIN CONVERSATION>", rendered, name)
+            last_user = next(m for m in reversed(messages) if m["role"] == "user")
+            content = last_user["content"]
+            snippet = content if isinstance(content, str) else " ".join(
+                str(p.get("text") or "") for p in content if isinstance(p, dict)
+            )
+            if snippet.strip():
+                self.assertIn(snippet.strip()[:12], rendered, name)
+
+    def test_system_first_shape_does_not_reach_the_template(self):
+        from core.classifier import _prepare_messages
+        messages, err = _prepare_messages([
+            {"role": "system", "content": "named fictional child characters"},
+            {"role": "user", "content": "hello"},
+        ])
+        self.assertEqual(err, "")
+        self.assertEqual(messages[0]["role"], "user")
+        _render_lg4(messages)
+
+    def test_post_mocks_must_see_roles(self):
+        """Captured LG4 requests start with user and never include a system turn."""
+        captured = []
+
+        def capture(messages, *args, **kwargs):
+            captured.append(messages)
+            return "safe"
+
+        classifier.allow_in_tests(False)
+        try:
+            with mock.patch.object(classifier, "_endpoint", return_value=("k", classifier.GROQ_URL)), \
+                    mock.patch.object(classifier, "_post", side_effect=capture), \
+                    mock.patch.object(classifier, "_child_check_sync", return_value=""):
+                classifier.clear_cache()
+                self.assertEqual(classifier.classify("hello roles"), "")
+        finally:
+            classifier.allow_in_tests(True)
+        self.assertTrue(captured)
+        for messages in captured:
+            roles = [m.get("role") for m in messages]
+            self.assertEqual(roles[0], "user", roles)
+            self.assertNotIn("system", roles, roles)
+            for i, role in enumerate(roles):
+                self.assertEqual(role, "user" if i % 2 == 0 else "assistant", roles)
+
+
+class ChildCheckFailClosedTests(unittest.TestCase):
+    def setUp(self):
+        self._prev = classifier.tests_are_allowing()
+        classifier.allow_in_tests(False)
+        classifier.clear_cache()
+
+    def tearDown(self):
+        classifier.allow_in_tests(self._prev)
+
+    def test_default_model_is_instruction_following_not_xai(self):
+        with mock.patch.object(classifier, "_endpoint", return_value=("k", classifier.GROQ_URL)):
+            self.assertEqual(classifier.child_check_model(), "llama-3.1-8b-instant")
+        with mock.patch.object(classifier, "_endpoint", return_value=("k", classifier.OPENROUTER_URL)):
+            self.assertEqual(classifier.child_check_model(), "meta-llama/llama-3.1-8b-instruct")
+        self.assertNotIn("xai", classifier.CHILD_CHECK_DEFAULT_GROQ.lower())
+        self.assertNotIn("xai", classifier.CHILD_CHECK_DEFAULT_OPENROUTER.lower())
+        with mock.patch.dict(os.environ, {"CHILD_CHECK_MODEL": "meta-llama/llama-3.1-8b-instruct"}):
+            self.assertEqual(classifier.child_check_model(), "meta-llama/llama-3.1-8b-instruct")
+
+    def test_yes_blocks_and_no_allows(self):
+        with mock.patch.object(classifier, "_endpoint", return_value=("k", classifier.GROQ_URL)), \
+                mock.patch.object(classifier, "_post", return_value="safe"), \
+                mock.patch.object(classifier, "_child_post", return_value="YES"):
+            self.assertEqual(classifier.classify("a child character"), "child-check-unsafe")
+        classifier.clear_cache()
+        with mock.patch.object(classifier, "_endpoint", return_value=("k", classifier.GROQ_URL)), \
+                mock.patch.object(classifier, "_post", return_value="safe"), \
+                mock.patch.object(classifier, "_child_post", return_value="NO"):
+            self.assertEqual(classifier.classify("hello"), "")
+
+    def test_error_timeout_and_unparseable_block(self):
+        with mock.patch.object(classifier, "_endpoint", return_value=("k", classifier.GROQ_URL)), \
+                mock.patch.object(classifier, "_post", return_value="safe"), \
+                mock.patch.object(classifier, "_child_post", side_effect=RuntimeError("timeout")):
+            self.assertEqual(classifier.classify("hello"), "child-check-error")
+        classifier.clear_cache()
+        with mock.patch.object(classifier, "_endpoint", return_value=("k", classifier.GROQ_URL)), \
+                mock.patch.object(classifier, "_post", return_value="safe"), \
+                mock.patch.object(classifier, "_child_post", return_value="maybe?"):
+            self.assertEqual(classifier.classify("hello"), "child-check-error")
