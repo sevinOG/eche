@@ -13,6 +13,7 @@ import json
 import os
 import stat
 import sys
+import threading
 from typing import Any
 
 # Keys that must never sit in plaintext settings.json
@@ -86,6 +87,8 @@ PUBLIC_KEYS = (
     "content_filter_model",         # Model id. Blank uses the chat model.
     "child_check_provider",
     "child_check_model",
+    "image_check_provider",         # settings-only vision content check. Blank is off/fail-closed.
+    "image_check_model",            # Must be vision-capable. Does not follow content_filter_model.
 )
 
 # Map settings key -> environment variable used by the bot
@@ -108,6 +111,10 @@ ENV_MAP = {
 
 _SECRETS_FILENAME = "secrets.dpapi.json"
 _SETTINGS_FILENAME = "settings.json"
+
+
+class SettingsUnreadable(Exception):
+    """settings.json exists but cannot be read or parsed."""
 
 
 def _user_root() -> str:
@@ -412,8 +419,34 @@ def _migrate_plaintext_settings(root: str) -> None:
         _write_json(path, data)
 
 
+_load_cache_lock = threading.Lock()
+_load_cache: dict[str, tuple[tuple, dict[str, str]]] = {}
+
+
+def _settings_fingerprint(root: str) -> tuple:
+    parts = []
+    for path in (settings_path(root), secrets_path(root)):
+        try:
+            st = os.stat(path)
+            parts.append((path, st.st_mtime_ns, st.st_size))
+        except OSError:
+            parts.append((path, None, None))
+    return tuple(parts)
+
+
+def clear_load_cache() -> None:
+    """Tests and save_all. Drops the in-memory settings snapshot."""
+    with _load_cache_lock:
+        _load_cache.clear()
+
+
 def load_all(root: str | None = None) -> dict[str, str]:
     root = root or _user_root()
+    finger = _settings_fingerprint(root)
+    with _load_cache_lock:
+        hit = _load_cache.get(root)
+        if hit and hit[0] == finger:
+            return dict(hit[1])
     os.makedirs(os.path.join(root, "config"), exist_ok=True)
     _migrate_plaintext_settings(root)
 
@@ -518,6 +551,8 @@ def load_all(root: str | None = None) -> dict[str, str]:
             else _CLOUD_DEFAULT
         )
 
+    with _load_cache_lock:
+        _load_cache[root] = (finger, dict(out))
     return out
 
 
@@ -600,6 +635,7 @@ def _notify_asset_toggle_owners(lines: list[str]) -> None:
 
 def save_all(data: dict[str, Any], root: str | None = None) -> None:
     root = root or _user_root()
+    clear_load_cache()
     os.makedirs(os.path.join(root, "config"), exist_ok=True)
 
     public = {k: str(data.get(k) or "").strip() for k in PUBLIC_KEYS}
@@ -671,6 +707,8 @@ def save_all(data: dict[str, Any], root: str | None = None) -> None:
             "content_filter_model",
             "child_check_provider",
             "child_check_model",
+            "image_check_provider",
+            "image_check_model",
         ):
             old_val = str(existing_public.get(key) or "").strip()
             new_val = str(public.get(key) or "").strip()
@@ -694,6 +732,11 @@ def save_all(data: dict[str, Any], root: str | None = None) -> None:
             xai_key_set=key_set,
             **fields,
         )
+        try:
+            from core.classifier import mark_checker_settings_saved
+            mark_checker_settings_saved(public, root)
+        except Exception:
+            pass
     except Exception:
         # A failed audit must fail the save: revert the written files and surface the error.
         try:

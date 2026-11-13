@@ -512,9 +512,15 @@ class SettingsWindow(QWidget):
         checker_body = QVBoxLayout()
         checker_body.setSpacing(12)
         checker_hint = QLabel(
-            "Blank uses the chat provider and model selected above. "
-            "Llama Guard models use the Guard prompt; other models use a YES/NO prompt. "
-            "A missing or retired model fails closed and never falls back to another model."
+            "These checkers run on the image and asset path only and cannot be "
+            "turned off. Text chat uses the safety footer and the minors "
+            "keyword/blocklist filter. Blank uses the chat provider and model "
+            "selected above. Llama Guard models use the Guard prompt; other "
+            "models use a YES/NO prompt. A missing or retired model fails "
+            "closed and never falls back to another model. The image content "
+            "check is separate: it must be set to a vision-capable model and "
+            "does not follow the content filter. Age vision stays on the pinned "
+            "Scout path."
         )
         checker_hint.setObjectName("FieldHint")
         checker_hint.setWordWrap(True)
@@ -534,6 +540,13 @@ class SettingsWindow(QWidget):
                 "child_check_model",
                 "child_check_model",
             ),
+            (
+                "Image content check",
+                "image_check_provider_combo",
+                "image_check_provider",
+                "image_check_model",
+                "image_check_model",
+            ),
         ):
             row = QVBoxLayout()
             row.setSpacing(8)
@@ -548,9 +561,15 @@ class SettingsWindow(QWidget):
             combo.addItem("Local — Ollama", "ollama")
             setattr(self, p_attr, combo)
             row.addWidget(combo)
+            blank = (
+                "Must be set to a vision-capable model. Blank fails closed. "
+                "Does not follow the content filter model."
+                if m_key == "image_check_model"
+                else "Blank uses the chat model."
+            )
             row.addLayout(self._field_block(
                 f"{title} model",
-                "Blank uses the chat model.",
+                blank,
                 secret=False,
                 key=m_key,
                 help_key=help_key,
@@ -558,7 +577,7 @@ class SettingsWindow(QWidget):
             checker_body.addLayout(row)
         layout.addWidget(self._card(
             "Safety checkers",
-            "Content filter and child check. Each can use a different provider and model.",
+            "Image and asset path only. Always on and fail closed. Each can use a different provider and model.",
             checker_body,
         ))
         layout.addStretch(1)
@@ -1669,6 +1688,7 @@ class SettingsWindow(QWidget):
         for attr, key in (
             ("content_filter_provider_combo", "content_filter_provider"),
             ("child_check_provider_combo", "child_check_provider"),
+            ("image_check_provider_combo", "image_check_provider"),
         ):
             combo = getattr(self, attr, None)
             if combo is None:
@@ -1901,6 +1921,7 @@ class SettingsWindow(QWidget):
         for attr, key in (
             ("content_filter_provider_combo", "content_filter_provider"),
             ("child_check_provider_combo", "child_check_provider"),
+            ("image_check_provider_combo", "image_check_provider"),
         ):
             combo = getattr(self, attr, None)
             if combo is not None:

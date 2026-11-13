@@ -255,6 +255,14 @@ _CONFIG_HINTS: list[tuple[str, str, str, str]] = [
         "Update child_check_model, or the chat model if the field is blank, then save.",
     ),
     (
+        "image_check_model",
+        "Image content check model is missing",
+        "The image content check could not find the vision model named in Settings "
+        "under image_check_model. This check does not follow the text content filter "
+        "or the chat model. The check does not fall back to another model and is not skipped.",
+        "Set image_check_provider and a vision-capable image_check_model, then save.",
+    ),
+    (
         "Safety checker model is missing",
         "Safety checker model is missing",
         "The content filter or child check could not find its model. "

@@ -107,6 +107,11 @@ class HardenedAssetTests(unittest.TestCase):
                 with self.assertRaises(ImagineError) as raised:
                     asyncio.run(prepare_generation(INCIDENT, user_id=11, guild_id=22, channel_id=33))
                 self.assertEqual(raised.exception.text, REFUSAL)
+                from core import audit as audit_mod
+                try:
+                    audit_mod.flush()
+                except Exception:
+                    pass
                 lines = (audit / "audit.jsonl").read_text(encoding="utf-8") if (audit / "audit.jsonl").is_file() else ""
                 self.assertNotIn("twig boy", lines)
                 self.assertNotIn(INCIDENT, lines)

@@ -821,23 +821,25 @@ def _drop_or_rebuild_history(prepared: list, drop_indices: set[int]) -> list:
 
 
 def _outgoing_messages(messages: list) -> list:
-    """Apply the hardcoded safety footer and the minors input check.
+    """Apply the hardcoded safety footer and the minors keyword/blocklist check.
 
-    Sync callers get history quarantine and the fail-closed classifier
-    when no event loop is running. On a running loop this refuses
-    rather than skip the classifier; production uses
-    _outgoing_messages_async so the loop is never blocked.
+    Text-only chat does not run model-based LG or child checks. If the
+    request has images, the image-path classifier stays fail-closed:
+    sync callers with no loop run it here; a running loop must use
+    _outgoing_messages_async rather than skip those checks.
     """
     prepared = _sanitize_outgoing(messages)
     try:
         asyncio.get_running_loop()
     except RuntimeError:
         return asyncio.run(_classify_outgoing(prepared))
-    from core.blocklist import note
-    from core.safety import MinorsBlocked
-
-    note("llm-input-classifier-error")
-    raise MinorsBlocked("llm-input-classifier-error")
+    from core.classifier import extract_images
+    if extract_images(prepared):
+        from core.blocklist import note
+        from core.safety import MinorsBlocked
+        note("llm-input-classifier-error")
+        raise MinorsBlocked("llm-input-classifier-error")
+    return prepared
 
 
 async def _outgoing_messages_async(messages: list) -> list:
@@ -847,7 +849,11 @@ async def _outgoing_messages_async(messages: list) -> list:
 
 async def _classify_outgoing(prepared: list) -> list:
     from core.blocklist import note, split_transcript
-    from core.classifier import classify_async, extract_images, HISTORY_WINDOW
+    from core.classifier import (
+        classify_async,
+        extract_images,
+        HISTORY_WINDOW,
+    )
     from core.safety import MinorsBlocked, is_footer_message, is_user_guard, message_text
 
     _output_context.set(_request_output_context(prepared))
@@ -909,9 +915,14 @@ async def _classify_outgoing(prepared: list) -> list:
     if history_text.strip():
         combined = (hard_text + "\n\nHISTORY:\n" + history_text).strip()
 
-    verdict = await classify_async(combined or hard_text or " ", images=images or None)
+    # Text-only chat: footer + keyword/blocklist only. Image attachments
+    # always run the prompt filter, LG, child check, and age vision, and
+    # those checks cannot be turned off.
+    verdict = ""
+    if images:
+        verdict = await classify_async(combined or hard_text or " ", images=images)
     if verdict:
-        hard_verdict = await classify_async(hard_text or " ", images=images or None)
+        hard_verdict = await classify_async(hard_text or " ", images=images)
         if hard_verdict:
             check = f"llm-input-{hard_verdict}"
             note(check)
@@ -936,8 +947,7 @@ async def _output_blocked(*texts, tool_calls=None) -> bool:
     context so school or young cues in the scene are not missed.
     Replies are classified as an assistant turn against the latest user text.
     """
-    from core.blocklist import is_blocked, match_info, note, split_transcript
-    from core.classifier import classify_response_async
+    from core.blocklist import is_blocked, match_info, note
     import json as _json
 
     parts = [str(t) for t in texts if t]
@@ -960,15 +970,8 @@ async def _output_blocked(*texts, tool_calls=None) -> bool:
     if is_blocked(*parts) or (combined and match_info(combined, force_context=True)[1]):
         note("llm-output")
         return True
-    # Latest user line from the stored request context, if present.
-    prompt = ""
-    if context:
-        _hist, latest = split_transcript(context)
-        prompt = (latest or context).strip()
-    check = await classify_response_async(reply, prompt=prompt)
-    if check:
-        note(check)
-        return True
+    # Chat text replies do not run LG or the child check. Generated-image
+    # and asset outputs are checked on the image path, which stays on.
     return False
 
 
@@ -1445,11 +1448,11 @@ async def _async_post(url: str, payload: dict, headers: dict, timeout: int = 45)
     visible = int(payload.get("max_tokens") or 256)
     stage = 0
     if _provider_backend() == "ollama":
-        # /api/show is a blocking lookup. Run it off the event loop once;
-        # the request below reads the cached answer.
-        model = str(payload.get("model") or "")
-        await asyncio.get_running_loop().run_in_executor(
-            None, _ollama_capabilities, url, model
+        # Chat, checkers' sibling path, and the episodic summary must not
+        # block the loop. _sync_post also covers /api/show and the body.
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None, lambda: _sync_post(url, payload, headers, timeout)
         )
     for _ in range(3):
         send_url = url

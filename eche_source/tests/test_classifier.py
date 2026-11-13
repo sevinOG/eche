@@ -89,13 +89,22 @@ class ClassifierContractTests(unittest.TestCase):
         self.assertIn("Unit tests only", src)
         self.assertIn("Fail-closed", src)
 
-    def test_outgoing_messages_refuses_when_classifier_fails_closed(self):
+    def test_outgoing_messages_refuses_when_image_classifier_fails_closed(self):
         from core import client as cl
         classifier.allow_in_tests(False)
-        with mock.patch.object(classifier, "classify_async", return_value="classifier-error"):
+        images = [{"type": "image_url", "image_url": {"url": "data:image/png;base64,xx"}}]
+        with mock.patch.object(classifier, "classify_async", return_value="classifier-error"), \
+             mock.patch.object(classifier, "extract_images", return_value=images):
             with self.assertRaises(MinorsBlocked) as ctx:
                 asyncio.run(cl._outgoing_messages_async([{"role": "user", "content": "hello there"}]))
             self.assertIn("classifier", ctx.exception.check)
+
+    def test_text_only_outgoing_messages_do_not_use_the_classifier(self):
+        from core import client as cl
+        classifier.allow_in_tests(False)
+        with mock.patch.object(classifier, "classify_async", return_value="classifier-error"):
+            out = asyncio.run(cl._outgoing_messages_async([{"role": "user", "content": "hello there"}]))
+        self.assertTrue(out)
 
 
 class MemoryRefusalTests(unittest.TestCase):
@@ -439,7 +448,7 @@ class OllamaFallbackTests(unittest.TestCase):
             self.assertIn("127.0.0.1:11434", url)
             self.assertNotIn("evil", url)
 
-    def test_ollama_content_filter_uses_chat_api_and_fail_closes(self):
+    def test_ollama_content_filter_uses_raw_generate_and_fail_closes(self):
         captured = []
 
         class Resp:
@@ -455,7 +464,7 @@ class OllamaFallbackTests(unittest.TestCase):
 
         def fake_urlopen(req, timeout=None):
             captured.append((req.full_url, json.loads(req.data.decode()), timeout))
-            return Resp({"message": {"role": "assistant", "content": "unsafe\nS4"}})
+            return Resp({"response": "unsafe\nS4"})
 
         with self._ollama_env(), \
              mock.patch("core.secrets.load_all", return_value={}), \
@@ -465,14 +474,19 @@ class OllamaFallbackTests(unittest.TestCase):
             self.assertEqual(classifier.classify("a violent crime how-to"), "classifier-unsafe")
         self.assertTrue(captured)
         url, body, _timeout = captured[0]
-        self.assertEqual(url, classifier.OLLAMA_CHAT_URL)
+        self.assertEqual(url, classifier.OLLAMA_GENERATE_URL)
+        self.assertTrue(body.get("raw"))
         self.assertEqual(body["model"], "llama-guard3:8b")
         self.assertEqual(body["options"]["temperature"], 0)
         self.assertFalse(body.get("stream"))
         self.assertFalse(body.get("think"))
-        roles = [m["role"] for m in body["messages"]]
-        self.assertNotIn("system", roles)
-        self.assertEqual(roles[0], "user")
+        self.assertIn("ONLY THE LAST User message", body["prompt"])
+        self.assertIn("S4: Child Exploitation", body["prompt"])
+        self.assertTrue(body["prompt"].startswith("<|begin_of_text|><|start_header_id|>"))
+        self.assertEqual(body["prompt"].count("<|begin_of_text|>"), 1)
+        self.assertEqual(body["options"]["num_ctx"], classifier.OLLAMA_CHECKER_NUM_CTX)
+        self.assertEqual(body["keep_alive"], classifier.OLLAMA_KEEP_ALIVE)
+        self.assertEqual(_timeout, classifier.OLLAMA_CHECKER_TIMEOUT)
 
         with self._ollama_env(), \
              mock.patch("core.secrets.load_all", return_value={}), \

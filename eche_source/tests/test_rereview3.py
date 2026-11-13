@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from core import classifier as C, client
 from core.safety import SAFETY_FOOTER, USER_GUARD
-from tests.checker_fixtures import patch_legacy_checker_settings
+from tests.checker_fixtures import patch_legacy_checker_settings, start_image_path_classifier, stop_image_path_classifier
 
 class _R(io.BytesIO):
     def __enter__(s): return s
@@ -33,8 +33,9 @@ class StaleShift(unittest.TestCase):
     def setUp(self):
         C.allow_in_tests(False); C.clear_cache()
         self._legacy = patch_legacy_checker_settings(); self._legacy.start()
+        self._images = start_image_path_classifier()
     def tearDown(self):
-        self._legacy.stop(); C.allow_in_tests(True); C.clear_cache()
+        stop_image_path_classifier(self._images); self._legacy.stop(); C.allow_in_tests(True); C.clear_cache()
     def test_flagged_window_with_stale_history(self):
         C.allow_in_tests(False); C.clear_cache()
         msgs = [{"role": "system", "content": "Persona: Eche."}]
@@ -63,8 +64,10 @@ class FooterLastProperty(unittest.TestCase):
         C.clear_cache()
         self._legacy = patch_legacy_checker_settings()
         self._legacy.start()
+        self._images = start_image_path_classifier()
 
     def tearDown(self):
+        stop_image_path_classifier(self._images)
         self._legacy.stop()
         C.allow_in_tests(True)
         C.clear_cache()
