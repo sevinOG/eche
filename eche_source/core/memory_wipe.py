@@ -219,6 +219,19 @@ def clear_local_memory() -> int:
     return removed
 
 
+def _audit_wipe(guild, report: WipeReport) -> None:
+    try:
+        from core.audit import safe_activity
+        safe_activity(
+            "memory-wipe",
+            action="memory-wipe",
+            outcome="success" if not report.problem else "error",
+            guild_id=getattr(guild, "id", None),
+        )
+    except Exception:
+        pass
+
+
 async def wipe_memory(guild, *, clear_local: bool = True, log=None) -> WipeReport:
     """Reset every memory pin on `guild` (the home server) and the local buffers."""
     from core.discord_store import clear_caches, find_category, list_user_channels
@@ -228,10 +241,12 @@ async def wipe_memory(guild, *, clear_local: bool = True, log=None) -> WipeRepor
     if guild is None:
         report.problem = "home server not found"
         say(report.summary())
+        _audit_wipe(guild, report)
         return report
     if find_category(guild) is None:
         report.problem = 'no "bot memory" category on the home server'
         say(report.summary())
+        _audit_wipe(guild, report)
         return report
     for user_id, channel in list_user_channels(guild):
         await _wipe_user_thread(user_id, channel, report)
@@ -242,6 +257,7 @@ async def wipe_memory(guild, *, clear_local: bool = True, log=None) -> WipeRepor
     for line in report.failed:
         say(f"[memory_wipe] {line}")
     say(report.summary())
+    _audit_wipe(guild, report)
     return report
 
 

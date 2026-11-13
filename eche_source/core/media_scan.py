@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import unicodedata
 from pathlib import Path
 
 # Hosts, paths, SDKs, and response shapes used by image/video generators.
@@ -92,6 +93,8 @@ def source_has_generation(text: str) -> str:
 
 
 # Video generators. Matched as substrings of a model id, same as 'image'.
+# After normalize_model_id(), hyphens are gone, so also list compact forms
+# (gen4, wan2) for ids like runway/gen-4 and wan-2.5.
 VIDEO_MODEL_MARKERS = (
     "video",
     "veo",
@@ -100,19 +103,82 @@ VIDEO_MODEL_MARKERS = (
     "i2v",
     "kling",
     "hailuo",
+    "runway",
+    "gen-4",
+    "gen4",
+    "ray-",
+    "ray",
+    "pika",
+    "seedance",
+    "wan-2",
+    "wan2",
+    "mochi",
 )
+
+# Lookalike letters that show up in evasive model ids (Cyrillic ѕora, etc.).
+_MODEL_CONFUSABLES = str.maketrans({
+    "а": "a", "е": "e", "о": "o", "р": "p", "с": "c", "у": "y",
+    "х": "x", "і": "i", "ј": "j", "ѕ": "s", "һ": "h", "ѵ": "v",
+    "ԁ": "d", "ԁ": "d",
+    "Α": "a", "А": "a", "Е": "e", "О": "o", "Р": "p", "С": "c",
+    "Ѕ": "s",
+})
+_MODEL_LEET = str.maketrans({
+    "0": "o", "1": "i", "3": "e", "4": "a", "5": "s", "7": "t",
+})
+
+
+def normalize_model_id(model: str) -> str:
+    """Lowercase, NFKC, fold confusables, keep letters and digits only."""
+    text = unicodedata.normalize("NFKC", model or "")
+    text = text.translate(_MODEL_CONFUSABLES).lower()
+    text = unicodedata.normalize("NFD", text)
+    kept: list[str] = []
+    for ch in text:
+        cat = unicodedata.category(ch)
+        if cat in {"Mn", "Cf", "Cc", "Zs", "Pd", "Po", "Ps", "Pe", "Sk"}:
+            continue
+        if ch.isalnum():
+            kept.append(ch)
+    return "".join(kept)
+
+
+def _model_id_forms(model: str) -> list[str]:
+    compact = normalize_model_id(model)
+    forms = []
+    raw = (model or "").strip().lower()
+    if raw:
+        forms.append(raw)
+    if compact and compact not in forms:
+        forms.append(compact)
+    leet = compact.translate(_MODEL_LEET)
+    if leet and leet not in forms:
+        forms.append(leet)
+    return forms
+
+
+def _marker_forms(marker: str) -> list[str]:
+    forms = [marker.lower()]
+    compact = normalize_model_id(marker)
+    if compact and compact not in forms:
+        forms.append(compact)
+    return forms
 
 
 def is_image_model_id(model: str) -> bool:
     """True for known image/video generators and ids containing those markers."""
-    text = (model or "").strip().lower()
-    if not text:
+    forms = _model_id_forms(model)
+    if not forms:
         return False
-    if "image" in text:
-        return True
-    if any(marker in text for marker in VIDEO_MODEL_MARKERS):
-        return True
-    return any(marker in text for marker in IMAGE_MODEL_MARKERS)
+    markers = []
+    for marker in IMAGE_MODEL_MARKERS + VIDEO_MODEL_MARKERS:
+        markers.extend(_marker_forms(marker))
+    for text in forms:
+        if "image" in text:
+            return True
+        if any(marker in text for marker in markers):
+            return True
+    return False
 
 
 def file_has_generation(path: str | Path) -> str:

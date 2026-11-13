@@ -204,6 +204,19 @@ async def _unlock_one(user_id: int, channel, guild, report: AccessReport, dry_ru
     report.thread_added.append(user_id)
 
 
+def _audit_unlock(guild, report: AccessReport) -> None:
+    try:
+        from core.audit import safe_activity
+        safe_activity(
+            "memory-access",
+            action="memory-access",
+            outcome="success" if not report.problem else "error",
+            guild_id=getattr(guild, "id", None),
+        )
+    except Exception:
+        pass
+
+
 async def unlock_memory(guild, *, dry_run: bool = False, log=None) -> AccessReport:
     """Give each user-{id} channel's owner read-only access to it."""
     from core.discord_store import find_category, list_user_channels
@@ -213,16 +226,19 @@ async def unlock_memory(guild, *, dry_run: bool = False, log=None) -> AccessRepo
     if guild is None:
         report.problem = "home server not found"
         say(report.summary())
+        _audit_unlock(guild, report)
         return report
     if find_category(guild) is None:
         report.problem = 'no "bot memory" category on the home server'
         say(report.summary())
+        _audit_unlock(guild, report)
         return report
     for user_id, channel in list_user_channels(guild):
         await _unlock_one(int(user_id), channel, guild, report, dry_run)
     for line in report.details():
         say(f"[memory_access] {line}")
     say(report.summary())
+    _audit_unlock(guild, report)
     return report
 
 

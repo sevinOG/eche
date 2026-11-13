@@ -159,6 +159,11 @@ def save_summarizer_prompt(text: str, override_path: str | None = None) -> str:
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         f.write(text.rstrip() + "\n")
+    try:
+        from core.audit import safe_activity
+        safe_activity("prompt-save", action="save-summarizer-prompt", outcome="success")
+    except Exception:
+        pass
     return path
 
 

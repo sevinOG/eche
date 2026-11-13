@@ -320,7 +320,7 @@ class BridgeTests(unittest.TestCase):
                 mock.patch.object(gui_bridge, "emit") as emit:
             run(gui_bridge._handle_line(object(), "UNLOCK_MEMORY"))
         self.assertEqual(seen["guild"], "G")
-        self.assertEqual(emit.call_args[0][0], "memory_access")
+        self.assertIn("memory_access", [c[0][0] for c in emit.call_args_list])
 
 
 if __name__ == "__main__":

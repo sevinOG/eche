@@ -141,6 +141,93 @@ def discover_background_tasks(root: Path = SOURCE) -> set[str]:
     return names
 
 
+def discover_qt_slots(root: Path = SOURCE / "gui") -> set[str]:
+    """Connected Qt signals and button-factory slot arguments under gui/."""
+    names: set[str] = set()
+    slot_param_names = {"slot", "callback", "handler", "clicked"}
+    for path in root.rglob("*.py"):
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        except (OSError, SyntaxError):
+            continue
+        slot_funcs: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                params = [a.arg for a in list(node.args.args) + list(node.args.kwonlyargs)]
+                if any(p in slot_param_names for p in params):
+                    slot_funcs.add(node.name)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if isinstance(func, ast.Attribute) and func.attr == "connect" and node.args:
+                target = node.args[0]
+                if isinstance(target, ast.Attribute):
+                    names.add(target.attr)
+            fname = _call_func_name(node)
+            if fname in slot_funcs or fname == "_bar_button":
+                for arg in node.args:
+                    if (
+                        isinstance(arg, ast.Attribute)
+                        and isinstance(arg.value, ast.Name)
+                        and arg.value.id in {"self", "cls"}
+                    ):
+                        names.add(arg.attr)
+                for kw in node.keywords:
+                    if kw.arg in slot_param_names and isinstance(kw.value, ast.Attribute):
+                        names.add(kw.value.attr)
+    return names
+
+
+def discover_stdin_commands(path: Path | None = None) -> set[str]:
+    """Command names dispatched by gui_bridge._handle_line."""
+    path = path or (SOURCE / "core" / "gui_bridge.py")
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    except (OSError, SyntaxError):
+        return set()
+    names: set[str] = set()
+    for node in tree.body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if node.name != "_handle_line":
+            continue
+        for sub in ast.walk(node):
+            if (
+                isinstance(sub, ast.Compare)
+                and isinstance(sub.left, ast.Name)
+                and sub.left.id == "upper"
+            ):
+                for comparator in sub.comparators:
+                    if isinstance(comparator, ast.Constant) and isinstance(comparator.value, str):
+                        names.add(comparator.value.strip())
+            if isinstance(sub, ast.Call) and _call_func_name(sub) == "startswith" and sub.args:
+                arg = sub.args[0]
+                if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                    names.add(arg.value.strip())
+    return names
+
+
+def discover_prompt_saves(root: Path = SOURCE) -> set[str]:
+    """Functions that persist personality, provider, or summarizer prompts."""
+    names: set[str] = set()
+    for path in root.rglob("*.py"):
+        if "tests" in path.parts or path.name.endswith(".pyi"):
+            continue
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        except (OSError, SyntaxError):
+            continue
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and node.name.startswith("save_")
+                and node.name.endswith("_prompt")
+            ):
+                names.add(node.name)
+    return names
+
+
 # Reviewed GUI / background entry points that must write a success-path record.
 REVIEWED_ENTRYPOINTS = {
     "reply_local": "desktop chat LLM turn",
@@ -156,6 +243,31 @@ REVIEWED_ENTRYPOINTS = {
     "write_pinned": "memory/pin write",
     "summarize_context": "summarizer",
     "audit_after_playback": "music after_playback",
+    "clear_secrets": "settings clear secrets",
+    "on_run_clicked": "GUI Run",
+    "on_stop_clicked": "GUI Stop",
+    "save_file": "prompt file save button",
+    "_confirm_memory_access": "GUI memory access request",
+    "_confirm_reset_memory": "GUI memory wipe request",
+    "save_personality_prompt": "personality prompt save",
+    "save_provider_prompt": "provider prompt save",
+    "save_summarizer_prompt": "summarizer prompt save",
+    "_announce": "stdin ANNOUNCE handler",
+    "_unlock_memory": "stdin UNLOCK_MEMORY handler",
+    "wipe_memory": "memory wipe",
+    "unlock_memory": "memory access",
+    "ANNOUNCE": "stdin ANNOUNCE",
+    "UNLOCK_MEMORY": "stdin UNLOCK_MEMORY",
+    "RESET_MEMORY": "stdin RESET_MEMORY",
+    "PING": "stdin PING",
+    "STATUS": "stdin STATUS",
+    "LIST_COGS": "stdin LIST_COGS",
+    "COG_LIST": "stdin COG_LIST",
+    "TOGGLE_COG": "stdin TOGGLE_COG",
+    "LOAD_COG": "stdin LOAD_COG",
+    "UNLOAD_COG": "stdin UNLOAD_COG",
+    "shutdown_for_update": "GUI shutdown for update",
+    "closeEvent": "GUI close",
 }
 
 
@@ -1031,17 +1143,49 @@ class AuditCompletenessTests(AuditLogTests):
 
         return asyncio.run(run())
 
-    def _require_background_and_gui_success(self, extra_discovered=None, allowlist=None):
-        from core.audit_hooks import BACKGROUND_ALLOWLIST
+    def _require_background_and_gui_success(
+        self,
+        extra_discovered=None,
+        allowlist=None,
+        extra_slots=None,
+        extra_stdin=None,
+        extra_prompts=None,
+        slot_allowlist=None,
+        stdin_allowlist=None,
+    ):
+        from core.audit_hooks import BACKGROUND_ALLOWLIST, QT_SLOT_ALLOWLIST, STDIN_ALLOWLIST
         allowlist = BACKGROUND_ALLOWLIST if allowlist is None else allowlist
+        slot_allowlist = QT_SLOT_ALLOWLIST if slot_allowlist is None else slot_allowlist
+        stdin_allowlist = STDIN_ALLOWLIST if stdin_allowlist is None else stdin_allowlist
         discovered = discover_background_tasks()
         if extra_discovered:
             discovered = set(discovered) | set(extra_discovered)
+        slots = discover_qt_slots()
+        if extra_slots:
+            slots = set(slots) | set(extra_slots)
+        stdin_cmds = discover_stdin_commands()
+        if extra_stdin:
+            stdin_cmds = set(stdin_cmds) | set(extra_stdin)
+        prompts = discover_prompt_saves()
+        if extra_prompts:
+            prompts = set(prompts) | set(extra_prompts)
         missing = []
         for name in sorted(discovered):
             if name in REVIEWED_ENTRYPOINTS or name in allowlist:
                 continue
             missing.append(f"{name}:unreviewed")
+        for name in sorted(slots):
+            if name in REVIEWED_ENTRYPOINTS or name in slot_allowlist:
+                continue
+            missing.append(f"{name}:unreviewed-slot")
+        for name in sorted(stdin_cmds):
+            if name in REVIEWED_ENTRYPOINTS or name in stdin_allowlist:
+                continue
+            missing.append(f"{name}:unreviewed-stdin")
+        for name in sorted(prompts):
+            if name in REVIEWED_ENTRYPOINTS or name in allowlist:
+                continue
+            missing.append(f"{name}:unreviewed-prompt")
 
         async def probes():
             gaps = []
@@ -1240,6 +1384,276 @@ class AuditCompletenessTests(AuditLogTests):
                 pass
             if len(_records(self.audit)) <= before:
                 gaps.append("summarize_context")
+
+            before = len(_records(self.audit))
+            from core.secrets import clear_secrets
+            try:
+                clear_secrets(str(self.root))
+            except Exception:
+                pass
+            if len(_records(self.audit)) <= before:
+                gaps.append("clear_secrets")
+
+            before = len(_records(self.audit))
+            from core.personality import save_personality_prompt
+            try:
+                dest = self.root / "config"
+                dest.mkdir(parents=True, exist_ok=True)
+                with mock.patch("core.personality.personality_path", return_value=str(dest / "personality.txt")):
+                    save_personality_prompt("operator prompt body must not be logged")
+            except Exception:
+                pass
+            if len(_records(self.audit)) <= before:
+                gaps.append("save_personality_prompt")
+
+            before = len(_records(self.audit))
+            from core.summarizer_prompt import save_summarizer_prompt
+            try:
+                save_summarizer_prompt(
+                    "summarizer prompt body must not be logged",
+                    override_path=str(self.root / "summarizer.txt"),
+                )
+            except Exception:
+                pass
+            if len(_records(self.audit)) <= before:
+                gaps.append("save_summarizer_prompt")
+
+            before = len(_records(self.audit))
+            from gui.widgets.providerwindow import save_provider_prompt
+            try:
+                target = str(self.root / "provider_client.py")
+                with mock.patch("gui.widgets.providerwindow._write_path", return_value=target):
+                    save_provider_prompt("# provider body must not be logged\n")
+            except Exception:
+                pass
+            if len(_records(self.audit)) <= before:
+                gaps.append("save_provider_prompt")
+            # The Save button is the discovered slot name.
+            if len(_records(self.audit)) <= before:
+                gaps.append("save_file")
+
+            before = len(_records(self.audit))
+            from core.memory_wipe import wipe_memory
+            try:
+                guild = SimpleNamespace(id=22)
+                with mock.patch("core.discord_store.find_category", return_value=SimpleNamespace(id=1)), \
+                     mock.patch("core.discord_store.list_user_channels", return_value=[]), \
+                     mock.patch("core.memory_wipe._wipe_episodes", new=mock.AsyncMock()), \
+                     mock.patch("core.memory_wipe.clear_local_memory", return_value=0), \
+                     mock.patch("core.discord_store.clear_caches"):
+                    await wipe_memory(guild, log=lambda *_a, **_k: None)
+            except Exception:
+                pass
+            if len(_records(self.audit)) <= before:
+                gaps.append("wipe_memory")
+
+            before = len(_records(self.audit))
+            from core.memory_access import unlock_memory
+            try:
+                guild = SimpleNamespace(id=22)
+                with mock.patch("core.discord_store.find_category", return_value=SimpleNamespace(id=1)), \
+                     mock.patch("core.discord_store.list_user_channels", return_value=[]):
+                    await unlock_memory(guild, log=lambda *_a, **_k: None)
+            except Exception:
+                pass
+            if len(_records(self.audit)) <= before:
+                gaps.append("unlock_memory")
+
+            before = len(_records(self.audit))
+            from core import gui_bridge
+            channel = SimpleNamespace(id=33, send=mock.AsyncMock(), category_id=0, permissions_for=lambda _m: SimpleNamespace(send_messages=True))
+            guild = SimpleNamespace(
+                id=22,
+                system_channel=channel,
+                text_channels=[channel],
+                me=object(),
+            )
+            bot = SimpleNamespace(get_guild=lambda _i: guild)
+            with mock.patch("core.home_id.home_server_id_from_env", return_value=22), \
+                 mock.patch("core.discord_store.find_category", return_value=None), \
+                 mock.patch.object(gui_bridge, "log"):
+                try:
+                    await gui_bridge._announce(bot, "announcement text must not be logged")
+                except Exception:
+                    pass
+            if len(_records(self.audit)) <= before:
+                gaps.append("_announce")
+
+            before = len(_records(self.audit))
+            with mock.patch("core.context_manager.get_home_guild", return_value=SimpleNamespace(id=22)), \
+                 mock.patch("core.memory_access.unlock_memory", new=mock.AsyncMock(
+                     return_value=SimpleNamespace(ok=True, summary=lambda: "ok")
+                 )), \
+                 mock.patch.object(gui_bridge, "emit"), \
+                 mock.patch.object(gui_bridge, "log"):
+                try:
+                    await gui_bridge._unlock_memory(bot)
+                except Exception:
+                    pass
+            if len(_records(self.audit)) <= before:
+                gaps.append("_unlock_memory")
+
+            stdin_bot = SimpleNamespace(
+                extensions={},
+                load_extension=mock.AsyncMock(),
+                unload_extension=mock.AsyncMock(),
+                reload_extension=mock.AsyncMock(),
+            )
+            stdin_cmds = [
+                "PING",
+                "STATUS",
+                "LIST_COGS",
+                "COG_LIST",
+                "RESET_MEMORY",
+                "UNLOCK_MEMORY",
+                "ANNOUNCE hello",
+                "TOGGLE_COG cogs.help.help",
+                "LOAD_COG cogs.help.help",
+                "UNLOAD_COG cogs.help.help",
+            ]
+            stdin_names = [
+                "PING", "STATUS", "LIST_COGS", "COG_LIST",
+                "RESET_MEMORY", "UNLOCK_MEMORY", "ANNOUNCE",
+                "TOGGLE_COG", "LOAD_COG", "UNLOAD_COG",
+            ]
+            with mock.patch.object(gui_bridge, "emit"), \
+                 mock.patch.object(gui_bridge, "log"), \
+                 mock.patch.object(gui_bridge, "_emit_cog_list", new=mock.AsyncMock()), \
+                 mock.patch.object(gui_bridge, "_announce", new=mock.AsyncMock()), \
+                 mock.patch.object(gui_bridge, "_reset_memory", new=mock.AsyncMock()), \
+                 mock.patch.object(gui_bridge, "_unlock_memory", new=mock.AsyncMock()), \
+                 mock.patch.object(gui_bridge, "_toggle_cog", new=mock.AsyncMock()), \
+                 mock.patch.object(gui_bridge, "_bot_busy", return_value={}):
+                before_all = {name: len(_records(self.audit)) for name in stdin_names}
+                counts = {name: 0 for name in stdin_names}
+                for line, name in zip(stdin_cmds, stdin_names):
+                    before = len(_records(self.audit))
+                    try:
+                        await gui_bridge._handle_line(stdin_bot, line)
+                    except Exception:
+                        pass
+                    if len(_records(self.audit)) > before:
+                        counts[name] += 1
+                for name in stdin_names:
+                    if counts[name] == 0:
+                        gaps.append(name)
+
+            # GUI Run / Stop / close / memory confirmations / update shutdown
+            import gui.main as gui_main
+            from PyQt6.QtWidgets import QMessageBox
+            from gui.widgets.settingswindow import SettingsWindow
+
+            before = len(_records(self.audit))
+            gui_main.BOT_STARTED = False
+            run_inst = SimpleNamespace()
+            run_inst.bot_process = None
+            run_inst.append_log = lambda *_a, **_k: None
+            run_inst._raise_error_light = lambda: None
+            run_inst._settle_error_light = lambda: None
+            run_inst._warn_no_provider = lambda *_a, **_k: True
+            run_inst.set_status = lambda *_a, **_k: None
+            run_inst.set_loading = lambda *_a, **_k: None
+            run_inst._present_failure = lambda *_a, **_k: None
+            run_inst._tb_buffer = []
+            run_inst._tb_active = False
+            run_inst.cog_manager_window = None
+            run_inst.reader_thread = None
+            fake_proc = SimpleNamespace(pid=4242, poll=lambda: None)
+            fake_reader = SimpleNamespace(
+                line_received=SimpleNamespace(connect=lambda *_a: None),
+                finished=SimpleNamespace(connect=lambda *_a: None),
+                start=lambda: None,
+            )
+            settings = {
+                "discord_token": "dummy-token",
+                "home_server_id": "22",
+                "provider_backend": "ollama",
+                "admin_tools": "",
+                "ollama_model": "llama3",
+            }
+            with mock.patch("gui.main.load_settings", return_value=settings), \
+                 mock.patch("gui.main.subprocess.Popen", return_value=fake_proc), \
+                 mock.patch("gui.main.BotReaderThread", return_value=fake_reader), \
+                 mock.patch("gui.main.is_frozen", return_value=False), \
+                 mock.patch("core.home_id.parse_home_server_id", return_value=22), \
+                 mock.patch("core.admin_tools.flag_on", return_value=False):
+                try:
+                    gui_main.MainWindow.on_run_clicked(run_inst)
+                except Exception:
+                    pass
+            if len(_records(self.audit)) <= before:
+                gaps.append("on_run_clicked")
+
+            before = len(_records(self.audit))
+            gui_main.BOT_STARTED = True
+            stop_inst = SimpleNamespace()
+            stop_inst.reader_thread = None
+            stop_inst.bot_process = None
+            stop_inst.append_log = lambda *_a, **_k: None
+            stop_inst.set_status = lambda *_a, **_k: None
+            with mock.patch("gui.main.psutil.process_iter", return_value=[]):
+                try:
+                    gui_main.MainWindow.on_stop_clicked(stop_inst)
+                except Exception:
+                    pass
+            if len(_records(self.audit)) <= before:
+                gaps.append("on_stop_clicked")
+
+            before = len(_records(self.audit))
+            close_inst = SimpleNamespace()
+            close_inst.append_log = lambda *_a, **_k: None
+            close_inst.save_logs_to_file = lambda: None
+            close_inst.on_stop_clicked = lambda: None
+            try:
+                gui_main.MainWindow.closeEvent(close_inst, SimpleNamespace(accept=lambda: None))
+            except Exception:
+                pass
+            if len(_records(self.audit)) <= before:
+                gaps.append("closeEvent")
+
+            before = len(_records(self.audit))
+            upd_inst = SimpleNamespace()
+            upd_inst.append_log = lambda *_a, **_k: None
+            upd_inst.on_stop_clicked = lambda: None
+            with mock.patch("gui.main.QApplication.instance", return_value=None), \
+                 mock.patch("gui.main.QTimer.singleShot"):
+                try:
+                    gui_main.MainWindow.shutdown_for_update(upd_inst)
+                except Exception:
+                    pass
+            if len(_records(self.audit)) <= before:
+                gaps.append("shutdown_for_update")
+
+            stdin_write = SimpleNamespace(write=lambda *_a, **_k: None, flush=lambda: None)
+            main = SimpleNamespace(
+                _bot_is_running=lambda: True,
+                bot_process=SimpleNamespace(stdin=stdin_write),
+                append_log=lambda *_a, **_k: None,
+            )
+            before = len(_records(self.audit))
+            access_inst = SimpleNamespace()
+            access_inst.main_window = main
+            with mock.patch("gui.widgets.settingswindow.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes), \
+                 mock.patch("gui.widgets.settingswindow.show_info"):
+                try:
+                    SettingsWindow._confirm_memory_access(access_inst)
+                except Exception:
+                    pass
+            if len(_records(self.audit)) <= before:
+                gaps.append("_confirm_memory_access")
+
+            before = len(_records(self.audit))
+            wipe_inst = SimpleNamespace()
+            wipe_inst.main_window = main
+            with mock.patch("gui.widgets.settingswindow.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes), \
+                 mock.patch("gui.widgets.settingswindow.show_info"):
+                try:
+                    SettingsWindow._confirm_reset_memory(wipe_inst)
+                except Exception:
+                    pass
+            if len(_records(self.audit)) <= before:
+                gaps.append("_confirm_reset_memory")
+
             return gaps
 
         missing.extend(asyncio.run(probes()))
@@ -1274,6 +1688,24 @@ class AuditCompletenessTests(AuditLogTests):
         self.assertTrue(
             any(item.startswith("dummy_unlogged_loop") for item in gaps),
             f"expected dummy loop to be missing, got {gaps}",
+        )
+
+    def test_unlogged_dummy_slot_fails_completeness(self):
+        gaps = self._require_background_and_gui_success(
+            extra_slots={"dummy_unlogged_slot"}
+        )
+        self.assertTrue(
+            any(item.startswith("dummy_unlogged_slot") for item in gaps),
+            f"expected dummy slot to be missing, got {gaps}",
+        )
+
+    def test_unlogged_dummy_stdin_command_fails_completeness(self):
+        gaps = self._require_background_and_gui_success(
+            extra_stdin={"DUMMY_STDIN"}
+        )
+        self.assertTrue(
+            any(item.startswith("DUMMY_STDIN") for item in gaps),
+            f"expected dummy stdin command to be missing, got {gaps}",
         )
 
     def test_on_error_records_exception_type(self):
@@ -1324,7 +1756,121 @@ class AuditCompletenessTests(AuditLogTests):
         self.assertEqual(chats[-1].get("user_id"), "local")
         self.assertEqual(chats[-1].get("channel_id"), "desktop")
 
+    def test_wrap_callable_logs_after_return_or_exception(self):
+        from core.audit_hooks import wrap_callable
+
+        async def ok_fn(*_a, **_k):
+            # A record written here would be "before return" if the wrapper
+            # logged first; we only want the post-return line.
+            return "ok"
+
+        async def bad_fn(*_a, **_k):
+            raise RuntimeError("boom")
+
+        async def run():
+            wrapped_ok = wrap_callable(ok_fn, "dummy-ok", "view")
+            await wrapped_ok()
+            wrapped_bad = wrap_callable(bad_fn, "dummy-bad", "view")
+            with self.assertRaises(RuntimeError):
+                await wrapped_bad()
+
+        asyncio.run(run())
+        rows = _records(self.audit)
+        ok_rows = [r for r in rows if r.get("name") == "dummy-ok"]
+        bad_rows = [r for r in rows if r.get("name") == "dummy-bad"]
+        self.assertTrue(ok_rows)
+        self.assertEqual(ok_rows[-1].get("outcome"), "success")
+        self.assertTrue(bad_rows)
+        self.assertEqual(bad_rows[-1].get("outcome"), "error")
+        self.assertEqual(bad_rows[-1].get("error_type"), "RuntimeError")
+
+    def test_entertainer_tick_logs_skip_when_channel_missing(self):
+        from cogs.hire.entertainers import entertainer_manager as em
+        from datetime import datetime, timedelta
+
+        async def run():
+            em.ENTERTAINER_JOBS.clear()
+            em.ENTERTAINER_JOBS["b1"] = {
+                "next_tick": datetime.utcnow().timestamp() - 1,
+                "ticks_remaining": 2,
+                "expires_at": datetime.utcnow() + timedelta(hours=1),
+                "units": 1,
+                "user_id": 11,
+                "invoke_guild_id": 22,
+                "invoke_channel_id": 33,
+            }
+            state = {"n": 0}
+
+            def is_closed():
+                state["n"] += 1
+                return state["n"] > 1
+
+            bot = SimpleNamespace(
+                wait_until_ready=mock.AsyncMock(),
+                is_closed=is_closed,
+                get_cog=lambda _n: SimpleNamespace(
+                    load_bank=mock.AsyncMock(return_value=0),
+                    save_bank=mock.AsyncMock(),
+                ),
+                get_user=lambda _i: SimpleNamespace(id=11),
+                get_guild=lambda _i: SimpleNamespace(get_channel=lambda _c: None),
+            )
+            with mock.patch.object(em, "rebuild_jobs_from_pins", new=mock.AsyncMock()):
+                await em.entertainer_background_loop(bot)
+
+        asyncio.run(run())
+        rows = [r for r in _records(self.audit) if r.get("name") == "entertainer-tick"]
+        self.assertTrue(rows)
+        self.assertEqual(rows[-1].get("outcome"), "skipped")
+        self.assertEqual(rows[-1].get("action"), "missing-channel")
+        self.assertEqual(rows[-1].get("user_id"), "11")
+        self.assertEqual(rows[-1].get("guild_id"), "22")
+        self.assertEqual(rows[-1].get("channel_id"), "33")
+
+    def test_operator_logs_omit_prompt_and_secret_content(self):
+        from core.personality import save_personality_prompt
+        from core.summarizer_prompt import save_summarizer_prompt
+        from core.secrets import clear_secrets
+        from gui.widgets.providerwindow import save_provider_prompt
+        from core import gui_bridge
+
+        secretish = "sk-operator-secret-should-never-appear"
+        async def run():
+            dest = self.root / "config"
+            dest.mkdir(parents=True, exist_ok=True)
+            with mock.patch("core.personality.personality_path", return_value=str(dest / "personality.txt")):
+                save_personality_prompt("personality body " + secretish)
+            save_summarizer_prompt("summarizer body " + secretish, override_path=str(self.root / "summ.txt"))
+            with mock.patch("gui.widgets.providerwindow._write_path", return_value=str(self.root / "prov.py")):
+                save_provider_prompt("provider body " + secretish)
+            try:
+                clear_secrets(str(self.root))
+            except Exception:
+                pass
+            channel = SimpleNamespace(
+                id=33, send=mock.AsyncMock(), category_id=0,
+                permissions_for=lambda _m: SimpleNamespace(send_messages=True),
+            )
+            guild = SimpleNamespace(id=22, system_channel=channel, text_channels=[channel], me=object())
+            bot = SimpleNamespace(get_guild=lambda _i: guild)
+            with mock.patch("core.home_id.home_server_id_from_env", return_value=22), \
+                 mock.patch("core.discord_store.find_category", return_value=None), \
+                 mock.patch.object(gui_bridge, "log"):
+                await gui_bridge._announce(bot, "announce body " + secretish)
+
+        asyncio.run(run())
+        raw = self.audit.read_text(encoding="utf-8")
+        self.assertNotIn(secretish, raw)
+        self.assertNotIn("personality body", raw)
+        self.assertNotIn("summarizer body", raw)
+        self.assertNotIn("provider body", raw)
+        self.assertNotIn("announce body", raw)
+        rows = _records(self.audit)
+        actions = {r.get("action") for r in rows}
+        self.assertTrue({"save-personality-prompt", "save-summarizer-prompt", "save-provider-prompt", "ANNOUNCE"} <= actions)
+
     def test_safety_only_archives_are_documented_unbounded(self):
+
         from core import audit as audit_mod
         text = (audit_mod._prune_archives.__doc__ or "") + "\n"
         text += Path(audit_mod.__file__).read_text(encoding="utf-8")

@@ -67,6 +67,11 @@ def save_personality_prompt(text: str) -> str:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         f.write(text.rstrip() + "\n")
+    try:
+        from core.audit import safe_activity
+        safe_activity("prompt-save", action="save-personality-prompt", outcome="success")
+    except Exception:
+        pass
     return path
 
 

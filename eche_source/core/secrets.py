@@ -572,6 +572,11 @@ def clear_secrets(root: str | None = None) -> None:
     public = _load_public(root)
     _save_public(root, public)
     _save_encrypted_secrets(root, {k: "" for k in SECRET_KEYS})
+    try:
+        from core.audit import safe_activity
+        safe_activity("clear-secrets", action="clear-secrets", outcome="success")
+    except Exception:
+        pass
 
 
 def scrub_text(text: str, root: str | None = None) -> str:

@@ -947,11 +947,21 @@ class MainWindow(QMainWindow):
                 startupinfo=startupinfo,
             )
             self.append_log(f"[INFO] Bot process started with PID: {self.bot_process.pid}")
+            try:
+                from core.audit import safe_activity
+                safe_activity("bot-run", action="run", outcome="success")
+            except Exception:
+                pass
         except Exception as e:
             tb = traceback.format_exc()
             self.append_log(f"[ERROR] Failed to start bot: {e}\n{tb}")
             self.set_loading(False)
             self._present_failure(tb, log_fn=None, default_title="Failed to start bot")
+            try:
+                from core.audit import safe_activity
+                safe_activity("bot-run", action="run", outcome="error", error_type=type(e).__name__)
+            except Exception:
+                pass
             return
 
         BOT_STARTED = True
@@ -1014,6 +1024,11 @@ class MainWindow(QMainWindow):
         BOT_STARTED = False
         self.set_status("offline")
         self.append_log("[INFO] Bot stopped.")
+        try:
+            from core.audit import safe_activity
+            safe_activity("bot-run", action="stop", outcome="success")
+        except Exception:
+            pass
 
     def shutdown_for_update(self):
         """Stop the bot and quit so the detached update script can replace Eche.exe."""

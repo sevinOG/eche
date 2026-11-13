@@ -295,7 +295,7 @@ class MemoryWipeTests(TempRoot):
                 mock.patch.object(gui_bridge, "emit") as emit:
             run(gui_bridge._handle_line(bot, "RESET_MEMORY"))
         self.assertEqual(called.get("guild"), "home")
-        self.assertEqual(emit.call_args[0][0], "memory_reset")
+        self.assertIn("memory_reset", [c[0][0] for c in emit.call_args_list])
 
 
 # ------------------------------------------------------------- the filters
