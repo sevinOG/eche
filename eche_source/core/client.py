@@ -386,7 +386,8 @@ def _safe_chat_model(model: str) -> str:
         from core.media_scan import usable_chat_model
         raw = usable_chat_model(raw, "")
     except Exception:
-        pass
+        # If the filter cannot load, do not send the raw id.
+        return _chat_fallback()
     if _model_is_unset(raw):
         return _chat_fallback()
     return raw
