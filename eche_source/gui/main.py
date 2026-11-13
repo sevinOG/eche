@@ -109,13 +109,28 @@ class BotReaderThread(QThread):
         self._running = True
 
     def run(self):
-        while self._running and self.process.poll() is None:
+        stream = getattr(self.process, "stdout", None)
+        if stream is None:
+            return
+        # Keep reading until the process is gone and the pipe is empty.
+        # Checking poll() before readline used to drop the last lines, and a
+        # single decode error used to abort the thread, so later chat lines
+        # never reached the panel.
+        while self._running:
             try:
-                line = self.process.stdout.readline()
-                if line:
-                    self.line_received.emit(line.rstrip("\n"))
+                line = stream.readline()
             except Exception as e:
                 print(f"Error reading from bot process stdout: {e}")
+                if self.process.poll() is not None:
+                    break
+                continue
+            if line:
+                try:
+                    self.line_received.emit(line.rstrip("\n"))
+                except Exception:
+                    pass
+                continue
+            if self.process.poll() is not None:
                 break
 
     def stop(self):
@@ -251,6 +266,8 @@ class MainWindow(QMainWindow):
 
         self.chat_output = QTextEdit()
         self.chat_output.setReadOnly(True)
+        from core.chat_panel import ChatPanelModel
+        self.chat_model = ChatPanelModel()
         self.log_output = LogPane()
 
         splitter_top.addWidget(self._panel("Chat", self.chat_output))
@@ -904,6 +921,7 @@ class MainWindow(QMainWindow):
         env["ECHE_RUNNING"] = "BOT"
         env["ECHE_GUI_BRIDGE"] = "1"
         env["PYTHONUNBUFFERED"] = "1"
+        env["PYTHONIOENCODING"] = "utf-8"
         env["ECHE_USER_ROOT"] = PROJECT_ROOT
         if not is_frozen():
             env["PYTHONPATH"] = os.pathsep.join(
@@ -941,6 +959,8 @@ class MainWindow(QMainWindow):
                 stderr=subprocess.STDOUT,
                 stdin=subprocess.PIPE,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 bufsize=1,
                 startupinfo=startupinfo,
             )
@@ -954,7 +974,9 @@ class MainWindow(QMainWindow):
 
         BOT_STARTED = True
         self.reader_thread = BotReaderThread(self.bot_process)
-        self.reader_thread.line_received.connect(self.handle_bot_output)
+        self.reader_thread.line_received.connect(
+            self.handle_bot_output, Qt.ConnectionType.QueuedConnection
+        )
         self.reader_thread.finished.connect(self._on_reader_finished)
         self.reader_thread.start()
 
@@ -1097,18 +1119,8 @@ class MainWindow(QMainWindow):
                     self._flush_traceback_buffer()
                 return
 
-            event = None
-            data = {}
-            stripped = raw.lstrip()
-            if stripped.startswith("{"):
-                try:
-                    import json
-                    obj = json.loads(stripped)
-                    if isinstance(obj, dict) and "event" in obj:
-                        event = obj.get("event")
-                        data = obj.get("data") or {}
-                except Exception:
-                    event = None
+            from core.gui_bridge import parse_bridge_line
+            event, data = parse_bridge_line(raw)
 
             if event is None:
                 self._handle_plain_line(raw)
@@ -1140,7 +1152,7 @@ class MainWindow(QMainWindow):
                     f"[INFO] Bot ready as {user}." if user else "[INFO] Bot ready."
                 )
             elif event == "chat":
-                self._append_panel(self.chat_output, data.get("text", ""))
+                self._append_chat(data.get("text", ""))
             elif event == "reasoning":
                 self.note_reasoning(
                     str(data.get("provider") or ""),
@@ -1206,6 +1218,22 @@ class MainWindow(QMainWindow):
         self._tb_active = False
         self._present_failure(text, log_fn=None, default_title="Code error")
 
+    def _append_chat(self, text: str):
+        """Queued-slot entry: record the line on the model, then the widget."""
+        try:
+            from core.secrets import scrub_text
+            text = scrub_text(str(text), PROJECT_ROOT)
+        except Exception:
+            text = str(text)
+        text = str(text).rstrip("\n")
+        if not text:
+            return
+        try:
+            self.chat_model.append(text)
+        except Exception:
+            pass
+        self._append_panel(self.chat_output, text)
+
     def _append_panel(self, widget, text: str):
         if widget is None or text is None:
             return
@@ -1217,11 +1245,15 @@ class MainWindow(QMainWindow):
         text = text.rstrip("\n")
         if not text:
             return
-        ts = time.strftime("%H:%M:%S")
-        widget.append(f"[{ts}] {text}")
-        sb = widget.verticalScrollBar()
-        if sb is not None:
-            sb.setValue(sb.maximum())
+        try:
+            ts = time.strftime("%H:%M:%S")
+            widget.append(f"[{ts}] {text}")
+            sb = widget.verticalScrollBar()
+            if sb is not None:
+                sb.setValue(sb.maximum())
+        except Exception:
+            # A paint error must not swallow the line already stored on the model.
+            pass
 
     def _on_reader_finished(self):
         global BOT_STARTED

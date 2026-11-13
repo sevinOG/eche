@@ -21,7 +21,8 @@ class CharOverride(commands.Cog):
     @commands.command(name="charoverride")
     @commands.is_owner()
     async def charoverride(self, ctx):
-        msg = await ctx.send("What would you like me to say?")
+        from core.chat_panel import send_visible
+        msg = await send_visible(ctx, "What would you like me to say?")
 
         self.bot.next_reply_override = True
         self.bot.override_waiting_for = msg.id
@@ -47,7 +48,8 @@ class CharOverride(commands.Cog):
 
         if is_blocked(user_text):
             note("override message")
-            await message.channel.send(REFUSAL)
+            from core.chat_panel import send_visible
+            await send_visible(message.channel, REFUSAL)
             self.bot.next_reply_override = False
             self.bot.override_waiting_for = None
             return
@@ -73,8 +75,9 @@ class CharOverride(commands.Cog):
         if is_blocked(reply):
             note("override reply")
             reply = REFUSAL
+        from core.chat_panel import send_visible
         for chunk in discord_chunks(reply):
-            await message.channel.send(chunk)
+            await send_visible(message.channel, chunk)
 
         # Reset override
         self.bot.next_reply_override = False

@@ -15,7 +15,7 @@ import asyncio
 import json
 import sys
 import threading
-from typing import Any, Optional
+from typing import Any, Optional, Tuple
 
 _bot = None
 _loop: Optional[asyncio.AbstractEventLoop] = None
@@ -31,9 +31,26 @@ def is_enabled() -> bool:
     )
 
 
+def configure_stdio() -> None:
+    """Use UTF-8 for the GUI pipe. A Windows cp1252 stdout would drop emoji
+    and typical model punctuation when emit() writes a chat line."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+        except Exception:
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+
+
 def enable() -> None:
     global _enabled
     _enabled = True
+    configure_stdio()
 
 
 def set_reasoning_handler(handler) -> None:
@@ -46,11 +63,57 @@ def emit(event: str, data: Optional[dict[str, Any]] = None) -> None:
     if not _enabled and not is_enabled():
         return
     payload = {"event": event, "data": data or {}}
+    line = json.dumps(payload, ensure_ascii=False) + "\n"
     try:
-        sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        sys.stdout.write(line)
         sys.stdout.flush()
+        return
     except Exception:
         pass
+    # A non-UTF-8 text stdout (common on Windows) raises on emoji or dashes.
+    # Write the same line as UTF-8 bytes so the GUI reader can still parse it.
+    try:
+        buf = getattr(sys.stdout, "buffer", None)
+        if buf is None:
+            return
+        buf.write(line.encode("utf-8", errors="replace"))
+        buf.flush()
+    except Exception:
+        pass
+
+
+def parse_bridge_line(raw: str) -> Tuple[Optional[str], dict[str, Any]]:
+    """Parse one stdout line from the bot process.
+
+    A library print or a merged stderr fragment may sit in front of the JSON
+    object. Recover the event when the line still contains a valid payload,
+    so a dirty line does not drop a chat message from the panel.
+    """
+    text = "" if raw is None else str(raw).strip()
+    if not text:
+        return None, {}
+    candidates: list[str] = []
+    if text.startswith("{"):
+        candidates.append(text)
+    marker = text.find('{"event"')
+    if marker > 0:
+        candidates.append(text[marker:])
+    decoder = json.JSONDecoder()
+    for blob in candidates:
+        obj = None
+        try:
+            obj = json.loads(blob)
+        except Exception:
+            try:
+                obj, _end = decoder.raw_decode(blob)
+            except Exception:
+                obj = None
+        if isinstance(obj, dict) and "event" in obj:
+            data = obj.get("data") or {}
+            if not isinstance(data, dict):
+                data = {}
+            return obj.get("event"), data
+    return None, {}
 
 
 def log(message: str, channel: str = "global") -> None:
@@ -209,6 +272,11 @@ async def _announce(bot, text: str) -> None:
         return
     try:
         await channel.send(text)
+        try:
+            from core.chat_panel import outbound
+            outbound(text)
+        except Exception:
+            pass
         log(f"Announced: {text}", channel="bridge")
     except Exception as e:
         log(f"ANNOUNCE failed: {e}", channel="bridge")
@@ -335,6 +403,7 @@ def attach(bot) -> None:
     global _bot, _loop, _enabled
     _bot = bot
     _enabled = True
+    configure_stdio()
 
     try:
         _loop = asyncio.get_running_loop()

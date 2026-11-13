@@ -66,16 +66,26 @@ def asset_text(message: str) -> str:
 
 
 async def _post(message, result: AssetFile | str, caption: str) -> None:
+    from core.chat_panel import send_visible
+
     if isinstance(result, str):
-        await message.reply(
+        await send_visible(
+            message,
             asset_text(
                 f"{caption}\nThe file is too big to attach. It is here for a short time:\n{result}"
             ),
+            sender=message.reply,
             mention_author=False,
         )
         return
     file = discord.File(io.BytesIO(result.data), filename=result.filename)
-    await message.reply(content=asset_text(caption), file=file, mention_author=False)
+    await send_visible(
+        message,
+        asset_text(caption),
+        sender=message.reply,
+        file=file,
+        mention_author=False,
+    )
 
 
 async def make_asset(ctx, arguments: dict) -> ToolResult:

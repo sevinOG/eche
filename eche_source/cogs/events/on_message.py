@@ -78,7 +78,11 @@ def _memory_lock(user_id: int) -> asyncio.Lock:
 
 
 async def _send_reply(message, content: str):
-    """Reply to the Discord message. Longer text continues in following messages."""
+    """Reply to the Discord message. Longer text continues in following messages.
+
+    Every chunk that lands on Discord is also mirrored to the GUI chat panel.
+    """
+    from core.chat_panel import send_visible
     from core.client import discord_chunks
 
     chunks = discord_chunks(content)
@@ -88,7 +92,8 @@ async def _send_reply(message, content: str):
     for index, chunk in enumerate(chunks):
         if index == 0:
             try:
-                sent = await message.channel.send(
+                sent = await send_visible(
+                    message.channel,
                     chunk,
                     reference=message.to_reference(fail_if_not_exists=False),
                 )
@@ -97,9 +102,9 @@ async def _send_reply(message, content: str):
                 if not missing:
                     raise
                 dprint(f"[on_message] reply had no message to reference: {exc}")
-                sent = await message.channel.send(chunk)
+                sent = await send_visible(message.channel, chunk)
         else:
-            sent = await message.channel.send(chunk)
+            sent = await send_visible(message.channel, chunk)
     return sent
 
 
@@ -257,12 +262,13 @@ class OnMessage(commands.Cog):
             )
             sent = result.quiet
             if not result.quiet:
+                from core.chat_panel import send_visible
                 for index, chunk in enumerate(chunks):
                     try:
                         if index == 0:
                             await _send_reply(message, chunk)
                         else:
-                            await message.channel.send(chunk)
+                            await send_visible(message.channel, chunk)
                         sent = True
                     except Exception as e:
                         dprint(f"[on_message] tool message failed: {e}")
@@ -293,11 +299,6 @@ class OnMessage(commands.Cog):
                     who,
                     log_detail((call or {}).get("arguments") or {}, result),
                 )
-            except Exception:
-                pass
-            try:
-                from core.gui_bridge import chat as gui_chat
-                gui_chat(f"Bot: {chunks[0]}")
             except Exception:
                 pass
             from core.episodic import act_line
@@ -383,6 +384,15 @@ class OnMessage(commands.Cog):
             await self._answer_and_remember(message, guild, cleaned, remembered, media)
 
     async def _answer_and_remember(self, message, guild, cleaned, remembered, media):
+        # Mirror the user line first, before any prompt or refusal, so a later
+        # failure or a block does not hide it from the chat panel.
+        try:
+            from core.chat_panel import author_label, inbound
+            shown = cleaned if not getattr(media, "summary", "") else f"{cleaned} [media: {media.summary}]"
+            inbound(author_label(getattr(message, "author", None)), shown)
+        except Exception:
+            pass
+
         # Hard block before any prompt is built or model is called. Nothing
         # from this message is remembered or added to the episode.
         user_id, channel_id = _scope(message)
@@ -413,14 +423,6 @@ class OnMessage(commands.Cog):
             image_count=len(media.images),
             server_id=getattr(message.guild, "id", None),
         )
-
-        # The chat pane is the conversation. The prompt stays off that pane.
-        try:
-            from core.gui_bridge import chat as gui_chat
-            inbound = cleaned if not media.summary else f"{cleaned} [media: {media.summary}]"
-            gui_chat(f"{message.author.display_name}: {inbound}")
-        except Exception:
-            pass
 
         # 3. Call the model. The token cap is the reply length.
         # Tools ride on this same request. A quota miss does not run them.
@@ -505,15 +507,14 @@ class OnMessage(commands.Cog):
                 self.bot.next_reply_override = False
                 self.bot.override_waiting_for = None
         elif reply.strip():
-            # Mirror reply into GUI panels
             try:
-                from core.gui_bridge import chat as gui_chat, log as gui_log
-                gui_chat(f"Bot: {reply}")
+                from core.gui_bridge import log as gui_log
                 gui_log(f"Replied to {message.author.display_name}", channel="chat")
             except Exception:
                 pass
 
-            # 5. Send reply before any memory write.
+            # 5. Send reply before any memory write. The send mirrors each
+            # chunk to the GUI chat panel.
             await _send_reply(message, reply)
 
             # Reset override after use

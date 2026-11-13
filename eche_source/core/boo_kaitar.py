@@ -27,7 +27,9 @@ async def maybe_boo(message):
 
     if random.random() < BOO_CHANCE:
         reply = random.choice(BOO_LINES)
-        await message.channel.send(reply)
+        from core.chat_panel import author_label, inbound, send_visible
+        inbound(author_label(getattr(message, "author", None)), getattr(message, "content", "") or "")
+        await send_visible(message.channel, reply)
         return True
 
     return False

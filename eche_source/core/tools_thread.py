@@ -955,7 +955,8 @@ async def _execute(
             # A thread post is checked before it is sent. The thread stops here.
             note("thread post")
             try:
-                await thread.send(REFUSAL)
+                from core.chat_panel import send_visible
+                await send_visible(thread, REFUSAL)
                 posted.append(REFUSAL)
             except Exception as exc:
                 dprint(f"[tools] thread refusal failed: {exc}")
@@ -963,7 +964,8 @@ async def _execute(
         stopped = False
         for chunk in discord_chunks(body):
             try:
-                await thread.send(chunk)
+                from core.chat_panel import send_visible
+                await send_visible(thread, chunk)
             except Exception as exc:
                 dprint(f"[tools] thread send failed: {exc}")
                 stopped = True
@@ -982,14 +984,17 @@ async def _send_asset(channel, result, caption: str) -> None:
     from core.tools_asset import asset_text
 
     if isinstance(result, str):
-        await channel.send(
+        from core.chat_panel import send_visible
+        await send_visible(
+            channel,
             asset_text(
                 f"{caption}\nThe file is too big to attach. It is here for a short time:\n{result}"
-            )
+            ),
         )
         return
     file = discord.File(io.BytesIO(result.data), filename=result.filename)
-    await channel.send(content=asset_text(caption), file=file)
+    from core.chat_panel import send_visible
+    await send_visible(channel, asset_text(caption), file=file)
 
 
 async def _render_assets(ctx: ToolContext, thread, plan: str, source: str, kind: str) -> str:
@@ -1001,14 +1006,16 @@ async def _render_assets(ctx: ToolContext, thread, plan: str, source: str, kind:
     ok, why = await _allowed(ctx)
     if not ok:
         try:
-            await thread.send(why)
+            from core.chat_panel import send_visible
+            await send_visible(thread, why)
         except Exception as exc:
             dprint(f"[tools] thread asset refusal failed: {type(exc).__name__}")
         return why
     if not api_key():
         note = "Add a Grok API key in Media settings."
         try:
-            await thread.send(note)
+            from core.chat_panel import send_visible
+            await send_visible(thread, note)
         except Exception as exc:
             dprint(f"[tools] thread asset key note failed: {type(exc).__name__}")
         return note
@@ -1016,7 +1023,8 @@ async def _render_assets(ctx: ToolContext, thread, plan: str, source: str, kind:
     if not shots:
         note = "Say what to make."
         try:
-            await thread.send(note)
+            from core.chat_panel import send_visible
+            await send_visible(thread, note)
         except Exception as exc:
             dprint(f"[tools] thread asset prompt note failed: {type(exc).__name__}")
         return note
@@ -1026,7 +1034,8 @@ async def _render_assets(ctx: ToolContext, thread, plan: str, source: str, kind:
             attached = await source_from_message(ctx.message)
         except ImagineError as exc:
             try:
-                await thread.send(asset_text(exc.text))
+                from core.chat_panel import send_visible
+                await send_visible(thread, asset_text(exc.text))
             except Exception as send_exc:
                 dprint(f"[tools] thread asset source failed: {type(send_exc).__name__}")
             return exc.text
@@ -1037,7 +1046,8 @@ async def _render_assets(ctx: ToolContext, thread, plan: str, source: str, kind:
             result = await run_asset(made, api_key())
         except ImagineError as exc:
             try:
-                await thread.send(asset_text(exc.text))
+                from core.chat_panel import send_visible
+                await send_visible(thread, asset_text(exc.text))
             except Exception as send_exc:
                 dprint(f"[tools] thread asset error failed: {type(send_exc).__name__}")
             posted.append(exc.text)
@@ -1046,7 +1056,8 @@ async def _render_assets(ctx: ToolContext, thread, plan: str, source: str, kind:
             dprint(f"[tools] thread asset failed: {type(exc).__name__}")
             note = "I couldn't make that."
             try:
-                await thread.send(asset_text(note))
+                from core.chat_panel import send_visible
+                await send_visible(thread, asset_text(note))
             except Exception as send_exc:
                 dprint(f"[tools] thread asset error failed: {type(send_exc).__name__}")
             posted.append(note)
@@ -1118,7 +1129,8 @@ async def open_thread(ctx: ToolContext, arguments: dict) -> ToolResult:
             )
 
     try:
-        await thread.send(announcement("thread"))
+        from core.chat_panel import send_visible
+        await send_visible(thread, announcement("thread"))
     except Exception as exc:
         dprint(f"[tools] thread announcement failed: {exc}")
         return ToolResult(
@@ -1134,7 +1146,8 @@ async def open_thread(ctx: ToolContext, arguments: dict) -> ToolResult:
     if not body:
         note = "I opened the thread, but I had nothing more to add." if opened else "I had nothing more to add."
         try:
-            await thread.send(note)
+            from core.chat_panel import send_visible
+            await send_visible(thread, note)
         except Exception as exc:
             dprint(f"[tools] thread empty note failed: {exc}")
         return ToolResult(text=note, fence=False, quiet=True, detail=detail)

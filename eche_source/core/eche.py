@@ -94,6 +94,12 @@ def _emit_fatal(message: str, *, code: str = "config") -> None:
 def main() -> None:
     os.environ.setdefault("ECHE_RUNNING", "BOT")
     os.environ.setdefault("ECHE_GUI_BRIDGE", "1")
+    os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+    try:
+        from core.gui_bridge import configure_stdio
+        configure_stdio()
+    except Exception:
+        pass
 
     project_root = _bootstrap_paths()
     _load_env(project_root)
