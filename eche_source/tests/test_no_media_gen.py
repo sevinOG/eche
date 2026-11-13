@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import ast
+import asyncio
 import importlib
 import tempfile
 import unittest
@@ -380,7 +381,13 @@ class NoMediaGenerationTests(unittest.TestCase):
         from core.media_scan import is_image_model_id
         from core.summarizer_prompt import get_summarizer_model
 
-        body = _build_payload(
+        def payload(*args, **kwargs):
+            result = _build_payload(*args, **kwargs)
+            if asyncio.iscoroutine(result):
+                return asyncio.run(result)
+            return result
+
+        body = payload(
             [{"role": "user", "content": "hi"}],
             "openai/gpt-image-1",
             128,
@@ -400,7 +407,7 @@ class NoMediaGenerationTests(unittest.TestCase):
             summary = get_summarizer_model()
             self.assertFalse(is_image_model_id(summary), summary)
             self.assertTrue(summary)
-            again = _build_payload(
+            again = payload(
                 [{"role": "user", "content": "hi"}],
                 os.environ["GROQ_MODEL"],
                 128,
