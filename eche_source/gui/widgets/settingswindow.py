@@ -1749,6 +1749,13 @@ class SettingsWindow(QWidget):
                 openrouter_m = typed
         payload["openrouter_model"] = openrouter_m or _OPENROUTER_DEFAULT
 
+        try:
+            from core.media_scan import reject_image_model
+            payload["cloud_model"] = reject_image_model(payload["cloud_model"], _CLOUD_DEFAULT)
+            payload["ollama_model"] = reject_image_model(payload["ollama_model"], _OLLAMA_DEFAULT)
+            payload["openrouter_model"] = reject_image_model(payload["openrouter_model"], _OPENROUTER_DEFAULT)
+        except Exception:
+            pass
         if backend == "ollama":
             payload["groq_model"] = payload["ollama_model"]
         elif backend == "openrouter":

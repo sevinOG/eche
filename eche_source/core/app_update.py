@@ -37,6 +37,46 @@ _PROTECTED_FILE_NAMES = {
 }
 _CODE_SUFFIXES = {".py", ".pyc", ".pyo", ".pyd", ".pyw"}
 
+# Only these files, which Eche itself shipped and later removed, may be
+# deleted from an existing install. User-dropped cogs (cogs/utils, cogs/games
+# extras, and anything else not on this list) are never deleted.
+REMOVED_PROGRAM_FILES = (
+    "cogs/asset.py",
+    "cogs/flash.py",
+    "core/imagine.py",
+    "core/tools_asset.py",
+    "core/asset_message.py",
+)
+
+
+def _is_link(path: Path) -> bool:
+    try:
+        if path.is_symlink():
+            return True
+    except OSError:
+        pass
+    is_junction = getattr(path, "is_junction", None)
+    if callable(is_junction):
+        try:
+            return bool(is_junction())
+        except OSError:
+            return False
+    return False
+
+
+def _path_is_inside(path: Path, root: Path) -> bool:
+    """True if path.resolve() is the root or a file under it (normcase)."""
+    try:
+        resolved = path.resolve()
+        base = root.resolve()
+    except OSError:
+        return False
+    left = os.path.normcase(str(resolved))
+    right = os.path.normcase(str(base))
+    if left == right:
+        return True
+    return left.startswith(right + os.sep)
+
 
 def _is_protected(path: Path, root: Path) -> bool:
     try:
@@ -57,10 +97,16 @@ def iter_shipped_code_files(root: str | Path) -> set[str]:
     found: set[str] = set()
     for folder in _CODE_DIRS:
         base = root / folder
-        if not base.is_dir():
+        if not base.is_dir() or _is_link(base):
             continue
         for path in base.rglob("*"):
+            if _is_link(path):
+                continue
+            if any(_is_link(parent) for parent in path.parents if _path_is_inside(parent, base) or parent == base):
+                continue
             if not path.is_file():
+                continue
+            if not _path_is_inside(path, base):
                 continue
             if path.suffix.lower() not in _CODE_SUFFIXES:
                 continue
@@ -70,12 +116,15 @@ def iter_shipped_code_files(root: str | Path) -> set[str]:
     return found
 
 
-def purge_removed_program_files(stage: str | Path, target: str | Path) -> list[str]:
-    # Not robocopy /PURGE: that would also delete user files. Manifest diff only.
-    """Delete code files in the install that the new release no longer contains.
 
-    Limited to core/, cogs/, and gui/. Never deletes config, .env, data,
-    memory, logs, or other user files. `stage` is the new release tree.
+def purge_removed_program_files(stage: str | Path, target: str | Path) -> list[str]:
+    # Not robocopy /PURGE: that would also delete user files. Only the
+    # explicit REMOVED_PROGRAM_FILES manifest is ever deleted.
+    """Delete program files Eche itself shipped and later removed.
+
+    Never deletes user-dropped cogs or any file not on the explicit
+    removed-files list. Config, .env, data, memory, logs, and other user
+    files are never touched. `stage` is the new release tree.
     """
     stage = Path(stage)
     target = Path(target)
@@ -90,19 +139,39 @@ def purge_removed_program_files(stage: str | Path, target: str | Path) -> list[s
     keep = iter_shipped_code_files(stage)
     if not keep:
         raise RuntimeError("New release manifest was empty; refusing to purge.")
+    keep_norm = {os.path.normcase(item) for item in keep}
+    tombstone_norm = {os.path.normcase(item) for item in REMOVED_PROGRAM_FILES}
     removed: list[str] = []
-    for rel in sorted(iter_shipped_code_files(target)):
-        if rel in keep:
-            continue
+    warned: list[str] = []
+    # Walk only the explicit tombstone names, plus warn about other extras.
+    present = iter_shipped_code_files(target)
+    for rel in sorted(present):
+        rel_norm = os.path.normcase(rel)
         path = target / rel
-        if _is_protected(path, target):
+        if _is_protected(path, target) or _is_link(path):
             continue
-        # Extra belt: only delete under the code dirs.
+        if not _path_is_inside(path, target):
+            continue
         top = rel.split("/")[0]
         if top not in _CODE_DIRS:
             continue
-        path.unlink()
-        removed.append(rel)
+        code_root = target / top
+        if not _path_is_inside(path, code_root):
+            continue
+        if rel_norm in tombstone_norm:
+            path.unlink()
+            removed.append(rel)
+            continue
+        if rel_norm not in keep_norm:
+            warned.append(rel)
+    if warned:
+        sample = ", ".join(warned[:8])
+        extra = f" (and {len(warned) - 8} more)" if len(warned) > 8 else ""
+        print(
+            f"[update] Leaving {len(warned)} file(s) not in the new release "
+            f"(not on the removed-files list): {sample}{extra}",
+            flush=True,
+        )
     return removed
 
 

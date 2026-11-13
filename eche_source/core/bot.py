@@ -320,11 +320,12 @@ class Eche(commands.Bot):
 
         loaded = 0
         failed: list[str] = []
-        from core.denied_modules import is_denied_module
+        from core.media_scan import module_is_blocked
         for ext in extensions:
-            if is_denied_module(ext):
-                failed.append(f"{ext}: denied media module")
-                print(f">>> refused to load denied media module: {ext}")
+            blocked = module_is_blocked(ext)
+            if blocked:
+                failed.append(f"{ext}: {blocked}")
+                print(f">>> refused to load {ext}: {blocked}")
                 continue
             try:
                 await self.load_extension(ext)
