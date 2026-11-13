@@ -93,6 +93,9 @@ IMAGE_MODEL_MARKERS = (
     "sd3",
     "imggen",
     "img-gen",
+    "kandinsky",
+    "hidream",
+    "lmage",
 )
 
 
@@ -144,6 +147,10 @@ VIDEO_MODEL_MARKERS = (
     "svdxt",
     "animatediff",
     "animate-diff",
+    "pixverse",
+    "gen-3-alpha",
+    "gen3alpha",
+    "gen3a",
 )
 
 # Lookalike letters that show up in evasive model ids (Cyrillic ѕora, etc.).
@@ -156,7 +163,7 @@ _MODEL_CONFUSABLES = str.maketrans({
     "ꜱ": "s", "ᴇ": "e",
     "ν": "v", "Ν": "v",
     "к": "k", "К": "k",
-    "$": "s", "@": "a",
+    "$": "s",
 })
 _MODEL_LEET = str.maketrans({
     "0": "o", "1": "i", "3": "e", "4": "a", "5": "s", "7": "t",
@@ -167,7 +174,7 @@ _MODEL_LEET = str.maketrans({
 # ("deepseek-chat-v3-0324" must not become veo via leet on version digits;
 # "inkling" must not match kling).
 _SHORT_MODEL_MARKERS = frozenset({"veo", "sora", "ray", "pika", "t2v", "i2v"})
-_TOKEN_SPLIT = re.compile(r"[-_/.]+")
+_TOKEN_SPLIT = re.compile(r"[-_/./@]+")
 
 
 def normalize_model_id(model: str) -> str:
@@ -194,7 +201,9 @@ def _folded_for_tokens(model: str) -> str:
         cat = unicodedata.category(ch)
         if cat in {"Mn", "Cf", "Cc"}:
             continue
-        if ch.isalnum() or ch in "-_/.":
+        if ch == "@":
+            kept.append("-")
+        elif ch.isalnum() or ch in "-_/.":
             kept.append(ch)
         elif cat in {"Zs", "Pd", "Po", "Ps", "Pe", "Sk"}:
             kept.append("-")
@@ -206,11 +215,26 @@ def _tokens(model: str) -> list[str]:
     return [tok for tok in _TOKEN_SPLIT.split(text) if tok]
 
 
+_MODEL_LEET_L = str.maketrans({
+    "0": "o", "1": "l", "3": "e", "4": "a", "5": "s", "7": "t",
+})
+
+
 def _leet_token(token: str) -> str:
     """Leet-fold a token only when it already contains letters, never a version number."""
     if not token or not any(ch.isalpha() for ch in token):
         return token
     return token.translate(_MODEL_LEET)
+
+
+def _leet_token_forms(token: str) -> list[str]:
+    if not token or not any(ch.isalpha() for ch in token):
+        return [token]
+    forms = [token, token.translate(_MODEL_LEET)]
+    alt = token.translate(_MODEL_LEET_L)
+    if alt not in forms:
+        forms.append(alt)
+    return forms
 
 
 def _join_singleton_runs(tokens: list[str]) -> list[str]:
@@ -232,11 +256,7 @@ def _join_singleton_runs(tokens: list[str]) -> list[str]:
 
 
 def _token_forms(token: str) -> list[str]:
-    forms = [token]
-    leet = _leet_token(token)
-    if leet != token:
-        forms.append(leet)
-    return forms
+    return list(dict.fromkeys(_leet_token_forms(token)))
 
 
 def _marker_forms(marker: str) -> list[str]:
@@ -266,21 +286,30 @@ def _long_markers() -> list[str]:
     return out
 
 
-_SHORT_SUFFIXES = ("pro", "fast", "turbo", "flash", "lite")
+_SHORT_SUFFIXES = ("pro", "fast", "turbo", "flash", "lite", "ultra", "mini", "max", "hd", "labs")
 _SHORT_PREFIXES = ("super", "pro", "my", "x")
 
 
 def _suffix_is_version_or_tier(text: str) -> bool:
-    """Empty, digits, and/or pro/fast/turbo/flash/lite."""
+    """Empty, digits, and/or a known tier; leftover letters after those are ok.
+
+    sora2ultra, veomini, pikalabs, veo3max.
+    """
     s = text or ""
+    consumed = False
     while s:
         if s[0].isdigit():
             s = s.lstrip("0123456789")
+            consumed = True
             continue
         hit = next((suf for suf in _SHORT_SUFFIXES if s.startswith(suf)), None)
-        if not hit:
-            return False
-        s = s[len(hit):]
+        if hit:
+            s = s[len(hit):]
+            consumed = True
+            continue
+        if s.isalpha() and consumed:
+            return True
+        return False
     return True
 
 
@@ -323,14 +352,23 @@ def _adjacent_spans(tokens: list[str]) -> list[str]:
         for j in range(i, n):
             plain.append(tokens[j])
             leet.append(_leet_token(tokens[j]))
-            for span in ("".join(plain), "".join(leet)):
+            leet_l = [_leet_token_forms(tok)[-1] if "1" in tok else _leet_token(tok) for tok in tokens[i:j + 1]]
+            for span in ("".join(plain), "".join(leet), "".join(leet_l)):
                 if span and span not in out:
                     out.append(span)
     return out
 
 
-def is_image_model_id(model: str) -> bool:
-    """True for known image/video generators, matched at the start of a token."""
+_VIDEO_CHAT_ALLOW = ("videollava", "llavavideo", "videollama")
+_IMAGE_SPELLING_RE = re.compile(r"(?:image|lmage|imaqe)", re.I)
+
+
+def _is_video_chat_model(model: str) -> bool:
+    compact = normalize_model_id(model)
+    return any(tag in compact for tag in _VIDEO_CHAT_ALLOW)
+
+
+def _is_image_model_id_folded(model: str) -> bool:
     raw_tokens = _tokens(model)
     if not raw_tokens and not (model or "").strip():
         return False
@@ -344,7 +382,7 @@ def is_image_model_id(model: str) -> bool:
             if form not in spans:
                 spans.append(form)
     for span in spans:
-        if "image" in span:
+        if _IMAGE_SPELLING_RE.search(span):
             return True
         for marker in short:
             if _short_token_match(span, marker):
@@ -355,6 +393,19 @@ def is_image_model_id(model: str) -> bool:
     if "image" in normalize_model_id(model):
         return True
     return False
+
+
+def is_image_model_id(model: str) -> bool:
+    """True for known image/video generators, matched at the start of a token."""
+    if _is_video_chat_model(model):
+        return False
+    if _is_image_model_id_folded(model):
+        return True
+    # pik@ -> pika, while s@o@r@a still joins via @ as a separator.
+    if "@" in (model or ""):
+        return _is_image_model_id_folded((model or "").replace("@", "a"))
+    return False
+
 
 
 def file_has_generation(path: str | Path) -> str:

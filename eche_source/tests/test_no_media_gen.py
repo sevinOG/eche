@@ -269,6 +269,16 @@ class NoMediaGenerationTests(unittest.TestCase):
             "\ua731ora",
             "pik@",
             "$ora",
+            "pikalabs",
+            "s@o@r@a",
+            "sora2ultra",
+            "veomini",
+            "k1ing",
+            "lmage",
+            "kandinsky",
+            "hidream",
+            "pixverse",
+            "gen-3-alpha",
         ):
             self.assertTrue(is_image_model_id(model), model)
             # Saved settings are kept; only usable_chat_model swaps in a fallback.
@@ -295,6 +305,13 @@ class NoMediaGenerationTests(unittest.TestCase):
             "deepseek/deepseek-v3.1",
             "qwen2.5vl",
             "kimi-k2",
+            "Video-LLaVA",
+            "LLaVA-Video",
+            "VideoLLaMA2",
+            "llava-video-7b",
+            "video-llava-7b",
+            "LanguageBind/Video-LLaVA",
+            "DAMO-NLP-SG/VideoLLaMA2",
         ]
         for model in allowed:
             self.assertFalse(is_image_model_id(model), model)
@@ -319,6 +336,13 @@ class NoMediaGenerationTests(unittest.TestCase):
             self.assertTrue(is_image_model_id(loaded.get("groq_model") or ""))
 
         self._assert_openrouter_chat_models_allowed()
+
+    def test_safe_chat_model_falls_back_when_filter_fails(self):
+        from core import client
+
+        with mock.patch.object(client, "_chat_fallback", return_value="fallback-chat"),                 mock.patch("core.media_scan.usable_chat_model", side_effect=RuntimeError("load failed")):
+            self.assertEqual(client._safe_chat_model("openai/gpt-image-1"), "fallback-chat")
+            self.assertEqual(client._safe_chat_model("llama3"), "fallback-chat")
 
     def _assert_openrouter_chat_models_allowed(self):
         from core.media_scan import is_image_model_id
