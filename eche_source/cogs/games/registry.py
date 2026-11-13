@@ -43,7 +43,7 @@ def _autoload_games():
         try:
             importlib.import_module(full)
         except Exception as e:
-            print(f"[games.registry] failed to import {full}: {e}")
+            print(f"[games.registry] failed to import {full}: {e!r}")
 
 
 _autoload_games()

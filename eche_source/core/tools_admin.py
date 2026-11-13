@@ -227,7 +227,7 @@ async def _member_action(ctx: ToolContext, arguments: dict, *, perm: str, perm_l
 
 
 def _discord_failed(action: str, exc: Exception) -> ToolResult:
-    dprint(f"[tools] {action} failed: {exc}")
+    dprint(f"[tools] {action} failed: {exc!r}")
     if isinstance(exc, discord.Forbidden):
         return ToolResult(text="Discord refused that. My role needs to be higher, with the right permission.")
     return ToolResult(text="Discord didn't accept that.")

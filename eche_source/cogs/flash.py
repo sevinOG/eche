@@ -3,6 +3,7 @@ from discord.ext import commands
 import aiohttp
 import base64
 import os
+from core.chat_panel import send_visible, edit_visible
 
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
@@ -37,7 +38,7 @@ class Flash(commands.Cog):
     # TEXT → IMAGE (GENERATE)
     # ---------------------------------------------------------
     async def flash_generate(self, ctx, prompt: str):
-        msg = await ctx.send("⚡ Generating image...")
+        msg = await send_visible(ctx, "⚡ Generating image...")
 
         payload = {
             "contents": [{
@@ -51,16 +52,16 @@ class Flash(commands.Cog):
         img_bytes = await self._call_gemini_image(payload)
         
         if not img_bytes:
-            return await msg.edit(content="❌ Failed to generate image. Check your prompt or API key.")
+            return await edit_visible(msg, content="❌ Failed to generate image. Check your prompt or API key.")
 
         await msg.delete()
-        await ctx.send(file=discord.File(fp=img_bytes, filename="generated.png"))
+        await send_visible(ctx, file=discord.File(fp=img_bytes, filename="generated.png"))
 
     # ---------------------------------------------------------
     # IMAGE → EDIT (IMAGE-TO-IMAGE)
     # ---------------------------------------------------------
     async def flash_edit(self, ctx, prompt: str, image_bytes: bytes):
-        msg = await ctx.send("⚡ Modifying image...")
+        msg = await send_visible(ctx, "⚡ Modifying image...")
 
         img_b64 = base64.b64encode(image_bytes).decode()
 
@@ -85,10 +86,10 @@ class Flash(commands.Cog):
         out_bytes = await self._call_gemini_image(payload)
 
         if not out_bytes:
-            return await msg.edit(content="❌ Failed to edit image.")
+            return await edit_visible(msg, content="❌ Failed to edit image.")
 
         await msg.delete()
-        await ctx.send(file=discord.File(fp=out_bytes, filename="edited.png"))
+        await send_visible(ctx, file=discord.File(fp=out_bytes, filename="edited.png"))
 
     @commands.command()
     async def flash(self, ctx, *, prompt: str):

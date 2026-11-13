@@ -5,6 +5,7 @@ from discord.ext import commands
 
 from core.context_manager import ensure_context_channel, get_home_guild, read_raw_context
 from core.context_summarizer import summarize_context
+from core.chat_panel import send_visible
 
 
 async def _send_fenced(ctx, heading: str, body: str) -> None:
@@ -14,9 +15,9 @@ async def _send_fenced(ctx, heading: str, body: str) -> None:
     head = f"{heading}\n"
     room = max(16, REPLY_MAX_CHARS - len(head) - 8)
     pieces = discord_chunks((body or "").strip() or "(empty)", room)
-    await ctx.send(f"{head}```\n{pieces[0]}\n```")
+    await send_visible(ctx, f"{head}```\n{pieces[0]}\n```")
     for extra in pieces[1:]:
-        await ctx.send(f"```\n{extra}\n```")
+        await send_visible(ctx, f"```\n{extra}\n```")
 
 
 class ContextDebug(commands.Cog):
@@ -89,7 +90,7 @@ class ContextDebug(commands.Cog):
             member.name
         )
 
-        await ctx.send(f"Updated Summary for **{member.name}**.")
+        await send_visible(ctx, f"Updated Summary for **{member.name}**.")
 
     # ---------------------------------------------------------
     # CLEAR SUMMARY
@@ -110,7 +111,7 @@ class ContextDebug(commands.Cog):
         )
 
         if "Summary:" not in content:
-            return await ctx.send("Context format is malformed.")
+            return await send_visible(ctx, "Context format is malformed.")
         label, _summary, recent = parse_pin_sections(
             content, f"Context for {member.name}:\n"
         )
@@ -130,7 +131,7 @@ class ContextDebug(commands.Cog):
             member.name
         )
 
-        await ctx.send(f"Cleared Summary for **{member.name}**.")
+        await send_visible(ctx, f"Cleared Summary for **{member.name}**.")
 
     # ---------------------------------------------------------
     # RAW CONTEXT
@@ -140,7 +141,7 @@ class ContextDebug(commands.Cog):
     async def context_raw(self, ctx, member: discord.Member):
         content = await read_raw_context(self.bot, member.id, member.name)
         if content is None:
-            return await ctx.send("Could not read that context.")
+            return await send_visible(ctx, "Could not read that context.")
 
         await _send_fenced(ctx, f"**Raw Context for {member.name}:**", content)
 
@@ -161,9 +162,7 @@ class ContextDebug(commands.Cog):
             self.bot, member.id, member.name
         )
         if not channel or not pinned:
-            return await ctx.send(
-                "Could not reach bot memory. Check the home server id and that the bot is in that server."
-            )
+            return await send_visible(ctx, "Could not reach bot memory. Check the home server id and that the bot is in that server.")
         content = pinned.content or ""
 
         # Keep any old New: lines in the local buffer. The pin is the long-term block.
@@ -181,9 +180,7 @@ class ContextDebug(commands.Cog):
 
         notes = notes_for_fold(member.id, "bot")
         if not notes:
-            return await ctx.send(
-                f"Bot memory for **{member.name}** is already a summary."
-            )
+            return await send_visible(ctx, f"Bot memory for **{member.name}** is already a summary.")
 
         from core.context_summarizer import fold_long_memory
 
@@ -194,11 +191,9 @@ class ContextDebug(commands.Cog):
             side="bot",
         )
         if not folded:
-            return await ctx.send(
-                f"Could not rebuild bot memory for **{member.name}**. The summary was left in place."
-            )
+            return await send_visible(ctx, f"Could not rebuild bot memory for **{member.name}**. The summary was left in place.")
         clear_folded(member.id, "bot")
-        await ctx.send(f"Bot memory for **{member.name}** has been fully repaired and rebuilt.")
+        await send_visible(ctx, f"Bot memory for **{member.name}** has been fully repaired and rebuilt.")
 
     # ---------------------------------------------------------
     # DEBUGUSER
@@ -213,7 +208,7 @@ class ContextDebug(commands.Cog):
             self.bot, guild, member.id, member.name
         )
         if not channel or not pinned:
-            return await ctx.send("Could not reach that user's context pin.")
+            return await send_visible(ctx, "Could not reach that user's context pin.")
 
         from core.context_manager import parse_pin_sections
 

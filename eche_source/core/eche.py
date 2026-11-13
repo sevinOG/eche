@@ -63,10 +63,11 @@ def _load_env(project_root: str) -> None:
         from core.secrets import apply_to_environ
         apply_to_environ(root, override_existing=False)
     except Exception as e:
-        print(
-            f'{{"event":"log","data":{{"message":"Secure config load warning: {e}","channel":"bot"}}}}',
-            flush=True,
-        )
+        try:
+            from core.gui_bridge import log
+            log(f"Secure config load warning: {e!r}", channel="bot")
+        except Exception:
+            print(f"Secure config load warning: {e!r}", flush=True)
 
     try:
         from dotenv import load_dotenv
@@ -77,23 +78,41 @@ def _load_env(project_root: str) -> None:
 
 
 def _emit_fatal(message: str, *, code: str = "config") -> None:
-    """Print a structured error the GUI can classify + plain text for logs."""
-    import json
-    payload = {
-        "event": "fatal",
-        "data": {
-            "message": message,
-            "code": code,
-            "channel": "bot",
-        },
-    }
-    print(json.dumps(payload), flush=True)
-    print(f"[FATAL] {message}", flush=True)
+    """Emit a structured error the GUI can classify + plain text for logs."""
+    try:
+        from core.gui_bridge import emit
+        emit("fatal", {"message": message, "code": code, "channel": "bot"})
+    except Exception:
+        import json
+        try:
+            from core.gui_bridge import get_sentinel
+            token = get_sentinel()
+        except Exception:
+            token = ""
+        payload = {
+            "event": "fatal",
+            "data": {
+                "message": message,
+                "code": code,
+                "channel": "bot",
+            },
+        }
+        print(token + json.dumps(payload, ensure_ascii=False), flush=True)
+    # Human-readable fallback for a console run. Newlines are stripped so
+    # this line cannot smuggle a later event payload.
+    safe = str(message).replace("\r", " ").replace("\n", " ")
+    print(f"[FATAL] {safe}", flush=True)
 
 
 def main() -> None:
     os.environ.setdefault("ECHE_RUNNING", "BOT")
     os.environ.setdefault("ECHE_GUI_BRIDGE", "1")
+    os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+    try:
+        from core.gui_bridge import configure_stdio
+        configure_stdio()
+    except Exception:
+        pass
 
     project_root = _bootstrap_paths()
     _load_env(project_root)
@@ -138,7 +157,7 @@ def main() -> None:
         import traceback
         tb = traceback.format_exc()
         print(tb, flush=True)
-        _emit_fatal(f"Failed to import bot modules: {e}", code="traceback")
+        _emit_fatal(f"Failed to import bot modules: {e!r}", code="traceback")
         sys.exit(3)
 
     # Refresh module-level HOME_SERVER_ID if bot was imported with 0
@@ -158,7 +177,7 @@ def main() -> None:
         import traceback
         tb = traceback.format_exc()
         print(tb, flush=True)
-        log(f"Bot crashed: {e}", channel="bot")
+        log(f"Bot crashed: {e!r}", channel="bot")
         _emit_fatal(str(e), code="traceback")
         raise
 

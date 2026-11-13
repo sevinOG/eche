@@ -343,7 +343,7 @@ async def lookup_instant(ctx: ToolContext, arguments: dict) -> ToolResult:
         payload = await fetch_instant_answer(query)
     except Exception as exc:
         instant_error = exc
-        dprint(f"[tools] duckduckgo instant failed: {exc}")
+        dprint(f"[tools] duckduckgo instant failed: {exc!r}")
     if payload and has_instant(payload):
         sent = instant_answer_text(payload)
         return ToolResult(
@@ -355,7 +355,7 @@ async def lookup_instant(ctx: ToolContext, arguments: dict) -> ToolResult:
     try:
         results = parse_lite_results(await fetch_lite(query))
     except Exception as exc:
-        dprint(f"[tools] duckduckgo search failed: {exc}")
+        dprint(f"[tools] duckduckgo search failed: {exc!r}")
         detail = f"query: {query}\nsearch error: {type(exc).__name__}: {exc}"
         if instant_error is not None:
             detail += f"\ninstant error: {type(instant_error).__name__}: {instant_error}"

@@ -60,6 +60,7 @@ def _runs_standalone(path: str) -> bool:
         return False
     system_root = os.environ.get("SystemRoot") or r"C:\Windows"
     env = os.environ.copy()
+    env.pop("ECHE_GUI_SENTINEL", None)
     env["PATH"] = os.path.join(system_root, "System32")
     kwargs = {}
     if os.name == "nt":

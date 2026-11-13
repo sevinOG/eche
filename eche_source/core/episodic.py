@@ -518,8 +518,8 @@ async def _fold_stored(summary: str, recent: list[str], limit: int) -> str:
             max_completion_tokens=summary_tokens(limit),
         )
     except Exception as exc:
-        print(f"[episodic] summary failed: {exc}", flush=True)
-        dprint(f"[episodic] summary failed: {exc}")
+        print(f"[episodic] summary failed: {exc!r}", flush=True)
+        dprint(f"[episodic] summary failed: {exc!r}")
         return ""
     text = episode_summary_text(raw)
     if not text:
@@ -541,8 +541,8 @@ async def _condense_stored(previous: str, fresh: str, limit: int) -> str:
             max_completion_tokens=summary_tokens(limit),
         )
     except Exception as exc:
-        print(f"[episodic] condense failed: {exc}", flush=True)
-        dprint(f"[episodic] condense failed: {exc}")
+        print(f"[episodic] condense failed: {exc!r}", flush=True)
+        dprint(f"[episodic] condense failed: {exc!r}")
         return ""
     text = episode_summary_text(raw)
     if not text:
@@ -616,7 +616,7 @@ async def append_episodic(bot, guild_id, guild_name, lines: list[str]) -> None:
         written, note = await write_pinned(thread, prefix, packed)
         if written is None or note == "pin-failed":
             print(
-                f"[episodic] summary was not written ({note}); keeping {len(recent)} lines",
+                f"[episodic] summary was not written ({note!r}); keeping {len(recent)} lines",
                 flush=True,
             )
             return

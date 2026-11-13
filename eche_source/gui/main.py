@@ -28,7 +28,6 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QHBoxLayout,
     QPushButton,
-    QTextEdit,
     QPlainTextEdit,
     QLabel,
     QSplitter,
@@ -109,13 +108,28 @@ class BotReaderThread(QThread):
         self._running = True
 
     def run(self):
-        while self._running and self.process.poll() is None:
+        stream = getattr(self.process, "stdout", None)
+        if stream is None:
+            return
+        # Keep reading until the process is gone and the pipe is empty.
+        # Checking poll() before readline used to drop the last lines, and a
+        # single decode error used to abort the thread, so later chat lines
+        # never reached the panel.
+        while self._running:
             try:
-                line = self.process.stdout.readline()
-                if line:
-                    self.line_received.emit(line.rstrip("\n"))
+                line = stream.readline()
             except Exception as e:
                 print(f"Error reading from bot process stdout: {e}")
+                if self.process.poll() is not None:
+                    break
+                continue
+            if line:
+                try:
+                    self.line_received.emit(line.rstrip("\n"))
+                except Exception:
+                    pass
+                continue
+            if self.process.poll() is not None:
                 break
 
     def stop(self):
@@ -179,6 +193,7 @@ class MainWindow(QMainWindow):
 
         self.bot_process: subprocess.Popen | None = None
         self.reader_thread: BotReaderThread | None = None
+        self._bridge_sentinel = ""
         self._loading_depth = 0
         self._status_state = "offline"
         self._status_text = None
@@ -249,8 +264,11 @@ class MainWindow(QMainWindow):
         splitter_vertical = QSplitter(Qt.Orientation.Vertical)
         splitter_top = QSplitter(Qt.Orientation.Horizontal)
 
-        self.chat_output = QTextEdit()
+        self.chat_output = QPlainTextEdit()
         self.chat_output.setReadOnly(True)
+        self.chat_output.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
+        from core.chat_panel import ChatPanelModel
+        self.chat_model = ChatPanelModel()
         self.log_output = LogPane()
 
         splitter_top.addWidget(self._panel("Chat", self.chat_output))
@@ -631,7 +649,8 @@ class MainWindow(QMainWindow):
         title_row.addWidget(self.local_clear_btn)
         layout.addLayout(title_row)
 
-        self.local_output = QTextEdit()
+        self.local_output = QPlainTextEdit()
+        self.local_output.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
         self.local_output.setReadOnly(True)
         self.local_output.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
@@ -661,7 +680,7 @@ class MainWindow(QMainWindow):
             from core.local_chat_memory import load_turns
             turns = load_turns()
         except Exception as e:
-            self.local_output.append(f"(could not load local history: {e})")
+            self.local_output.appendPlainText(f"(could not load local history: {e})")
             return
         for t in turns:
             role = (t.get("role") or "user").lower()
@@ -669,7 +688,7 @@ class MainWindow(QMainWindow):
             if not content:
                 continue
             who = "You" if role == "user" else "Eche"
-            self.local_output.append(f"{who}: {content}")
+            self.local_output.appendPlainText(f"{who}: {content}")
         sb = self.local_output.verticalScrollBar()
         if sb is not None:
             sb.setValue(sb.maximum())
@@ -682,12 +701,12 @@ class MainWindow(QMainWindow):
             return
 
         self.local_input.clear()
-        self.local_output.append(f"You: {text}")
+        self.local_output.appendPlainText(f"You: {text}")
         try:
             from core.local_chat_memory import append_turn
             append_turn("user", text)
         except Exception as e:
-            self.local_output.append(f"(save user turn failed: {e})")
+            self.local_output.appendPlainText(f"(save user turn failed: {e})")
 
         self.local_send_btn.setEnabled(False)
         self.local_input.setEnabled(False)
@@ -700,18 +719,18 @@ class MainWindow(QMainWindow):
 
     def _on_local_reply(self, reply: str) -> None:
         reply = (reply or "").strip() or "(empty)"
-        self.local_output.append(f"Eche: {reply}")
+        self.local_output.appendPlainText(f"Eche: {reply}")
         try:
             from core.local_chat_memory import append_turn
             append_turn("assistant", reply)
         except Exception as e:
-            self.local_output.append(f"(save assistant turn failed: {e})")
+            self.local_output.appendPlainText(f"(save assistant turn failed: {e})")
         sb = self.local_output.verticalScrollBar()
         if sb is not None:
             sb.setValue(sb.maximum())
 
     def _on_local_err(self, err: str) -> None:
-        self.local_output.append(f"(local error: {err})")
+        self.local_output.appendPlainText(f"(local error: {err})")
 
     def _on_local_worker_done(self) -> None:
         self.local_send_btn.setEnabled(True)
@@ -723,7 +742,7 @@ class MainWindow(QMainWindow):
             from core.local_chat_memory import clear_turns
             clear_turns()
         except Exception as e:
-            self.local_output.append(f"(clear failed: {e})")
+            self.local_output.appendPlainText(f"(clear failed: {e})")
             return
         self.local_output.clear()
 
@@ -904,6 +923,11 @@ class MainWindow(QMainWindow):
         env["ECHE_RUNNING"] = "BOT"
         env["ECHE_GUI_BRIDGE"] = "1"
         env["PYTHONUNBUFFERED"] = "1"
+        env["PYTHONIOENCODING"] = "utf-8"
+        from core.gui_bridge import SENTINEL_ENV, make_sentinel, set_sentinel
+        self._bridge_sentinel = make_sentinel()
+        set_sentinel(self._bridge_sentinel)
+        env[SENTINEL_ENV] = self._bridge_sentinel
         env["ECHE_USER_ROOT"] = PROJECT_ROOT
         if not is_frozen():
             env["PYTHONPATH"] = os.pathsep.join(
@@ -941,6 +965,8 @@ class MainWindow(QMainWindow):
                 stderr=subprocess.STDOUT,
                 stdin=subprocess.PIPE,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 bufsize=1,
                 startupinfo=startupinfo,
             )
@@ -954,7 +980,9 @@ class MainWindow(QMainWindow):
 
         BOT_STARTED = True
         self.reader_thread = BotReaderThread(self.bot_process)
-        self.reader_thread.line_received.connect(self.handle_bot_output)
+        self.reader_thread.line_received.connect(
+            self.handle_bot_output, Qt.ConnectionType.QueuedConnection
+        )
         self.reader_thread.finished.connect(self._on_reader_finished)
         self.reader_thread.start()
 
@@ -1097,18 +1125,16 @@ class MainWindow(QMainWindow):
                     self._flush_traceback_buffer()
                 return
 
-            event = None
-            data = {}
-            stripped = raw.lstrip()
-            if stripped.startswith("{"):
-                try:
-                    import json
-                    obj = json.loads(stripped)
-                    if isinstance(obj, dict) and "event" in obj:
-                        event = obj.get("event")
-                        data = obj.get("data") or {}
-                except Exception:
-                    event = None
+            from core.gui_bridge import parse_bridge_line
+            token = getattr(self, "_bridge_sentinel", "") or ""
+            if token and raw.startswith(token):
+                event, data = parse_bridge_line(raw, sentinel=token)
+                if event is None:
+                    # Do not log the nonce on a malformed event line.
+                    self.append_log("[WARN] Dropped a malformed bot event line.")
+                    return
+            else:
+                event, data = None, {}
 
             if event is None:
                 self._handle_plain_line(raw)
@@ -1140,7 +1166,7 @@ class MainWindow(QMainWindow):
                     f"[INFO] Bot ready as {user}." if user else "[INFO] Bot ready."
                 )
             elif event == "chat":
-                self._append_panel(self.chat_output, data.get("text", ""))
+                self._append_chat(data.get("text", ""))
             elif event == "reasoning":
                 self.note_reasoning(
                     str(data.get("provider") or ""),
@@ -1159,10 +1185,11 @@ class MainWindow(QMainWindow):
                 # The chat pane is the conversation. The prompt stays out of it.
                 pass
             else:
-                self.append_log(raw)
+                # Unknown event type. Do not log the raw line (it carries the nonce).
+                self.append_log(f"[WARN] Unrecognized bot event: {event}")
         except Exception as e:
             try:
-                self.append_log(f"[WARN] Error handling bot output: {e}")
+                self.append_log(f"[WARN] Error handling bot output: {e!r}")
             except Exception:
                 pass
 
@@ -1206,6 +1233,22 @@ class MainWindow(QMainWindow):
         self._tb_active = False
         self._present_failure(text, log_fn=None, default_title="Code error")
 
+    def _append_chat(self, text: str):
+        """Queued-slot entry: record the line on the model, then the widget."""
+        try:
+            from core.secrets import scrub_text
+            text = scrub_text(str(text), PROJECT_ROOT)
+        except Exception:
+            text = str(text)
+        text = str(text).rstrip("\n")
+        if not text:
+            return
+        try:
+            self.chat_model.append(text)
+        except Exception:
+            pass
+        self._append_panel(self.chat_output, text)
+
     def _append_panel(self, widget, text: str):
         if widget is None or text is None:
             return
@@ -1217,11 +1260,24 @@ class MainWindow(QMainWindow):
         text = text.rstrip("\n")
         if not text:
             return
-        ts = time.strftime("%H:%M:%S")
-        widget.append(f"[{ts}] {text}")
-        sb = widget.verticalScrollBar()
-        if sb is not None:
-            sb.setValue(sb.maximum())
+        try:
+            ts = time.strftime("%H:%M:%S")
+            line = f"[{ts}] {text}"
+            # Plain text only. QTextEdit.append would interpret HTML.
+            if hasattr(widget, "appendPlainText"):
+                widget.appendPlainText(line)
+            elif hasattr(widget, "insertPlainText"):
+                current = widget.toPlainText() if hasattr(widget, "toPlainText") else ""
+                prefix = "" if (not current or current.endswith("\n")) else "\n"
+                widget.insertPlainText(prefix + line + "\n")
+            else:
+                return
+            sb = widget.verticalScrollBar()
+            if sb is not None:
+                sb.setValue(sb.maximum())
+        except Exception:
+            # A paint error must not swallow the line already stored on the model.
+            pass
 
     def _on_reader_finished(self):
         global BOT_STARTED
@@ -1345,11 +1401,19 @@ class MainWindow(QMainWindow):
             )
 
     def append_log(self, text: str):
+        text = str(text)
         try:
             from core.secrets import scrub_text
-            text = scrub_text(str(text), PROJECT_ROOT)
+            text = scrub_text(text, PROJECT_ROOT)
         except Exception:
             pass
+        try:
+            from core.gui_bridge import redact_sentinel
+            text = redact_sentinel(text)
+        except Exception:
+            token = getattr(self, "_bridge_sentinel", "") or ""
+            if token:
+                text = text.replace(token, "•" * 8)
 
         self.log_output.append_line(text)
         self._write_log_file(text)

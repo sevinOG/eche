@@ -6,6 +6,7 @@ import asyncio
 import discord
 import re
 from datetime import datetime, timedelta, timezone
+from core.chat_panel import send_visible
 
 try:
     from dateparser import parse as parse_date
@@ -222,7 +223,8 @@ class ReminderHandler:
             thread = await ensure_bot_thread(self.bot, THREAD_REMINDERS)
             if thread is None:
                 return None
-            return await thread.send(
+            return await thread.send(  # hidden reminder store, not the chat panel
+                
                 format_reminder_record(
                     reminder_id,
                     guild_id,
@@ -269,13 +271,13 @@ class ReminderHandler:
 
         from core.client import discord_chunks
         for chunk in discord_chunks(f"🔔 Reminder for {mention}: **{reminder_text}**"):
-            await channel.send(chunk)
+            await send_visible(channel, chunk)
 
         # 2) Forward the original message exactly as-is
         try:
             await original_message.forward(channel)
         except Exception:
-            await channel.send("(Could not forward original message.)")
+            await send_visible(channel, "(Could not forward original message.)")
 
         await self._drop_record(record)
         self.active_reminders.pop(reminder_id, None)
@@ -300,12 +302,12 @@ class ReminderHandler:
         if channel is not None:
             from core.client import discord_chunks
             for chunk in discord_chunks(f"🔔 Reminder for {mention}: **{data['text']}**"):
-                await channel.send(chunk)
+                await send_visible(channel, chunk)
             try:
                 original = await channel.fetch_message(data["message_id"])
                 await original.forward(channel)
             except Exception:
-                await channel.send("(Could not forward original message.)")
+                await send_visible(channel, "(Could not forward original message.)")
         await self._drop_record(record)
         self.active_reminders.pop(data["id"], None)
 

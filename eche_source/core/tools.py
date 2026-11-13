@@ -90,7 +90,7 @@ def default_tools_enabled() -> bool:
         from core.secrets import load_all
         stored = str(load_all().get("default_tools") or "").strip().lower()
     except Exception as e:
-        dprint(f"[tools] default tools toggle unreadable: {e}")
+        dprint(f"[tools] default tools toggle unreadable: {e!r}")
         stored = ""
     if not stored:
         return True
@@ -125,7 +125,7 @@ def tool_prompt_enabled(name: str) -> bool:
         from core.secrets import public_value
         stored = public_value(f"tool_{name}")
     except Exception as exc:
-        dprint(f"[tools] prompt toggle unreadable for {name}: {exc}")
+        dprint(f"[tools] prompt toggle unreadable for {name}: {exc!r}")
         return True
     return prompt_choice(stored, default=True)
 
@@ -135,7 +135,7 @@ def _asset_allowed(speaker_is_owner: bool) -> bool:
         from core.imagine import speaker_allowed
         return speaker_allowed(speaker_is_owner)
     except Exception as exc:
-        dprint(f"[tools] asset permission unreadable: {exc}")
+        dprint(f"[tools] asset permission unreadable: {exc!r}")
         return False
 
 
@@ -217,14 +217,14 @@ async def execute(name: str, arguments: dict | None, ctx: ToolContext) -> ToolRe
             if not admin_tools_enabled():
                 return ToolResult(name=tool.name, ran=False)
         except Exception as e:
-            dprint(f"[tools] admin toggle check failed for {tool.name}: {e}")
+            dprint(f"[tools] admin toggle check failed for {tool.name}: {e!r}")
             return ToolResult(name=tool.name, ran=False)
         allowed = False
         try:
             from core.admin_tools import author_is_owner
             allowed = await author_is_owner(ctx.bot, getattr(ctx.message, "author", None))
         except Exception as e:
-            dprint(f"[tools] owner check failed for {tool.name}: {e}")
+            dprint(f"[tools] owner check failed for {tool.name}: {e!r}")
             allowed = False
         if not allowed:
             return ToolResult(name=tool.name, ran=False)
@@ -235,7 +235,7 @@ async def execute(name: str, arguments: dict | None, ctx: ToolContext) -> ToolRe
             from core.admin_tools import author_is_owner
             is_owner = await author_is_owner(ctx.bot, getattr(ctx.message, "author", None))
         except Exception as exc:
-            dprint(f"[tools] asset owner check failed: {exc}")
+            dprint(f"[tools] asset owner check failed: {exc!r}")
             is_owner = False
         if not _asset_allowed(is_owner):
             from core.imagine import refusal
@@ -244,7 +244,7 @@ async def execute(name: str, arguments: dict | None, ctx: ToolContext) -> ToolRe
     try:
         result = await tool.handler(ctx, arguments or {})
     except Exception as e:
-        dprint(f"[tools] {tool.name} failed: {e}")
+        dprint(f"[tools] {tool.name} failed: {e!r}")
         return ToolResult(name=tool.name, text="I couldn't finish that.", ran=True)
 
     if result is None:

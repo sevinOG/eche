@@ -215,7 +215,7 @@ def clear_local_memory() -> int:
                     os.remove(path)
                     removed += 1
                 except OSError as exc:
-                    print(f"[memory_wipe] could not remove {path}: {exc}", flush=True)
+                    print(f"[memory_wipe] could not remove {path}: {exc!r}", flush=True)
     return removed
 
 

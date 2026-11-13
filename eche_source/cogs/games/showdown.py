@@ -1,6 +1,7 @@
 import random
 
 import discord
+from core.chat_panel import send_visible, edit_visible
 
 # One shuffled deck for the whole table. Hole cards are dealt two at a time
 # with pop(), then the board. Nothing is reused.
@@ -226,10 +227,10 @@ async def send_hole_cards(lobby, notes: list[str]) -> None:
         cards = state["cards"]
         try:
             dm = await state["member"].create_dm()
-            await dm.send(
+            await send_visible(dm, 
                 f"🃏 Your hole cards:\n**{cards[0]}  {cards[1]}**\n"
                 "The five board cards are shared by the table. These two are only yours."
-            )
+            , sender=dm.send)
         except Exception:
             notes.append(f"Could not DM {state['member'].mention}.")
 
@@ -285,15 +286,15 @@ async def run_showdown(lobby, community, pot, *, title: str, game_label: str) ->
 
     embed = discord.Embed(title=title, description="\n".join(lines), color=discord.Color.green())
     try:
-        await lobby.message.edit(embed=embed, view=None)
+        await edit_visible(lobby.message, embed=embed, view=None)
     except Exception:
         pass
     try:
-        await lobby.message.channel.send(
+        await send_visible(lobby.message.channel, 
             f"🃏 **{game_label} concluded**\n"
             f"**Winner:** {names}\n"
             f"**Pot:** {pot}"
-        )
+        , sender=lobby.message.channel.send)
     except Exception:
         pass
 

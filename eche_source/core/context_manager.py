@@ -79,7 +79,7 @@ async def ensure_context_channel(bot, guild, user_id, username=None):
         try:
             user = await bot.fetch_user(user_id)
         except Exception as e:
-            dprint(f"[context_manager] fetch_user({user_id}) failed: {e}")
+            dprint(f"[context_manager] fetch_user({user_id}) failed: {e!r}")
             user = None
 
     display_name = _display_name(member, user, username=username, user_id=user_id)
@@ -92,7 +92,7 @@ async def ensure_context_channel(bot, guild, user_id, username=None):
         user_message, note = await write_pinned(thread, USER_CONTEXT_HEADER, header)
         if user_message is None:
             print(
-                f"[context_manager] could not store context for {user_id} ({note})",
+                f"[context_manager] could not store context for {user_id} ({note!r})",
                 flush=True,
             )
             return thread, None
@@ -116,7 +116,7 @@ async def read_raw_context(bot, user_id, username=None) -> str | None:
     try:
         pinned = await fetch_live(pinned)
     except Exception as exc:
-        dprint(f"[context_manager] context fetch failed: {exc}")
+        dprint(f"[context_manager] context fetch failed: {exc!r}")
         return None
     if pinned is None:
         return None
@@ -318,7 +318,7 @@ async def update_context(bot, guild, user_id, message_text, username=None):
         from core.discord_store import edit_record
         await edit_record(pinned, new_content)
     except Exception as e:
-        print(f"[context_manager] ERROR editing pinned message for {user_id}: {e}")
+        print(f"[context_manager] ERROR editing pinned message for {user_id}: {e!r}")
 
 
 async def _compact_cloud_if_due(label: str, summary: str) -> str:
@@ -452,7 +452,7 @@ async def _stash_pin_lines(pinned, user_id: int, side: str, fallback: str) -> No
         header = USER_CONTEXT_HEADER
     written, note = await write_pinned(channel, header, body)
     if written is None:
-        dprint(f"[context_manager] could not clear recent lines on the pin: {note}")
+        dprint(f"[context_manager] could not clear recent lines on the pin: {note!r}")
 
 
 async def remember_side(bot, guild, user_id, username, text: str, *, side: str) -> None:
@@ -501,7 +501,7 @@ async def remember_side(bot, guild, user_id, username, text: str, *, side: str) 
     try:
         folded = await fold_long_memory(pinned, fallback, notes, side=side)
     except Exception as exc:
-        dprint(f"[context_manager] {side} summary failed: {exc}")
+        dprint(f"[context_manager] {side} summary failed: {exc!r}")
         folded = None
     if folded:
         clear_folded(uid, side)

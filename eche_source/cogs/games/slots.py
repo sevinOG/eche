@@ -2,6 +2,7 @@ import random
 import discord
 from discord.ui import View, Button, Select
 from cogs.games._core import register_game, release_view
+from core.chat_panel import send_visible, edit_visible
 
 
 # ---------------------------------------------------------
@@ -33,7 +34,7 @@ class SlotsGame:
             ),
             color=discord.Color.gold()
         )
-        await ctx.send(embed=embed)
+        await send_visible(ctx, embed=embed, sender=ctx.send)
 
     @staticmethod
     async def start(ctx, odds, betvalue, starting_balance, load_callback, save_callback, message):
@@ -80,7 +81,7 @@ class SlotSessionView(View):
 
         # Edit existing message — no new message
         try:
-            await self.session.message.edit(embed=embed, view=None)
+            await edit_visible(self.session.message, embed=embed, view=None)
         except:
             pass
 
@@ -194,7 +195,7 @@ class SlotSession:
         view = SlotSessionView(self)
         release_view(self.view)
         self.view = view
-        await self.message.edit(embed=embed, view=view)
+        await edit_visible(self.message, embed=embed, view=view)
 
     async def update_message(self):
         embed = self.message.embeds[0]
@@ -211,7 +212,7 @@ class SlotSession:
         embed.set_footer(text=f"Final balance: {self.balance:.2f} coins")
 
         # Replace GUI with final embed — no new message
-        await self.message.edit(embed=embed, view=None)
+        await edit_visible(self.message, embed=embed, view=None)
 
 
 # ---------------------------------------------------------

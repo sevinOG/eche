@@ -6,6 +6,7 @@ from cogs.games._core import release_view
 from core.opt_in_manager import load_opted_in, opt_in
 
 from core.home_id import home_server_id_from_env
+from core.chat_panel import send_visible, edit_visible
 
 HOME_SERVER_ID = home_server_id_from_env()
 
@@ -81,13 +82,13 @@ class StartGameButton(discord.ui.Button):
             color=discord.Color.gold()
         )
         self.parent_view.summary_embed = summary_embed
-        await self.parent_view.message.edit(embed=summary_embed)
+        await edit_visible(self.parent_view.message, embed=summary_embed)
         self.parent_view.update_message = lambda *args, **kwargs: None
 
         # The menu clock must not keep running under the game.
         release_view(self.parent_view)
         try:
-            await self.parent_view.message.edit(view=None)
+            await edit_visible(self.parent_view.message, view=None)
         except:
             pass
 
@@ -135,7 +136,7 @@ class BetGUI(discord.ui.View):
 
     async def update_message(self):
         if self.summary_embed:
-            await self.message.edit(embed=self.summary_embed, view=self)
+            await edit_visible(self.message, embed=self.summary_embed, view=self)
             return
 
         ready = self.selected_game is not None and self.selected_odds is not None
@@ -152,11 +153,11 @@ class BetGUI(discord.ui.View):
             ),
             color=discord.Color.gold()
         )
-        await self.message.edit(embed=embed, view=self)
+        await edit_visible(self.message, embed=embed, view=self)
 
     async def on_timeout(self):
         try:
-            await self.message.edit(view=None)
+            await edit_visible(self.message, view=None)
         except:
             pass
 
@@ -223,7 +224,7 @@ class Bet(commands.Cog):
     async def bet(self, ctx, betvalue=None):
         newly_opted = await opt_in(self.bot, ctx.author)
         if newly_opted:
-            await ctx.send("🎉 You've been automatically opted into the economy system.")
+            await send_visible(ctx, "🎉 You've been automatically opted into the economy system.")
 
         balance, first_time = await self.load_balance(ctx.author)
 
@@ -234,23 +235,21 @@ class Bet(commands.Cog):
         if balance == 0:
             balance = -1.00
             await self.save_balance(ctx.author, balance)
-            await ctx.send(
-                "⚠ Your balance was 0, so you've been moved into negative mode.\n"
-                "You may now bet up to 70 coins."
-            )
+            await send_visible(ctx, "⚠ Your balance was 0, so you've been moved into negative mode.\n"
+                "You may now bet up to 70 coins.")
 
         if betvalue is None:
             betvalue = 500
         else:
             if not betvalue.isdigit():
-                return await ctx.send("❌ Bet amount must be a number.")
+                return await send_visible(ctx, "❌ Bet amount must be a number.")
             betvalue = int(betvalue)
 
         if balance >= 0 and betvalue > balance:
-            return await ctx.send("❌ You cannot bet more than your balance.")
+            return await send_visible(ctx, "❌ You cannot bet more than your balance.")
 
         if balance < 0 and betvalue > 70:
-            return await ctx.send("❌ When below 0, max bet is **70**.")
+            return await send_visible(ctx, "❌ When below 0, max bet is **70**.")
 
         view = BetGUI(ctx, betvalue, balance, self.save_balance)
 
@@ -265,7 +264,7 @@ class Bet(commands.Cog):
             color=discord.Color.gold()
         )
 
-        msg = await ctx.send(embed=embed, view=view)
+        msg = await send_visible(ctx, embed=embed, view=view)
         view.message = msg
 
 

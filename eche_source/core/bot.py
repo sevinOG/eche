@@ -244,7 +244,7 @@ class Eche(commands.Bot):
             from cogs.music.music_queue_storage import ensure_queue_message
             await ensure_queue_message(self)
         except Exception as exc:
-            print(f">>> music queue thread: {exc}")
+            print(f">>> music queue thread: {exc!r}")
 
     # ---------------------------------------------------------
     # ⭐ GLOBAL BOT/BOT INTERACTION CHECK
@@ -283,7 +283,8 @@ class Eche(commands.Bot):
             return
         if isinstance(error, commands.NotOwner):
             try:
-                await ctx.send("Only an owner from Settings → Security can use that command.")
+                from core.chat_panel import send_visible
+                await send_visible(ctx, "Only an owner from Settings → Security can use that command.")
             except Exception:
                 pass
             return
@@ -294,8 +295,9 @@ class Eche(commands.Bot):
             from core.client import discord_chunks
 
             parts = discord_chunks(f"Error: {error}") or ["Error."]
+            from core.chat_panel import send_visible
             for part in parts:
-                await ctx.send(part)
+                await send_visible(ctx, part)
         except Exception:
             pass
 
@@ -311,7 +313,7 @@ class Eche(commands.Bot):
             if is_enabled():
                 attach(self)
         except Exception as e:
-            print(f">>> gui_bridge attach skipped: {e}")
+            print(f">>> gui_bridge attach skipped: {e!r}")
 
         # Load each extension independently so one missing optional dep
         # (yt_dlp, dateparser, …) cannot abort the whole bot on a flash-drive copy.
@@ -347,7 +349,7 @@ class Eche(commands.Bot):
                 print(f">>> loaded: {ext}")
             except Exception as e:
                 failed.append(f"{ext}: {e}")
-                print(f">>> FAILED to load {ext}: {e}")
+                print(f">>> FAILED to load {ext}: {e!r}")
                 try:
                     from core.gui_bridge import log
                     log(f"Cog load failed (bot continues): {ext} — {e}", channel="bot")
@@ -360,7 +362,7 @@ class Eche(commands.Bot):
             print(">>> imported: cogs.poker.poker")
         except Exception as e:
             failed.append(f"cogs.poker.poker: {e}")
-            print(f">>> FAILED poker import: {e}")
+            print(f">>> FAILED poker import: {e!r}")
 
         print(f">>> setup_hook: {loaded}/{len(extensions)} extensions loaded")
         if failed:

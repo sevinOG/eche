@@ -540,7 +540,7 @@ async def recent_user_lines(message, limit: int = 12, author_id: int | None = No
             name = getattr(author, "name", None) or "user"
             found.append((name, text))
     except Exception as exc:
-        dprint(f"[tools] thread history failed: {exc}")
+        dprint(f"[tools] thread history failed: {exc!r}")
         return []
     found.reverse()
     return found
@@ -563,7 +563,7 @@ async def previous_topic(message) -> str:
             if text:
                 return text
     except Exception as exc:
-        dprint(f"[tools] thread previous failed: {exc}")
+        dprint(f"[tools] thread previous failed: {exc!r}")
         return ""
     return ""
 
@@ -835,7 +835,7 @@ async def _name_and_plan(brief: str, source: str) -> tuple[str, str, list[str]]:
                 job="plan",
             )
         except Exception as exc:
-            dprint(f"[tools] thread name failed: {exc}")
+            dprint(f"[tools] thread name failed: {exc!r}")
             return title, plan, []
         if turn.quota or backend_error_text(turn.reply):
             return title, plan, []
@@ -857,7 +857,7 @@ async def _run_planned_lookup(ctx: ToolContext, query: str) -> str:
     try:
         result = await execute("duckduckgo", {"query": query}, ctx)
     except Exception as exc:
-        dprint(f"[tools] thread lookup failed: {exc}")
+        dprint(f"[tools] thread lookup failed: {exc!r}")
         return ""
     return _lookup_note(query, getattr(result, "text", "") or "")
 
@@ -906,7 +906,7 @@ async def _execute(
                 job="search",
             )
         except Exception as exc:
-            dprint(f"[tools] thread search round failed: {exc}")
+            dprint(f"[tools] thread search round failed: {exc!r}")
             turn = None
         if turn is not None and (turn.quota or backend_error_text(turn.reply)):
             dprint(f"[tools] thread search stopped: {(turn.reply or '')[:160]!r}")
@@ -934,7 +934,7 @@ async def _execute(
                 job="execute",
             )
         except Exception as exc:
-            dprint(f"[tools] thread fill failed: {exc}")
+            dprint(f"[tools] thread fill failed: {exc!r}")
             break
         if turn.quota or backend_error_text(turn.reply):
             dprint(f"[tools] thread fill stopped: {(turn.reply or '')[:160]!r}")
@@ -955,17 +955,19 @@ async def _execute(
             # A thread post is checked before it is sent. The thread stops here.
             note("thread post")
             try:
-                await thread.send(REFUSAL)
+                from core.chat_panel import send_visible
+                await send_visible(thread, REFUSAL)
                 posted.append(REFUSAL)
             except Exception as exc:
-                dprint(f"[tools] thread refusal failed: {exc}")
+                dprint(f"[tools] thread refusal failed: {exc!r}")
             break
         stopped = False
         for chunk in discord_chunks(body):
             try:
-                await thread.send(chunk)
+                from core.chat_panel import send_visible
+                await send_visible(thread, chunk)
             except Exception as exc:
-                dprint(f"[tools] thread send failed: {exc}")
+                dprint(f"[tools] thread send failed: {exc!r}")
                 stopped = True
                 break
             posted.append(chunk)
@@ -982,14 +984,17 @@ async def _send_asset(channel, result, caption: str) -> None:
     from core.tools_asset import asset_text
 
     if isinstance(result, str):
-        await channel.send(
+        from core.chat_panel import send_visible
+        await send_visible(
+            channel,
             asset_text(
                 f"{caption}\nThe file is too big to attach. It is here for a short time:\n{result}"
-            )
+            ),
         )
         return
     file = discord.File(io.BytesIO(result.data), filename=result.filename)
-    await channel.send(content=asset_text(caption), file=file)
+    from core.chat_panel import send_visible
+    await send_visible(channel, asset_text(caption), file=file)
 
 
 async def _render_assets(ctx: ToolContext, thread, plan: str, source: str, kind: str) -> str:
@@ -1001,14 +1006,16 @@ async def _render_assets(ctx: ToolContext, thread, plan: str, source: str, kind:
     ok, why = await _allowed(ctx)
     if not ok:
         try:
-            await thread.send(why)
+            from core.chat_panel import send_visible
+            await send_visible(thread, why)
         except Exception as exc:
             dprint(f"[tools] thread asset refusal failed: {type(exc).__name__}")
         return why
     if not api_key():
         note = "Add a Grok API key in Media settings."
         try:
-            await thread.send(note)
+            from core.chat_panel import send_visible
+            await send_visible(thread, note)
         except Exception as exc:
             dprint(f"[tools] thread asset key note failed: {type(exc).__name__}")
         return note
@@ -1016,7 +1023,8 @@ async def _render_assets(ctx: ToolContext, thread, plan: str, source: str, kind:
     if not shots:
         note = "Say what to make."
         try:
-            await thread.send(note)
+            from core.chat_panel import send_visible
+            await send_visible(thread, note)
         except Exception as exc:
             dprint(f"[tools] thread asset prompt note failed: {type(exc).__name__}")
         return note
@@ -1026,7 +1034,8 @@ async def _render_assets(ctx: ToolContext, thread, plan: str, source: str, kind:
             attached = await source_from_message(ctx.message)
         except ImagineError as exc:
             try:
-                await thread.send(asset_text(exc.text))
+                from core.chat_panel import send_visible
+                await send_visible(thread, asset_text(exc.text))
             except Exception as send_exc:
                 dprint(f"[tools] thread asset source failed: {type(send_exc).__name__}")
             return exc.text
@@ -1037,7 +1046,8 @@ async def _render_assets(ctx: ToolContext, thread, plan: str, source: str, kind:
             result = await run_asset(made, api_key())
         except ImagineError as exc:
             try:
-                await thread.send(asset_text(exc.text))
+                from core.chat_panel import send_visible
+                await send_visible(thread, asset_text(exc.text))
             except Exception as send_exc:
                 dprint(f"[tools] thread asset error failed: {type(send_exc).__name__}")
             posted.append(exc.text)
@@ -1046,7 +1056,8 @@ async def _render_assets(ctx: ToolContext, thread, plan: str, source: str, kind:
             dprint(f"[tools] thread asset failed: {type(exc).__name__}")
             note = "I couldn't make that."
             try:
-                await thread.send(asset_text(note))
+                from core.chat_panel import send_visible
+                await send_visible(thread, asset_text(note))
             except Exception as send_exc:
                 dprint(f"[tools] thread asset error failed: {type(send_exc).__name__}")
             posted.append(note)
@@ -1118,9 +1129,10 @@ async def open_thread(ctx: ToolContext, arguments: dict) -> ToolResult:
             )
 
     try:
-        await thread.send(announcement("thread"))
+        from core.chat_panel import send_visible
+        await send_visible(thread, announcement("thread"))
     except Exception as exc:
-        dprint(f"[tools] thread announcement failed: {exc}")
+        dprint(f"[tools] thread announcement failed: {exc!r}")
         return ToolResult(
             text="I opened the thread, but I couldn't post in it.",
             fence=False,
@@ -1134,9 +1146,10 @@ async def open_thread(ctx: ToolContext, arguments: dict) -> ToolResult:
     if not body:
         note = "I opened the thread, but I had nothing more to add." if opened else "I had nothing more to add."
         try:
-            await thread.send(note)
+            from core.chat_panel import send_visible
+            await send_visible(thread, note)
         except Exception as exc:
-            dprint(f"[tools] thread empty note failed: {exc}")
+            dprint(f"[tools] thread empty note failed: {exc!r}")
         return ToolResult(text=note, fence=False, quiet=True, detail=detail)
     return ToolResult(text=body, fence=False, quiet=True, detail=detail)
 

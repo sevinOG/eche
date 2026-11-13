@@ -3,6 +3,7 @@
 import discord
 from discord.ext import commands
 from discord.ui import View, Button
+from core.chat_panel import send_visible, edit_visible
 
 # ---------------------------------------------------------
 # COGS TO HIDE FROM HELP
@@ -28,29 +29,27 @@ class HelpView(View):
 
     async def on_timeout(self):
         try:
-            await self.message.edit(
-                content=f"{self.ctx.author.display_name} used ?help",
+            await edit_visible(self.message, content=f"{self.ctx.author.display_name} used ?help",
                 embed=None,
-                view=None
-            )
+                view=None)
         except:
             pass
 
     @discord.ui.button(label="◀️ Back", style=discord.ButtonStyle.secondary)
     async def back(self, interaction: discord.Interaction, button: Button):
         if interaction.user.id != self.ctx.author.id:
-            return await interaction.response.send_message("Not your help menu.", ephemeral=True)
+            return await send_visible(interaction, "Not your help menu.", ephemeral=True, sender=interaction.response.send_message)
 
         self.index = (self.index - 1) % len(self.pages)
-        await interaction.response.edit_message(embed=self.pages[self.index], view=self)
+        await edit_visible(interaction.response, embed=self.pages[self.index], view=self)
 
     @discord.ui.button(label="Next ▶️", style=discord.ButtonStyle.secondary)
     async def next(self, interaction: discord.Interaction, button: Button):
         if interaction.user.id != self.ctx.author.id:
-            return await interaction.response.send_message("Not your help menu.", ephemeral=True)
+            return await send_visible(interaction, "Not your help menu.", ephemeral=True, sender=interaction.response.send_message)
 
         self.index = (self.index + 1) % len(self.pages)
-        await interaction.response.edit_message(embed=self.pages[self.index], view=self)
+        await edit_visible(interaction.response, embed=self.pages[self.index], view=self)
 
 
 # ---------------------------------------------------------
@@ -113,10 +112,10 @@ class HelpCog(commands.Cog):
             pages.append(embed)
 
         if not pages:
-            return await ctx.send("No commands found.")
+            return await send_visible(ctx, "No commands found.")
 
         view = HelpView(pages, ctx)
-        msg = await ctx.send(embed=pages[0], view=view)
+        msg = await send_visible(ctx, embed=pages[0], view=view)
         view.message = msg
 
 

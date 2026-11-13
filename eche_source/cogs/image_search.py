@@ -8,6 +8,7 @@ from discord.ext import commands
 from discord.ui import View, Button, Modal, TextInput
 
 from core.debuglog import dprint
+from core.chat_panel import send_visible, edit_visible
 
 dprint(">>> [image_search] Module imported")
 
@@ -39,19 +40,17 @@ class SearchModal(Modal, title="Image Search"):
     async def on_submit(self, interaction: discord.Interaction):
         query = self.query_input.value.strip()
         if not query:
-            await interaction.response.send_message("Query cannot be empty.", ephemeral=True)
+            await send_visible(interaction, "Query cannot be empty.", ephemeral=True, sender=interaction.response.send_message)
             return
 
-        dprint(f">>> [SearchModal] New/updated query: {query}")
+        dprint(f">>> [SearchModal] New/updated query: {query!r}")
 
         try:
             results = await self.navigator.cog.unsplash_multi(query)
         except Exception as e:
-            dprint(f">>> [SearchModal] Search failed: {e}")
-            await interaction.response.send_message(
-                "Could not reach Unsplash right now. Please try again in a moment.",
-                ephemeral=True
-            )
+            dprint(f">>> [SearchModal] Search failed: {e!r}")
+            await send_visible(interaction, "Could not reach Unsplash right now. Please try again in a moment.",
+                ephemeral=True, sender=interaction.response.send_message)
             return
 
         self.navigator.results = results or []
@@ -59,7 +58,7 @@ class SearchModal(Modal, title="Image Search"):
         self.navigator.index = 0
 
         embed = self.navigator.build_embed()
-        await interaction.response.edit_message(embed=embed, view=self.navigator)
+        await edit_visible(interaction.response, embed=embed, view=self.navigator)
 
 
 # =========================================================
@@ -77,10 +76,8 @@ class ImageNavigator(View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.author_id:
-            await interaction.response.send_message(
-                "Only the person who ran the command can use these buttons.",
-                ephemeral=True
-            )
+            await send_visible(interaction, "Only the person who ran the command can use these buttons.",
+                ephemeral=True, sender=interaction.response.send_message)
             return False
         return True
 
@@ -111,7 +108,7 @@ class ImageNavigator(View):
 
     async def update(self, interaction: discord.Interaction):
         embed = self.build_embed()
-        await interaction.response.edit_message(embed=embed, view=self)
+        await edit_visible(interaction.response, embed=embed, view=self)
 
     async def on_timeout(self):
         dprint(">>> [ImageNavigator] Timeout reached — disabling buttons")
@@ -122,27 +119,27 @@ class ImageNavigator(View):
 
         try:
             if self.message:
-                await self.message.edit(view=self)
+                await edit_visible(self.message, view=self)
         except Exception as e:
-            dprint(f">>> [ImageNavigator] Timeout edit failed: {e}")
+            dprint(f">>> [ImageNavigator] Timeout edit failed: {e!r}")
 
     # All buttons on the SAME row (row=0)
     @discord.ui.button(label="◀️", style=discord.ButtonStyle.secondary, row=0)
     async def last_button(self, interaction: discord.Interaction, button: Button):
         if not self.results:
-            await interaction.response.send_message("No results yet. Use 🔍 first.", ephemeral=True)
+            await send_visible(interaction, "No results yet. Use 🔍 first.", ephemeral=True, sender=interaction.response.send_message)
             return
 
         if self.index > 0:
             self.index -= 1
             await self.update(interaction)
         else:
-            await interaction.response.send_message("Already at the first image.", ephemeral=True)
+            await send_visible(interaction, "Already at the first image.", ephemeral=True, sender=interaction.response.send_message)
 
     @discord.ui.button(label="🔀", style=discord.ButtonStyle.primary, row=0)
     async def random_button(self, interaction: discord.Interaction, button: Button):
         if not self.results:
-            await interaction.response.send_message("No results yet. Use 🔍 first.", ephemeral=True)
+            await send_visible(interaction, "No results yet. Use 🔍 first.", ephemeral=True, sender=interaction.response.send_message)
             return
 
         self.index = random.randint(0, len(self.results) - 1)
@@ -151,14 +148,14 @@ class ImageNavigator(View):
     @discord.ui.button(label="▶️", style=discord.ButtonStyle.secondary, row=0)
     async def next_button(self, interaction: discord.Interaction, button: Button):
         if not self.results:
-            await interaction.response.send_message("No results yet. Use 🔍 first.", ephemeral=True)
+            await send_visible(interaction, "No results yet. Use 🔍 first.", ephemeral=True, sender=interaction.response.send_message)
             return
 
         if self.index < len(self.results) - 1:
             self.index += 1
             await self.update(interaction)
         else:
-            await interaction.response.send_message("Already at the last image.", ephemeral=True)
+            await send_visible(interaction, "Already at the last image.", ephemeral=True, sender=interaction.response.send_message)
 
     @discord.ui.button(label="🔍", style=discord.ButtonStyle.success, row=0)
     async def search_button(self, interaction: discord.Interaction, button: Button):
@@ -175,7 +172,7 @@ class ImageSearch(commands.Cog):
         dprint(">>> [ImageSearch] Cog initialized")
 
     async def unsplash_multi(self, query: str, count=10):
-        dprint(f">>> [unsplash_multi] Searching for: {query}")
+        dprint(f">>> [unsplash_multi] Searching for: {query!r}")
 
         if not UNSPLASH_ACCESS:
             dprint(">>> [unsplash_multi] ERROR: Missing UNSPLASH_ACCESS")
@@ -197,11 +194,11 @@ class ImageSearch(commands.Cog):
                     dprint(f">>> [unsplash_multi] Status: {resp.status}")
                     if resp.status != 200:
                         text = await resp.text()
-                        dprint(f">>> [unsplash_multi] ERROR BODY: {text}")
+                        dprint(f">>> [unsplash_multi] ERROR BODY: {text!r}")
                         return None
                     data = await resp.json()
         except Exception as e:
-            dprint(f">>> [unsplash_multi] Connection error: {e}")
+            dprint(f">>> [unsplash_multi] Connection error: {e!r}")
             raise
 
         results = data.get("results", [])
@@ -210,17 +207,17 @@ class ImageSearch(commands.Cog):
 
     @commands.command(name="image")
     async def image(self, ctx, *, query: str = None):
-        dprint(f">>> [image] Triggered by {ctx.author} | Query: {query}")
+        dprint(f">>> [image] Triggered by {ctx.author} | Query: {query!r}")
 
         if query:
             try:
                 results = await self.unsplash_multi(query)
             except Exception:
-                await ctx.send("Could not reach Unsplash right now. Please try again in a moment.")
+                await send_visible(ctx, "Could not reach Unsplash right now. Please try again in a moment.")
                 return
 
             if not results:
-                await ctx.send("No images found.")
+                await send_visible(ctx, "No images found.")
                 return
         else:
             results = []
@@ -229,7 +226,7 @@ class ImageSearch(commands.Cog):
         view = ImageNavigator(self, results, query, author_id=ctx.author.id, index=0)
         embed = view.build_embed()
 
-        msg = await ctx.send(embed=embed, view=view)
+        msg = await send_visible(ctx, embed=embed, view=view)
         view.message = msg
 
 

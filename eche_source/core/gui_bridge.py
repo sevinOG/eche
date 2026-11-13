@@ -13,14 +13,26 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import secrets
 import sys
 import threading
-from typing import Any, Optional
+from typing import Any, Optional, Tuple
+
+# Per-process nonce. The GUI creates it and passes it to the bot in this
+# environment variable. emit() prefixes every event line with it. The
+# parser accepts a line only when it starts with that exact value. Never
+# log this value.
+SENTINEL_ENV = "ECHE_GUI_SENTINEL"
 
 _bot = None
 _loop: Optional[asyncio.AbstractEventLoop] = None
 _enabled = False
 _reasoning_handler = None
+_emit_lock = threading.RLock()
+_sentinel: Optional[str] = None
+_writers_installed = False
+_orig_print = None
 
 
 def is_enabled() -> bool:
@@ -31,9 +43,170 @@ def is_enabled() -> bool:
     )
 
 
+def make_sentinel() -> str:
+    """A fresh per-process nonce. Call from the GUI before spawning the bot."""
+    return "ECHE" + secrets.token_hex(16)
+
+
+def set_sentinel(value: str) -> None:
+    """Install the nonce for this process. Do not log `value`."""
+    global _sentinel
+    _sentinel = str(value or "")
+    os.environ.pop(SENTINEL_ENV, None)
+
+
+def get_sentinel() -> str:
+    """The nonce for this process, or '' if the GUI did not provide one.
+
+    After the first read, the value is cached and ECHE_GUI_SENTINEL is
+    removed from os.environ so later child processes do not inherit it.
+    """
+    global _sentinel
+    if _sentinel is None:
+        _sentinel = os.environ.get(SENTINEL_ENV, "") or ""
+    os.environ.pop(SENTINEL_ENV, None)
+    return _sentinel
+
+
+def reset_sentinel() -> None:
+    """Test helper: forget a cached nonce so the next get_sentinel() rereads env."""
+    global _sentinel
+    _sentinel = None
+    os.environ.pop(SENTINEL_ENV, None)
+
+
+def child_environ(env=None) -> dict:
+    """Copy of env (or os.environ) with the GUI sentinel removed."""
+    out = dict(os.environ if env is None else env)
+    out.pop(SENTINEL_ENV, None)
+    return out
+
+
+def redact_sentinel(text: str) -> str:
+    """Replace the cached nonce in text. Never log the nonce itself."""
+    raw = "" if text is None else str(text)
+    token = get_sentinel()
+    if not token or token not in raw:
+        return raw
+    return raw.replace(token, "•" * 8)
+
+
+class _LockedStream:
+    """Proxy that holds the emit lock around write/flush, including .buffer."""
+
+    def __init__(self, inner, lock):
+        object.__setattr__(self, "_inner", inner)
+        object.__setattr__(self, "_lock", lock)
+
+    def write(self, data):
+        with self._lock:
+            return self._inner.write(data)
+
+    def flush(self):
+        with self._lock:
+            return self._inner.flush()
+
+    def reconfigure(self, *args, **kwargs):
+        with self._lock:
+            return self._inner.reconfigure(*args, **kwargs)
+
+    @property
+    def buffer(self):
+        buf = getattr(self._inner, "buffer", None)
+        if buf is None:
+            raise AttributeError("buffer")
+        return _LockedStream(buf, self._lock)
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+_child_filter_installed = False
+
+
+def install_child_env_filter() -> None:
+    """Drop the GUI sentinel from every subprocess env, including ffmpeg."""
+    global _child_filter_installed
+    if _child_filter_installed:
+        return
+    import subprocess
+    import asyncio
+
+    orig_popen = subprocess.Popen
+
+    class _FilteredPopen(orig_popen):
+        def __init__(self, *args, **kwargs):
+            kwargs["env"] = child_environ(kwargs.get("env"))
+            super().__init__(*args, **kwargs)
+
+    subprocess.Popen = _FilteredPopen
+
+    orig_exec = asyncio.create_subprocess_exec
+    orig_shell = asyncio.create_subprocess_shell
+
+    async def _filtered_exec(*args, **kwargs):
+        kwargs["env"] = child_environ(kwargs.get("env"))
+        return await orig_exec(*args, **kwargs)
+
+    async def _filtered_shell(*args, **kwargs):
+        kwargs["env"] = child_environ(kwargs.get("env"))
+        return await orig_shell(*args, **kwargs)
+
+    asyncio.create_subprocess_exec = _filtered_exec
+    asyncio.create_subprocess_shell = _filtered_shell
+    _child_filter_installed = True
+
+
+def install_locked_writers() -> None:
+    """Serialize print/dprint/sys.stdout with the same lock emit() uses."""
+    global _writers_installed, _orig_print
+    if _writers_installed:
+        return
+    import builtins
+
+    if not isinstance(sys.stdout, _LockedStream):
+        sys.stdout = _LockedStream(sys.stdout, _emit_lock)
+    if not isinstance(sys.stderr, _LockedStream):
+        sys.stderr = _LockedStream(sys.stderr, _emit_lock)
+    if _orig_print is None:
+        _orig_print = builtins.print
+
+        def _locked_print(*args, **kwargs):
+            with _emit_lock:
+                return _orig_print(*args, **kwargs)
+
+        builtins.print = _locked_print
+    _writers_installed = True
+
+
+def configure_stdio() -> None:
+    """Use UTF-8 for the GUI pipe. A Windows cp1252 stdout would drop emoji
+    and typical model punctuation when emit() writes a chat line."""
+    get_sentinel()
+    install_child_env_filter()
+    for stream in (sys.stdout, sys.stderr, sys.stdin):
+        inner = getattr(stream, "_inner", stream)
+        reconfigure = getattr(inner, "reconfigure", None) or getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        kwargs = {"encoding": "utf-8", "errors": "replace"}
+        if stream is not sys.stdin and inner is not sys.stdin:
+            kwargs["line_buffering"] = True
+        try:
+            reconfigure(**kwargs)
+        except Exception:
+            kwargs.pop("line_buffering", None)
+            try:
+                reconfigure(**kwargs)
+            except Exception:
+                pass
+    install_locked_writers()
+
+
 def enable() -> None:
     global _enabled
     _enabled = True
+    configure_stdio()
 
 
 def set_reasoning_handler(handler) -> None:
@@ -46,11 +219,61 @@ def emit(event: str, data: Optional[dict[str, Any]] = None) -> None:
     if not _enabled and not is_enabled():
         return
     payload = {"event": event, "data": data or {}}
+    body = json.dumps(payload, ensure_ascii=False)
+    token = get_sentinel()
+    line = (token + body if token else body) + "\n"
+    with _emit_lock:
+        try:
+            sys.stdout.write(line)
+            sys.stdout.flush()
+            return
+        except Exception:
+            pass
+        # A non-UTF-8 text stdout (common on Windows) raises on emoji or dashes.
+        # Write the same line as UTF-8 bytes so the GUI reader can still parse it.
+        try:
+            buf = getattr(sys.stdout, "buffer", None)
+            if buf is None:
+                return
+            buf.write(line.encode("utf-8", errors="replace"))
+            buf.flush()
+        except Exception:
+            pass
+
+
+def parse_bridge_line(
+    raw: str, sentinel: Optional[str] = None
+) -> Tuple[Optional[str], dict[str, Any]]:
+    """Parse one stdout line from the bot process.
+
+    A line is an event only when it starts, at column 0, with the per-process
+    sentinel that emit() prefixes, followed by one JSON object whose first
+    key is event. Leading spaces are not stripped before the sentinel check,
+    so a log print that smuggles a newline plus '{"event"' cannot pass.
+    """
+    text = "" if raw is None else str(raw).rstrip("\r\n")
+    token = sentinel if sentinel is not None else get_sentinel()
+    if not token or not text.startswith(token):
+        return None, {}
+    payload = text[len(token):]
+    if not payload.startswith('{"event"'):
+        return None, {}
+    obj = None
     try:
-        sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
-        sys.stdout.flush()
+        obj = json.loads(payload)
     except Exception:
-        pass
+        try:
+            obj, end = json.JSONDecoder().raw_decode(payload)
+        except Exception:
+            return None, {}
+        if payload[end:].strip():
+            return None, {}
+    if isinstance(obj, dict) and "event" in obj:
+        data = obj.get("data") or {}
+        if not isinstance(data, dict):
+            data = {}
+        return obj.get("event"), data
+    return None, {}
 
 
 def log(message: str, channel: str = "global") -> None:
@@ -208,7 +431,8 @@ async def _announce(bot, text: str) -> None:
         log("ANNOUNCE failed: no sendable channel", channel="bridge")
         return
     try:
-        await channel.send(text)
+        from core.chat_panel import send_visible
+        await send_visible(channel, text)
         log(f"Announced: {text}", channel="bridge")
     except Exception as e:
         log(f"ANNOUNCE failed: {e}", channel="bridge")
@@ -335,6 +559,7 @@ def attach(bot) -> None:
     global _bot, _loop, _enabled
     _bot = bot
     _enabled = True
+    configure_stdio()
 
     try:
         _loop = asyncio.get_running_loop()

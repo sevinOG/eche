@@ -6,6 +6,7 @@ from discord.ext import commands
 from cogs.economy.bank import Bank
 from core.client import call_groq_simple  # <-- IMPORTANT
 from .hbuilder import build_heckle_prompt
+from core.chat_panel import send_visible
 
 
 class Heckle(commands.Cog):
@@ -18,31 +19,29 @@ class Heckle(commands.Cog):
 
         # Validate args
         if target is None or amount is None:
-            return await ctx.send("Usage: `?heckle @user amount`")
+            return await send_visible(ctx, "Usage: `?heckle @user amount`")
 
         if target.id == ctx.author.id:
-            return await ctx.send("❌ You can't heckle yourself.")
+            return await send_visible(ctx, "❌ You can't heckle yourself.")
 
         if target.bot:
-            return await ctx.send("❌ You can't heckle bots.")
+            return await send_visible(ctx, "❌ You can't heckle bots.")
 
         # Validate amount
         try:
             amount = float(amount)
         except:
-            return await ctx.send("❌ Amount must be a number.")
+            return await send_visible(ctx, "❌ Amount must be a number.")
 
         if amount <= 0:
-            return await ctx.send("❌ Amount must be greater than 0.")
+            return await send_visible(ctx, "❌ Amount must be greater than 0.")
 
         # Load balances
         attacker_bal = await self.bank.load_bank(ctx.author)
 
         if attacker_bal < amount:
-            return await ctx.send(
-                f"❌ <@{ctx.author.id}> you need **{amount} coins** to hire a heckler, "
-                f"but you only have **{attacker_bal}**."
-            )
+            return await send_visible(ctx, f"❌ <@{ctx.author.id}> you need **{amount} coins** to hire a heckler, "
+                f"but you only have **{attacker_bal}**.")
 
         # Deduct fee
         attacker_bal -= amount
@@ -59,17 +58,17 @@ class Heckle(commands.Cog):
             heckle_text = await call_groq_simple(prompt, max_chars=budget)
         except Exception as e:
             for chunk in discord_chunks(f"❌ Groq error: {e}") or ["❌ Groq error."]:
-                await ctx.send(chunk)
+                await send_visible(ctx, chunk)
             return
 
         if isinstance(heckle_text, tuple):
             detail = heckle_text[1] if len(heckle_text) > 1 else "Heckle failed."
             for chunk in discord_chunks(f"❌ {detail}") or ["❌ Heckle failed."]:
-                await ctx.send(chunk)
+                await send_visible(ctx, chunk)
             return
 
         for chunk in discord_chunks(prefix + (heckle_text or "").strip()):
-            await ctx.send(chunk)
+            await send_visible(ctx, chunk)
 
 
 async def setup(bot):

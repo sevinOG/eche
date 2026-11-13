@@ -3,6 +3,7 @@ from discord.ext import commands
 
 from cogs.games._core import release_view
 from .showdown import do_holdem, prepare_table, send_hole_cards, table_text
+from core.chat_panel import edit_visible
 
 
 class HoldemGame:
@@ -29,7 +30,7 @@ class HoldemGame:
 
         view = HoldemLobbyView(ctx, betvalue, load_callback, save_callback, message)
 
-        await message.edit(embed=embed, view=view)
+        await edit_visible(message, embed=embed, view=view)
 
 
 # ---------------------------------------------------------
@@ -110,7 +111,7 @@ class HoldemLobbyView(discord.ui.View):
             description=desc,
             color=discord.Color.purple()
         )
-        await self.message.edit(embed=embed, view=self)
+        await edit_visible(self.message, embed=embed, view=self)
 
     async def on_timeout(self):
         if not self.started:
@@ -123,14 +124,14 @@ class HoldemLobbyView(discord.ui.View):
         release_view(self)
 
         try:
-            await self.message.edit(view=None)
+            await edit_visible(self.message, view=None)
         except Exception:
             pass
 
         try:
             community, pot, notes = await prepare_table(self)
         except Exception as exc:
-            await self.message.edit(
+            await edit_visible(self.message, 
                 embed=discord.Embed(
                     title="🃏 Hold'em",
                     description=f"The deal failed: {exc}",
@@ -139,7 +140,7 @@ class HoldemLobbyView(discord.ui.View):
             )
             return
         if community is None:
-            await self.message.edit(
+            await edit_visible(self.message, 
                 embed=discord.Embed(
                     title="🃏 Hold'em",
                     description="\n".join(notes) or "The table could not start.",
@@ -160,7 +161,7 @@ class HoldemLobbyView(discord.ui.View):
             ),
             color=discord.Color.deep_red(),
         )
-        await self.message.edit(embed=table_embed)
+        await edit_visible(self.message, embed=table_embed)
         await do_holdem(self, community, pot)
 
 

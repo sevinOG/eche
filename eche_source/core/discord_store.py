@@ -199,7 +199,7 @@ async def fetch_live(message):
     try:
         fresh = await channel.fetch_message(mid)
     except discord.NotFound as exc:
-        dprint(f"[discord_store] fetch failed: {exc}")
+        dprint(f"[discord_store] fetch failed: {exc!r}")
         forget_record(message)
         parent_id = getattr(channel, "id", None)
         if parent_id:
@@ -233,7 +233,7 @@ async def refresh_record(message):
     try:
         fresh = await channel.fetch_message(mid)
     except Exception as exc:
-        dprint(f"[discord_store] refresh failed: {exc}")
+        dprint(f"[discord_store] refresh failed: {exc!r}")
         return message
     content = getattr(fresh, "content", "") or ""
     for held in (message, fresh):
@@ -404,7 +404,7 @@ async def find_record(parent, header: str, allow_history: bool = True):
                 remember_record(parent_id, message)
                 return message
     except Exception as exc:
-        dprint(f"[discord_store] history scan failed: {exc}")
+        dprint(f"[discord_store] history scan failed: {exc!r}")
         return None
     _missing.add((parent_id, header))
     return None
@@ -453,7 +453,7 @@ async def _ensure_category_locked(guild):
             reason="Eche bot memory",
         )
     except Exception as exc:
-        dprint(f"[discord_store] could not create category: {exc}")
+        dprint(f"[discord_store] could not create category: {exc!r}")
         return None
     dprint(f"[discord_store] created category {CATEGORY_NAME}")
     return category
@@ -471,7 +471,7 @@ async def _ensure_text_channel_locked(category, name: str, reason: str):
             **({"overwrites": overwrites} if overwrites else {}),
         )
     except Exception as exc:
-        dprint(f"[discord_store] could not create #{name}: {exc}")
+        dprint(f"[discord_store] could not create #{name}: {exc!r}")
         return None
     dprint(f"[discord_store] created #{name}")
     return channel
@@ -512,7 +512,7 @@ async def find_thread(channel, name: str):
             if (thread.name or "").lower() == want:
                 return thread
     except Exception as exc:
-        dprint(f"[discord_store] archived threads failed: {exc}")
+        dprint(f"[discord_store] archived threads failed: {exc!r}")
     return None
 
 
@@ -523,7 +523,7 @@ async def _open_thread(thread):
         try:
             await thread.edit(archived=False)
         except Exception as exc:
-            dprint(f"[discord_store] could not unarchive {thread.name}: {exc}")
+            dprint(f"[discord_store] could not unarchive {thread.name}: {exc!r}")
     return thread
 
 
@@ -568,12 +568,12 @@ async def _ensure_record_locked(parent, header: str, initial: str):
     try:
         message = await parent.send(initial, allowed_mentions=quiet_mentions())
     except Exception as exc:
-        dprint(f"[discord_store] could not write {header!r}: {exc}")
+        dprint(f"[discord_store] could not write {header!r}: {exc!r}")
         return None
     try:
         await message.pin()
     except Exception as exc:
-        dprint(f"[discord_store] could not pin {header!r}: {exc}")
+        dprint(f"[discord_store] could not pin {header!r}: {exc!r}")
     remember_record(parent.id, message)
     _missing.discard((int(parent.id), header))
     return message
@@ -598,7 +598,7 @@ async def _adopt_bot_record_locked(parent, label: str):
         try:
             await _rewrite_bot_title(old, header)
         except Exception as exc:
-            dprint(f"[discord_store] bot pin rename failed: {exc}")
+            dprint(f"[discord_store] bot pin rename failed: {exc!r}")
         return old
     return await _ensure_record_locked(parent, BOT_CONTEXT_HEADER, bot_memory_initial(label))
 
@@ -774,7 +774,7 @@ async def _list_pins(parent):
         else:
             messages = listed
     except Exception as exc:
-        dprint(f"[discord_store] pins failed: {exc}")
+        dprint(f"[discord_store] pins failed: {exc!r}")
         return [], False
     return list(messages or []), True
 
@@ -793,7 +793,7 @@ async def _cached_unpinned(parent_id: int, headers: tuple[str, ...]):
         try:
             live = await fetch_live(cached)
         except Exception as exc:
-            dprint(f"[discord_store] fetch failed: {exc}")
+            dprint(f"[discord_store] fetch failed: {exc!r}")
             return None, False
         if live is None:
             _forget_header(parent_id, header)
@@ -821,7 +821,7 @@ async def _live_listed(listed, headers: tuple[str, ...]):
             try:
                 live = await fetch_live(message)
             except Exception as exc:
-                dprint(f"[discord_store] fetch failed: {exc}")
+                dprint(f"[discord_store] fetch failed: {exc!r}")
                 return None, False
             if live is None:
                 continue
@@ -905,7 +905,7 @@ async def _create_pinned(parent, header: str, content: str):
     try:
         message = await parent.send(content, allowed_mentions=quiet_mentions())
     except Exception as exc:
-        dprint(f"[discord_store] could not write {header!r}: {exc}")
+        dprint(f"[discord_store] could not write {header!r}: {exc!r}")
         return None, "create-failed"
     remember_record(int(parent.id), message)
     _missing.discard((int(parent.id), header))
@@ -922,7 +922,7 @@ async def _pin_message(message) -> bool:
         await message.pin()
     except Exception as exc:
         print(
-            f"[discord_store] message {getattr(message, 'id', '?')} is stored but not pinned: {exc}",
+            f"[discord_store] message {getattr(message, 'id', '?')} is stored but not pinned: {exc!r}",
             flush=True,
         )
         return False
@@ -936,7 +936,7 @@ async def _finish_pinned(message, content: str, note: str):
     try:
         live = await fetch_live(message)
     except Exception as exc:
-        dprint(f"[discord_store] confirm fetch failed: {exc}")
+        dprint(f"[discord_store] confirm fetch failed: {exc!r}")
         return None, "not-confirmed"
     if live is None or not same_discord_text(getattr(live, "content", ""), content):
         return None, "not-confirmed"
@@ -962,11 +962,11 @@ async def _write_pinned_unlocked(parent, header: str, content: str):
             try:
                 gone = await fetch_live(message)
             except Exception as fetch_exc:
-                dprint(f"[discord_store] edit failed: {exc}")
+                dprint(f"[discord_store] edit failed: {exc!r}")
                 dprint(f"[discord_store] confirm fetch failed: {fetch_exc}")
                 return None, "edit-failed"
             if gone is not None:
-                dprint(f"[discord_store] edit failed: {exc}")
+                dprint(f"[discord_store] edit failed: {exc!r}")
                 return None, "edit-failed"
             created, create_note = await _create_pinned(parent, header, content)
             if created is None:
@@ -1025,6 +1025,6 @@ async def delete_user_channel(guild, user_id) -> bool:
         await channel.delete(reason=f"Eche opt-out {user_id}")
         _forget_channel_tree(channel.id)
     except Exception as exc:
-        dprint(f"[discord_store] could not delete user channel {user_id}: {exc}")
+        dprint(f"[discord_store] could not delete user channel {user_id}: {exc!r}")
         return False
     return True
