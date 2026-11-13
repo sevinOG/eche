@@ -119,6 +119,15 @@ IMAGE_MODEL_MARKERS = (
     "niji",
     "mjv6",
     "mj-v6",
+    "auraflow",
+    "flox",
+    "fl0x",
+    "leonardo-phoenix",
+    "leonardophoenix",
+    "sana-1",
+    "sana1",
+    "lumiere",
+    "sd4",
 )
 
 
@@ -203,6 +212,10 @@ VIDEO_MODEL_MARKERS = (
     "lipsync",
     "lip-sync",
     "d-id",
+    "wan3",
+    "hedra",
+    "hedra-character",
+    "hedracharacter",
 )
 
 # Lookalike letters that show up in evasive model ids (Cyrillic ѕora, etc.).
@@ -219,7 +232,7 @@ _MODEL_CONFUSABLES = str.maketrans({
     "Ι": "i", "ı": "i",
     "ꓢ": "s", "ꮪ": "s", "ꓦ": "v", "ꓗ": "k",
     "๐": "o", "ƒ": "f", "ꮩ": "v", "ꓜ": "m",
-    "ө": "o", "Ө": "o", "Ꮩ": "v", "໐": "o", "ꓡ": "l",
+    "ө": "o", "Ө": "o", "Ꮩ": "v", "໐": "o", "ꓡ": "l", "տ": "t",
     "$": "s",
 })
 def _load_model_confusables() -> dict[str, str]:
@@ -411,7 +424,24 @@ def _short_token_match(token: str, marker: str) -> bool:
         start = pos + 1
 
 
+# These compact forms are too short to use as a start-of-token prefix.
+# "niji" must not reject nijinsky-chat; "did" (from d-id) must not reject
+# didi-chat or d-idea.
+_BOUNDED_MARKERS = frozenset({"niji", "did"})
+
+
+def _bounded_token_match(token: str, marker: str) -> bool:
+    """Exact token, or the marker plus a version/tier suffix only."""
+    if not token or not marker:
+        return False
+    if token == marker:
+        return True
+    return token.startswith(marker) and _suffix_is_version_or_tier(token[len(marker):])
+
+
 def _long_token_match(token: str, marker: str) -> bool:
+    if marker in _BOUNDED_MARKERS:
+        return _bounded_token_match(token, marker)
     return token == marker or token.startswith(marker)
 
 

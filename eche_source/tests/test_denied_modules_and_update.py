@@ -245,13 +245,14 @@ def _load_installer():
     registry.register_uninstall = lambda *a, **k: None
     registry.APP_VERSION = "0"
     sys.modules["eche_installer_core.registry"] = registry
+    # A regular module spec (no submodule_search_locations) keeps
+    # __package__ equal to __spec__.parent, so Python 3.13 does not
+    # warn under -W error when the installer does relative imports.
     spec = importlib.util.spec_from_file_location(
         "eche_installer_core.installer",
         inst_core / "installer.py",
-        submodule_search_locations=[str(inst_core)],
     )
     mod = importlib.util.module_from_spec(spec)
-    mod.__package__ = "eche_installer_core"
     sys.modules["eche_installer_core.installer"] = mod
     spec.loader.exec_module(mod)
     return mod

@@ -96,7 +96,7 @@
 Օ	o	armenian
 ս	u	armenian
 հ	h	armenian
-տ	n	armenian
+տ	t	armenian-tiwn
 ի	i	armenian
 ք	q	armenian
 գ	g	armenian

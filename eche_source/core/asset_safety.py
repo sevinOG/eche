@@ -206,7 +206,10 @@ async def prepare_generation(
         raise ImagineError(REFUSAL)
     if media_prompt_blocked(raw):
         note("asset prompt media-filter")
-        _lock_on_block(user_id, "media-filter")
+        from core.asset_limits import note_media_filter_block
+
+        if note_media_filter_block(user_id):
+            _lock_on_block(user_id, "media-filter")
         _audit("refusal", category="media-filter", **ids)
         raise ImagineError(REFUSAL)
 

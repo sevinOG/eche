@@ -1,12 +1,17 @@
 # sha256 of official Imagine modules. Exact module paths only.
 # The manifest-sha256 line is the digest of this file with that hex zeroed.
-# manifest-sha256: 808a8d3078dbd5248b67a8c277d66013e104157698a6e82b3353dd6851f38d4e
+# This self-hash is a drift check, not a trust anchor: anyone who can
+# edit a pinned module can recompute it. Install trust is a folder
+# owned by Administrators, the bot running as a standard account,
+# and the updater running elevated. Signing the manifest with a key
+# kept outside eche_source is the planned real anchor.
+# manifest-sha256: 6cbc41aede2f86ad4114b80a05d75fda537ba5949ee0f39f9255307b87af49c0
 69284784db2fb2d892aab03b42c020b2ff335a1a8a0206bd070b523fb8891bf0  cogs/asset.py
 b3a9c443062de6286bc8a7840159a9e2b389f040357f6888e09c1f800a09a1ac  core/imagine.py
 e58b90b4b6cc881ff1f86c2588a73f577be45e833e9e936432c3a75dc2f44dbb  core/tools_asset.py
-2cb9c3f3dc0a59dead6592d53ec7d42202fc52f278c94c6762aad507f14ac154  core/asset_safety.py
-160f73f73fef3b3f6939bcab02550dce8c7d2162ff902664a9acab8aaba090fe  core/asset_filter.py
+8532a3f3f57e22dfdff79734b240237418efbee23158b95e60abb4029a35521d  core/asset_safety.py
+2f53f2622046910f750a132025e60e57ced30a7e8485235159d8f5d3c4602e60  core/asset_filter.py
 6248bdc07aa07f827fa6bcc5b884708050efe1bda8719d4d07b9d06884bd78dd  core/asset_backend.py
 f15fc1b3f151af1ca4cfe916062569e78f56eb2d00e9ff38fdd48b64dc8fdfd1  core/asset_review.py
-279ae6e3f4dcb0a1c55b0b91b693711455ac49752c1715b3b568e94f228d4684  core/asset_limits.py
-14488e9c041c43ffa1b6c3f4b78557e3a3ea849803561f3e5c0a8f2d57dfac64  core/media_scan.py
+879d2081b9b002fd0ab3cc00831de161920e063644b935bfa7425d129cfc8bd4  core/asset_limits.py
+4956ea7117b904938736883441577c5c3f7d5d54a42635a0e99734024eea936c  core/media_scan.py
