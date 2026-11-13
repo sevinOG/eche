@@ -1,6 +1,7 @@
 # core/safety_models.py
-# Hardcoded, vetted models for the minors text and vision checks.
-# Env vars, .env, and settings cannot override these.
+# Age-vision models stay pinned (Scout). The text content filter and
+# child check are chosen from Settings or the chat model in classifier.py;
+# the child-check names below are historical and are not used as pins.
 
 from __future__ import annotations
 

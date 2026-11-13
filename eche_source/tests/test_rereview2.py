@@ -11,6 +11,7 @@ sys.path.insert(0, str(ROOT))
 from core import classifier as C  # noqa: E402
 from core import client  # noqa: E402
 from core.safety import MinorsBlocked  # noqa: E402
+from tests.checker_fixtures import patch_legacy_checker_settings  # noqa: E402
 
 
 class _Resp(io.BytesIO):
@@ -38,8 +39,9 @@ class Base(unittest.TestCase):
     def setUp(self):
         C.allow_in_tests(False); C.clear_cache()
         self.env = mock.patch.dict(os.environ, {"GROQ_API_KEY": "gsk_real"}); self.env.start()
+        self._legacy = patch_legacy_checker_settings(); self._legacy.start()
     def tearDown(self):
-        self.env.stop(); C.allow_in_tests(True); C.clear_cache()
+        self._legacy.stop(); self.env.stop(); C.allow_in_tests(True); C.clear_cache()
 
 
 MSGS = [{"role": "system", "content": "Persona: Eche."},
@@ -129,8 +131,15 @@ class Cache(Base):
 
 class PlaceholderKey(Base):
     def test_ollama_placeholder(self):
-        with mock.patch.dict(os.environ, {"GROQ_API_KEY": "ollama", "OPENROUTER_API_KEY": "sk-or-real"}):
+        with mock.patch.object(C, "_checker_setting", return_value=""), \
+             mock.patch.dict(os.environ, {"GROQ_API_KEY": "ollama", "OPENROUTER_API_KEY": "sk-or-real", "ECHE_PROVIDER": "openrouter"}):
             self.assertEqual(C._endpoint()[0], "sk-or-real")
+        with mock.patch.object(C, "_checker_setting", return_value=""), \
+             mock.patch.dict(os.environ, {"GROQ_API_KEY": "ollama", "OPENROUTER_API_KEY": "sk-or-real", "ECHE_PROVIDER": "cloud"}):
+            key, url = C._endpoint()
+            self.assertNotEqual(key, "ollama")
+            self.assertIsNone(key)
+            self.assertIsNone(url)
 
 
 class ForgedVerdict(Base):

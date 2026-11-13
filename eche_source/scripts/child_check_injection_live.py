@@ -3,6 +3,8 @@
 
   cd eche_source
   python scripts/child_check_injection_live.py
+  python scripts/child_check_injection_live.py --ollama
+  python scripts/child_check_injection_live.py --ollama --skip-images
 
 It does not run in CI. Image cases are optional. Point
 ECHE_LIVE_ADULT_IMAGE at a non-sexual adult photo to test an allow.
@@ -22,6 +24,7 @@ any wrong result, deadline miss, or error. Do not paste secrets.
 """
 from __future__ import annotations
 
+import argparse
 import os
 import sys
 import time
@@ -158,16 +161,21 @@ def _ms(started: float) -> tuple[float, float | None]:
 
 
 def _force_provider(name: str) -> bool:
+    if name == "ollama":
+        classifier.force_backend("ollama")
+        return True
     if name == "groq":
         key = classifier._real_key(classifier._secret("GROQ_API_KEY"))
         if not key:
             return False
+        classifier.force_backend(None)
         classifier._endpoint = lambda: (key, classifier.GROQ_URL)  # type: ignore[method-assign]
         return True
     if name == "openrouter":
         key = classifier._real_key(classifier._secret("OPENROUTER_API_KEY"))
         if not key:
             return False
+        classifier.force_backend(None)
         classifier._endpoint = lambda: (key, classifier.OPENROUTER_URL)  # type: ignore[method-assign]
         return True
     return False
@@ -209,7 +217,7 @@ def _run_one(label: str, fn, *, expect_block: bool, accept: tuple[str, ...]) -> 
     return ok
 
 
-def run_provider(name: str) -> int:
+def run_provider(name: str, *, skip_images: bool = False) -> int:
     print(f"\n=== {name}  model={classifier.child_check_model()}  vision={classifier.age_vision_model()} ===")
     failed = 0
     asyncio = __import__("asyncio")
@@ -300,6 +308,10 @@ def run_provider(name: str) -> int:
         ):
             failed += 1
 
+    if skip_images or name == "ollama":
+        print("SKIP  image cases  (no local vision backend; pass --skip-images)")
+        return failed
+
     adult = _image_path(ADULT_IMAGE, _FIXTURE_ADULT)
     child = _image_path(CHILD_IMAGE)
 
@@ -337,7 +349,27 @@ def run_provider(name: str) -> int:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Live child-check injection probes. Not run in CI."
+    )
+    parser.add_argument(
+        "--ollama",
+        action="store_true",
+        help="Run only against local Ollama. Uses child_check_model or the chat model. Skips image cases.",
+    )
+    parser.add_argument(
+        "--skip-images",
+        action="store_true",
+        help="Skip image cases (required for Ollama; there is no local vision backend).",
+    )
+    args = parser.parse_args()
     classifier.allow_in_tests(False)
+    skip_images = bool(args.skip_images or args.ollama)
+    if args.ollama:
+        classifier.force_backend("ollama")
+        failed = run_provider("ollama", skip_images=True)
+        print(f"\nfailed={failed}")
+        return 1 if failed else 0
     providers = []
     for name in ("groq", "openrouter"):
         if _force_provider(name):
@@ -345,16 +377,15 @@ def main() -> int:
         else:
             print(f"No {name} key found.")
     if not providers:
-        print("No Groq or OpenRouter key found. Set one in the app or environment.")
+        print("No Groq or OpenRouter key found. Set one in the app or environment, or pass --ollama.")
         return 2
     failed = 0
-    # Re-resolve keys inside each run.
     for name in providers:
         if not _force_provider(name):
             print(f"ERROR  lost {name} key mid-run")
             failed += 1
             continue
-        failed += run_provider(name)
+        failed += run_provider(name, skip_images=skip_images)
     if len(providers) < 2:
         print("ERROR  both Groq and OpenRouter keys are required for this script.")
         failed += 1

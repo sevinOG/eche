@@ -277,16 +277,28 @@ def instrument_bot(bot) -> None:
     instrument_views()
 
 
+def _is_external_hook(fn) -> bool:
+    """True for asyncio/discord internals, which are not Eche entry points."""
+    mod = getattr(fn, "__module__", "") or ""
+    return (
+        mod == "asyncio" or mod.startswith("asyncio.")
+        or mod == "discord" or mod.startswith("discord.")
+        or mod.startswith("aiohttp.")
+    )
+
+
 def discover_listener_events(bot, eche_cls=None) -> set[str]:
     events: set[str] = set()
     extra = getattr(bot, "extra_events", {}) or {}
     for ev, funcs in extra.items():
-        if funcs:
+        live = [fn for fn in (funcs or []) if not _is_external_hook(fn)]
+        if live:
             events.add(ev)
     for cog in getattr(bot, "cogs", {}) and bot.cogs.values() or []:
         try:
-            for ev, _fn in cog.get_listeners():
-                events.add(ev)
+            for ev, fn in cog.get_listeners():
+                if not _is_external_hook(fn):
+                    events.add(ev)
         except Exception:
             pass
     if eche_cls is not None:

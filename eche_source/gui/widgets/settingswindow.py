@@ -509,6 +509,58 @@ class SettingsWindow(QWidget):
             "How long a reply can run. Save applies on the next message.",
             token_body,
         ))
+        checker_body = QVBoxLayout()
+        checker_body.setSpacing(12)
+        checker_hint = QLabel(
+            "Blank uses the chat provider and model selected above. "
+            "Llama Guard models use the Guard prompt; other models use a YES/NO prompt. "
+            "A missing or retired model fails closed and never falls back to another model."
+        )
+        checker_hint.setObjectName("FieldHint")
+        checker_hint.setWordWrap(True)
+        checker_body.addWidget(checker_hint)
+        for title, p_attr, p_key, m_key, help_key in (
+            (
+                "Content filter",
+                "content_filter_provider_combo",
+                "content_filter_provider",
+                "content_filter_model",
+                "content_filter_model",
+            ),
+            (
+                "Child check",
+                "child_check_provider_combo",
+                "child_check_provider",
+                "child_check_model",
+                "child_check_model",
+            ),
+        ):
+            row = QVBoxLayout()
+            row.setSpacing(8)
+            lab = QLabel(title)
+            lab.setObjectName("FieldLabel")
+            row.addWidget(lab)
+            combo = QComboBox()
+            combo.setMinimumHeight(34)
+            combo.addItem("Same as chat", "")
+            combo.addItem("Cloud — Groq", "cloud")
+            combo.addItem("OpenRouter", "openrouter")
+            combo.addItem("Local — Ollama", "ollama")
+            setattr(self, p_attr, combo)
+            row.addWidget(combo)
+            row.addLayout(self._field_block(
+                f"{title} model",
+                "Blank uses the chat model.",
+                secret=False,
+                key=m_key,
+                help_key=help_key,
+            ))
+            checker_body.addLayout(row)
+        layout.addWidget(self._card(
+            "Safety checkers",
+            "Content filter and child check. Each can use a different provider and model.",
+            checker_body,
+        ))
         layout.addStretch(1)
         return page
 
@@ -1612,6 +1664,23 @@ class SettingsWindow(QWidget):
             self.provider_combo.setCurrentIndex(idx if idx >= 0 else 0)
             self.provider_combo.blockSignals(False)
 
+        for attr, key in (
+            ("content_filter_provider_combo", "content_filter_provider"),
+            ("child_check_provider_combo", "child_check_provider"),
+        ):
+            combo = getattr(self, attr, None)
+            if combo is None:
+                continue
+            value = (self.data.get(key) or "").strip().lower()
+            if value == "groq":
+                value = "cloud"
+            if value not in ("", "cloud", "ollama", "openrouter"):
+                value = ""
+            idx = combo.findData(value)
+            combo.blockSignals(True)
+            combo.setCurrentIndex(idx if idx >= 0 else 0)
+            combo.blockSignals(False)
+
         from core.ollama_thinking import parse_model_modes
         self._reasoning_models = parse_model_modes(self.data.get("reasoning_models"))
         if hasattr(self, "reasoning_box"):
@@ -1827,6 +1896,13 @@ class SettingsWindow(QWidget):
         if hasattr(self, "provider_combo"):
             backend = self.provider_combo.currentData() or "cloud"
         payload["provider_backend"] = backend
+        for attr, key in (
+            ("content_filter_provider_combo", "content_filter_provider"),
+            ("child_check_provider_combo", "child_check_provider"),
+        ):
+            combo = getattr(self, attr, None)
+            if combo is not None:
+                payload[key] = combo.currentData() or ""
 
         cloud_m = ""
         if "cloud_model" in self._public_edits:
