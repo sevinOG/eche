@@ -228,15 +228,34 @@ class ContextEditorWorker(QThread):
             }
         if self.action == "fetch":
             return {"ok": True, "message": "Loaded the bot pin.", "text": pin.content or ""}
-        if self.action == "save":
-            await pin.edit(content=self.content, allowed_mentions=discord.AllowedMentions.none())
-            return {"ok": True, "message": "Saved the bot pin.", "text": self.content}
-        if self.action == "reset":
-            from core.discord_store import bot_memory_initial
+        if self.action in ("save", "reset"):
+            from core.discord_store import (
+                BOT_CONTEXT_HEADER,
+                OLD_BOT_CONTEXT_HEADER,
+                bot_memory_initial,
+                write_pinned,
+            )
 
-            blank = bot_memory_initial(self.target_id)
-            await pin.edit(content=blank, allowed_mentions=discord.AllowedMentions.none())
-            return {"ok": True, "message": "Reset the bot pin.", "text": blank}
+            if self.action == "reset":
+                new_content = bot_memory_initial(self.target_id)
+                message = "Reset the bot pin."
+            else:
+                new_content = self.content
+                message = "Saved the bot pin."
+            existing = pin.content or ""
+            header = (
+                OLD_BOT_CONTEXT_HEADER
+                if existing.startswith(OLD_BOT_CONTEXT_HEADER)
+                else BOT_CONTEXT_HEADER
+            )
+            written, note = await write_pinned(thread, header, new_content)
+            if written is None:
+                return {
+                    "ok": False,
+                    "message": f"Could not write the bot pin ({note}).",
+                    "text": "",
+                }
+            return {"ok": True, "message": message, "text": new_content}
         return {"ok": False, "message": f"Unknown action {self.action}", "text": ""}
 
     async def _episode(self, guild) -> dict:

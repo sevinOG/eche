@@ -725,9 +725,24 @@ class MainWindow(QMainWindow):
             from core.local_chat_memory import clear_turns
             clear_turns()
         except Exception as e:
+            try:
+                from core.audit import safe_activity
+                safe_activity(
+                    "desktop-chat",
+                    action="clear-history",
+                    outcome="error",
+                    error_type=type(e).__name__,
+                )
+            except Exception:
+                pass
             self.local_output.append(f"(clear failed: {e})")
             return
         self.local_output.clear()
+        try:
+            from core.audit import safe_activity
+            safe_activity("desktop-chat", action="clear-history", outcome="success")
+        except Exception:
+            pass
 
     def _panel(self, title: str, body: QWidget) -> QFrame:
         frame = QFrame()

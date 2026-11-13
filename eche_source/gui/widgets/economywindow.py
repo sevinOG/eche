@@ -570,6 +570,9 @@ class EconomyWindow(QMainWindow):
             ),
             self._on_saved,
         )
+
+    def _on_saved(self, ok: bool, message: str, payload):
+        self._set_busy(False)
         try:
             from core.audit import safe_activity
             extra = {}
@@ -580,14 +583,11 @@ class EconomyWindow(QMainWindow):
             safe_activity(
                 "bank-save",
                 action="save-bank",
-                outcome="success",
+                outcome="success" if ok else "error",
                 **extra,
             )
         except Exception:
             pass
-
-    def _on_saved(self, ok: bool, message: str, payload):
-        self._set_busy(False)
         if not ok:
             QMessageBox.warning(self, "Discord", message)
             self._log(message)
