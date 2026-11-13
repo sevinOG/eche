@@ -166,6 +166,8 @@ class NoMediaGenerationTests(unittest.TestCase):
         self.assertIn("tool_asset", secrets.PUBLIC_KEYS)
         self.assertIn("asset_owner_only", secrets.PUBLIC_KEYS)
         self.assertIn("asset_enabled", secrets.PUBLIC_KEYS)
+        self.assertIn("asset_adult_enabled", secrets.PUBLIC_KEYS)
+        self.assertIn("asset_approval_enabled", secrets.PUBLIC_KEYS)
 
     def test_generation_modules_include_flash(self):
         self.assertTrue(_import_fails("cogs.flash"), "cogs.flash should not be importable")

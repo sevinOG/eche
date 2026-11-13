@@ -35,7 +35,7 @@ class Asset(commands.Cog):
             guild_id=getattr(guild, "id", None),
             channel_id=getattr(channel, "id", None),
         )
-        blocked = refuse_speaker(is_owner, **ids)
+        blocked = refuse_speaker(is_owner, channel=channel, **ids)
         if blocked:
             await ctx.reply(blocked, mention_author=False)
             return

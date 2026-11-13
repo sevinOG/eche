@@ -77,6 +77,8 @@ PUBLIC_KEYS = (
     "memory_mask_slurs",            # "0" stops masking slurs in memory pins. Blank stays on.
     "asset_enabled",                # "1" turns ?asset on. Blank or missing stays OFF.
     "asset_owner_only",             # blank or missing stays ON (owner only). "0" opens it to the guild.
+    "asset_adult_enabled",          # "1" turns 18+ mode on. Blank or missing stays OFF.
+    "asset_approval_enabled",       # "0" turns owner approval off. Blank or missing stays ON.
     "tool_asset",                   # "0" leaves the asset tool out of the prompt. Blank stays on.
     "xai_key_epoch",                # must match CURRENT_XAI_KEY_EPOCH or the stored xAI key is ignored
 )
@@ -514,6 +516,67 @@ def load_all(root: str | None = None) -> dict[str, str]:
     return out
 
 
+
+def _asset_flag(store: dict | None, key: str, *, default: bool) -> bool:
+    from core.tools import prompt_choice
+
+    return prompt_choice((store or {}).get(key), default=default)
+
+
+def couple_asset_toggles(public: dict) -> dict:
+    """18+ forces approval and owner-only on. Approval-off forces owner-only and forbids 18+."""
+    data = dict(public or {})
+    adult = _asset_flag(data, "asset_adult_enabled", default=False)
+    approval = _asset_flag(data, "asset_approval_enabled", default=True)
+    owner = _asset_flag(data, "asset_owner_only", default=True)
+    if adult:
+        approval = True
+        owner = True
+    elif not approval:
+        adult = False
+        owner = True
+    data["asset_adult_enabled"] = "1" if adult else "0"
+    data["asset_approval_enabled"] = "1" if approval else "0"
+    data["asset_owner_only"] = "1" if owner else "0"
+    return data
+
+
+def _notify_asset_toggle_owners(lines: list[str]) -> None:
+    """Best-effort DM to each owner when an 18+ or approval toggle changes."""
+    if not lines:
+        return
+    try:
+        from core.gui_bridge import get_bot, get_loop
+        import asyncio
+
+        bot = get_bot()
+        loop = get_loop()
+        if bot is None or loop is None:
+            return
+        body = "\n".join(lines)
+
+        async def _send() -> None:
+            try:
+                from core.asset_review import _reviewer_ids
+
+                reviewers = await _reviewer_ids(bot)
+            except Exception:
+                return
+            fetch = getattr(bot, "fetch_user", None)
+            for owner_id in reviewers or []:
+                try:
+                    owner = await fetch(owner_id) if fetch else None
+                    send = getattr(owner, "send", None)
+                    if send is not None:
+                        await send(body)
+                except Exception:
+                    continue
+
+        asyncio.run_coroutine_threadsafe(_send(), loop)
+    except Exception:
+        return
+
+
 def save_all(data: dict[str, Any], root: str | None = None) -> None:
     root = root or _user_root()
     os.makedirs(os.path.join(root, "config"), exist_ok=True)
@@ -559,10 +622,15 @@ def save_all(data: dict[str, Any], root: str | None = None) -> None:
         public["xai_key_epoch"] = CURRENT_XAI_KEY_EPOCH
         secrets["xai_api_key"] = str(data.get("xai_api_key") or "").strip()
 
+    public = couple_asset_toggles(public)
     old_enabled = str(existing_public.get("asset_enabled") or "")
     old_owner = str(existing_public.get("asset_owner_only") or "")
     new_enabled = str(public.get("asset_enabled") or "")
     new_owner = str(public.get("asset_owner_only") or "")
+    old_adult = "1" if _asset_flag(existing_public, "asset_adult_enabled", default=False) else "0"
+    old_approval = "1" if _asset_flag(existing_public, "asset_approval_enabled", default=True) else "0"
+    new_adult = str(public.get("asset_adult_enabled") or "0")
+    new_approval = str(public.get("asset_approval_enabled") or "1")
     key_set = bool((secrets.get("xai_api_key") or "").strip())
 
     _save_public(root, public)
@@ -577,10 +645,23 @@ def save_all(data: dict[str, Any], root: str | None = None) -> None:
             asset_enabled_new=new_enabled,
             asset_owner_only_old=old_owner,
             asset_owner_only_new=new_owner,
+            asset_adult_enabled_old=old_adult,
+            asset_adult_enabled_new=new_adult,
+            asset_approval_enabled_old=old_approval,
+            asset_approval_enabled_new=new_approval,
             xai_key_set=key_set,
         )
     except Exception:
         pass
+    notices = []
+    if old_adult != new_adult:
+        notices.append(f"18+ mode changed from {old_adult} to {new_adult}.")
+    if old_approval != new_approval:
+        notices.append(f"Owner approval changed from {old_approval} to {new_approval}.")
+    if notices:
+        _notify_asset_toggle_owners(
+            ["An ?asset safety toggle changed in Settings.", *notices]
+        )
 
 
 def apply_to_environ(root: str | None = None, override_existing: bool = False) -> dict[str, str]:

@@ -71,7 +71,31 @@ FIELD_HELP: dict[str, tuple[str, str]] = {
         "### Kill switch\n"
         "Off by default. Only an owner can turn ?asset on in Settings → Media. "
         "While it is off, the command, the asset tool, and any generation request are refused.\n\n"
-        "**Owner only** is a second, optional restriction once generation is on.",
+        "**Owner only** is a second, optional restriction once generation is on.\n\n"
+        "### 18+ mode\n"
+        "Off by default. Owner-only, and only in Discord age-restricted channels, never in DMs. "
+        "It turns owner approval on. Every minors check stays, including the matcher, media filter, "
+        "child check, age vision, incident rule, and the safety footer (the footer text does not change). "
+        "The age check is stricter: anything short of clearly adult is blocked, and so are anime, "
+        "cartoon, chibi, doll, stylized, and real or identifiable people. The only relaxation is "
+        "consensual adult sexual content (Llama Guard S12) on generated output; input still blocks S12, "
+        "and S4 and every other category still block.\n\n"
+        "### Owner approval\n"
+        "On by default. Turning it off is owner-only, lowers the caps to 3 per user and 10 per "
+        "server each hour, and disables video. It cannot be off while 18+ is on.",
+    ),
+    "asset_adult_enabled": (
+        "18+",
+        "### 18+ mode\n"
+        "Off by default. See the ?asset help for the full rules: owner-only, age-restricted "
+        "channels only, approval forced on, stricter age and style checks, and S12 relaxed "
+        "on output only.",
+    ),
+    "asset_approval_enabled": (
+        "Require owner approval",
+        "### Owner approval\n"
+        "On by default. Turning it off is owner-only, lowers the caps, and disables video. "
+        "It cannot be off while 18+ is on.",
     ),
     "prompt_tools": (
         "Tools in the prompt",

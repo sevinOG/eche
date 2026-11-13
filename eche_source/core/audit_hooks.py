@@ -60,6 +60,7 @@ QT_SLOT_ALLOWLIST: dict[str, str] = {
     "_reset_context_caps": "resets numeric fields in the form",
     "_show_format_help": "help dialog",
     "_show_help": "help dialog",
+    "_sync_asset_toggles": "checkbox coupling UI; persist is probed via save_all",
     "_sync_editor_from_spin": "spinbox-to-editor UI sync",
     "_sync_spin_from_editor": "editor-to-spinbox UI sync",
     "_tick": "UI timer tick",

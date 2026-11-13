@@ -739,11 +739,55 @@ def _is_despaced_copy(raw: str, form: str) -> bool:
     return bool(compact) and (low == compact or low == compact[::-1])
 
 
-def media_prompt_blocked(text: str) -> bool:
+# 18+ only: stylized media and real or identifiable people are blocked
+# in addition to every ordinary minors check.
+_ADULT_STYLE_RE = re.compile(
+    r"(?is)\b(?:"
+    r"anime|manga|cartoon(?:s|ish)?|toon(?:s)?|chibi|moe|"
+    r"dolls?|figurines?|stylized|stylised|cel[\s\-]?shaded|"
+    r"webtoon|comic[\s\-]?book|comic[\s\-]?style"
+    r")\b"
+)
+_ADULT_REAL_PERSON_RE = re.compile(
+    r"(?is)(?:"
+    r"\b(?:real|identifiable|famous|well[\s\-]?known)\s+"
+    r"(?:person|people|man|woman|men|women|human|celebrity|celebrities|"
+    r"actor|actress|politician|influencer)\b"
+    r"|\b(?:celebrity|celebrities|photorealistic|photo[\s\-]?real|"
+    r"lookalike|look[\s\-]?alike|selfie)\b"
+    r"|\b(?:photo|photograph|picture|portrait|image)\s+of\s+(?:a\s+)?"
+    r"(?:real\s+)?(?:person|people|man|woman|celebrity|actor|actress)\b"
+    r"|\blooks\s+like\s+(?:a\s+|an\s+)?(?:real\s+)?"
+    r"(?:person|people|man|woman|men|women|human|celebrity|celebrities|"
+    r"actor|actress|politician|influencer)\b"
+    r")"
+)
+
+
+def adult_style_or_real_person(text: str) -> bool:
+    """True when an 18+ prompt asks for stylized media or a real person."""
+    for form in _forms(text or ""):
+        inspect = _masked(form)
+        if not inspect.strip():
+            continue
+        if _is_despaced_copy(text or "", form) or _is_despaced_copy(text or "", inspect):
+            continue
+        if _ADULT_STYLE_RE.search(inspect) or _ADULT_REAL_PERSON_RE.search(inspect):
+            return True
+    return False
+
+
+def media_prompt_blocked(text: str, *, adult: bool | None = None) -> bool:
     """True when an asset prompt uses a media-only age, family or style cue."""
     raw = text or ""
     if not raw.strip():
         return False
+    if adult is None:
+        try:
+            from core.asset_safety import asset_adult_enabled
+            adult = asset_adult_enabled()
+        except Exception:
+            adult = False
     for form in _forms(raw):
         inspect = _masked(form)
         if not inspect.strip():
@@ -755,6 +799,8 @@ def media_prompt_blocked(text: str) -> bool:
             or _NEAR.search(inspect)
             or _ANTHRO_RE.search(inspect)
         ):
+            return True
+        if adult and (_ADULT_STYLE_RE.search(inspect) or _ADULT_REAL_PERSON_RE.search(inspect)):
             return True
     for form in _structural_forms(raw):
         inspect = _masked(form)

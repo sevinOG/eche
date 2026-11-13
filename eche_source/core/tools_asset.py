@@ -50,7 +50,9 @@ async def _allowed(ctx) -> tuple[bool, str]:
     except Exception as exc:
         dprint(f"[asset] owner check failed: {exc}")
         is_owner = False
-    blocked = refuse_speaker(is_owner, **_ids(getattr(ctx, "message", None)))
+    message = getattr(ctx, "message", None)
+    channel = getattr(message, "channel", None)
+    blocked = refuse_speaker(is_owner, channel=channel, **_ids(message))
     if blocked:
         return False, blocked
     return True, ""

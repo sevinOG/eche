@@ -125,6 +125,15 @@ async def require_owner_review(
     if not isinstance(result, AssetFile) or not result.data:
         _audit_review("unreachable", **ids)
         raise ImagineError(OWNER_REVIEW_FAILED)
+    try:
+        from core.asset_safety import asset_approval_enabled
+
+        if not asset_approval_enabled():
+            _audit_review("skipped", **ids)
+            return result
+    except Exception:
+        # Fail closed: if the toggle cannot be read, keep approval on.
+        pass
     hook = _review_hook
     if hook is not None:
         try:

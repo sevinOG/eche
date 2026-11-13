@@ -139,11 +139,11 @@ def asset_audience() -> str:
 
 
 def speaker_allowed(is_owner: bool) -> bool:
-    from core.asset_safety import asset_enabled
+    from core.asset_safety import asset_enabled, owner_only_required
 
     if not asset_enabled():
         return False
-    if asset_audience() == "owner":
+    if owner_only_required():
         return bool(is_owner)
     return True
 
@@ -463,6 +463,12 @@ def plan_asset(text: str, *, kind: str = "", source=None) -> AssetPlan:
     if not asked:
         asked = "image"
     if asked == "video":
+        from core.asset_safety import video_allowed
+
+        if not video_allowed():
+            raise ImagineError(
+                "Video is not available while owner approval is off."
+            )
         mode = "video"
         aspects = _VIDEO_ASPECTS
     else:
@@ -781,7 +787,20 @@ def http_bytes(url: str, limit: int = MAX_BYTES, timeout: int = 120) -> tuple[by
     return b"".join(chunks), mime
 
 
-def refuse_speaker(is_owner: bool, *, user_id=None, guild_id=None, channel_id=None) -> str | None:
+ADULT_CHANNEL_REFUSAL = (
+    "18+ asset generation is only available in age-restricted channels."
+)
+
+
+def refuse_speaker(
+    is_owner: bool,
+    *,
+    user_id=None,
+    guild_id=None,
+    channel_id=None,
+    channel=None,
+    nsfw=None,
+) -> str | None:
     """Audit and return a refusal if a gate applies (kill switch, owner-only, DMs, lockout, caps)."""
     from core.asset_limits import (
         DM_REFUSAL,
@@ -790,7 +809,13 @@ def refuse_speaker(is_owner: bool, *, user_id=None, guild_id=None, channel_id=No
         is_locked,
         rate_refusal,
     )
-    from core.asset_safety import KILL_SWITCH_OFF, _audit, asset_enabled
+    from core.asset_safety import (
+        KILL_SWITCH_OFF,
+        _audit,
+        asset_adult_enabled,
+        asset_enabled,
+        channel_is_age_restricted,
+    )
 
     ids = dict(user_id=user_id, guild_id=guild_id, channel_id=channel_id)
     if not asset_enabled():
@@ -799,6 +824,9 @@ def refuse_speaker(is_owner: bool, *, user_id=None, guild_id=None, channel_id=No
     if in_direct_message(guild_id):
         _audit("refusal", category="dm-disabled", **ids)
         return DM_REFUSAL
+    if asset_adult_enabled() and not channel_is_age_restricted(channel, nsfw=nsfw):
+        _audit("refusal", category="adult-channel", **ids)
+        return ADULT_CHANNEL_REFUSAL
     if not speaker_allowed(is_owner):
         _audit("refusal", category="owner-only", **ids)
         return refusal(is_owner)

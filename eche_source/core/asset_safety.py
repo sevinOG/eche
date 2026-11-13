@@ -82,6 +82,93 @@ def asset_enabled() -> bool:
         return False
 
 
+def _setting_flag(key: str, *, default: bool) -> bool:
+    try:
+        from core.secrets import public_value
+        from core.tools import prompt_choice
+
+        return prompt_choice(public_value(key), default=default)
+    except Exception:
+        return default
+
+
+def asset_adult_enabled() -> bool:
+    """Owner-only 18+ mode. Blank or missing is OFF."""
+    return _setting_flag("asset_adult_enabled", default=False)
+
+
+def asset_approval_stored() -> bool:
+    """Stored approval toggle. Blank or missing is ON."""
+    return _setting_flag("asset_approval_enabled", default=True)
+
+
+def asset_approval_enabled() -> bool:
+    """Effective approval flag. 18+ forces this ON."""
+    if asset_adult_enabled():
+        return True
+    return asset_approval_stored()
+
+
+def approval_required() -> bool:
+    return asset_approval_enabled()
+
+
+def owner_only_required() -> bool:
+    """18+ and approval-off both require the owner, as does the default audience."""
+    if asset_adult_enabled() or not asset_approval_enabled():
+        return True
+    try:
+        from core.imagine import asset_audience
+
+        return asset_audience() == "owner"
+    except Exception:
+        return True
+
+
+# Lower caps while approval is off (and therefore while 18+ is not on).
+APPROVAL_OFF_USER_CAP = 3
+APPROVAL_OFF_GUILD_CAP = 10
+
+
+def hourly_caps() -> tuple[int, int]:
+    if not asset_approval_enabled():
+        return APPROVAL_OFF_USER_CAP, APPROVAL_OFF_GUILD_CAP
+    from core.asset_limits import GUILD_HOURLY_CAP, USER_HOURLY_CAP
+
+    return USER_HOURLY_CAP, GUILD_HOURLY_CAP
+
+
+def video_allowed() -> bool:
+    return asset_approval_enabled()
+
+
+def channel_is_age_restricted(channel=None, *, nsfw: bool | None = None) -> bool:
+    """True only when Discord marks the channel as age-restricted."""
+    if nsfw is not None:
+        return bool(nsfw)
+    if channel is None:
+        return False
+    fn = getattr(channel, "is_nsfw", None)
+    if callable(fn):
+        try:
+            return bool(fn())
+        except Exception:
+            pass
+    return bool(getattr(channel, "nsfw", False))
+
+
+# Consensual adult sexual content. Never ignore S4 (child sexual exploitation)
+# or any other Llama Guard category.
+ADULT_OUTPUT_IGNORE_LG4 = frozenset({"S12"})
+
+
+def adult_output_ignore_lg4() -> frozenset[str] | None:
+    """S12 is ignored on generated-media checks only, and only in 18+ mode."""
+    if asset_adult_enabled():
+        return ADULT_OUTPUT_IGNORE_LG4
+    return None
+
+
 def require_enabled(**ids) -> None:
     """Re-check the kill switch. Used before each poll and before posting."""
     from core.imagine import ImagineError
@@ -204,7 +291,7 @@ async def prepare_generation(
         _lock_on_block(user_id, "matcher")
         _audit("refusal", category="matcher", **ids)
         raise ImagineError(REFUSAL)
-    if media_prompt_blocked(raw):
+    if media_prompt_blocked(raw, adult=asset_adult_enabled()):
         note("asset prompt media-filter")
         from core.asset_limits import note_media_filter_block
 
@@ -434,7 +521,11 @@ async def _classify_image(
         _audit("refusal", category="unreadable-output", **ids)
         raise ImagineError(OUTPUT_UNCHECKED)
     try:
-        verdict = await classify_async(OUTPUT_CLASSIFY_TEXT, images=[part])
+        verdict = await classify_async(
+            OUTPUT_CLASSIFY_TEXT,
+            images=[part],
+            ignore_lg4=adult_output_ignore_lg4(),
+        )
     except Exception:
         verdict = "classifier-error"
     if verdict == "classifier-image-unsupported":
@@ -446,7 +537,7 @@ async def _classify_image(
         _audit("refusal", category=verdict, **ids)
         raise ImagineError(OUTPUT_REFUSAL)
     try:
-        age = await age_vision_async([part])
+        age = await age_vision_async([part], adult=asset_adult_enabled())
     except Exception:
         age = "age-vision-error"
     if age:

@@ -563,8 +563,24 @@ class SettingsWindow(QWidget):
         self.asset_owner_only_box.setToolTip(
             "On by default. Uncheck only if every member of the server should be able to use ?asset once it is enabled."
         )
+        self.asset_adult_box = QCheckBox("18+ (age-restricted channels only)")
+        self.asset_adult_box.setObjectName("asset_adult_enabled")
+        self.asset_adult_box.setToolTip(
+            "Off by default. Owner-only, and only in Discord age-restricted channels. "
+            "Turns owner approval on and keeps every minors check."
+        )
+        self.asset_approval_box = QCheckBox("Require owner approval")
+        self.asset_approval_box.setObjectName("asset_approval_enabled")
+        self.asset_approval_box.setToolTip(
+            "On by default. Turning it off is owner-only, lowers the caps, and disables video. "
+            "It cannot be off while 18+ is on."
+        )
+        self.asset_adult_box.toggled.connect(self._sync_asset_toggles)
+        self.asset_approval_box.toggled.connect(self._sync_asset_toggles)
         asset_body.addWidget(self.asset_enabled_box)
         asset_body.addWidget(self.asset_owner_only_box)
+        asset_body.addWidget(self.asset_adult_box)
+        asset_body.addWidget(self.asset_approval_box)
         asset_body.addWidget(self._info_button("asset_enabled"))
         layout.addWidget(self._card(
             "Asset generation",
@@ -574,7 +590,24 @@ class SettingsWindow(QWidget):
         layout.addStretch(1)
         return page
 
+    def _sync_asset_toggles(self, *_args) -> None:
+        """18+ forces approval and owner-only on. Approval-off forbids 18+ and forces owner-only."""
+        if not hasattr(self, "asset_adult_box"):
+            return
+        adult = self.asset_adult_box.isChecked()
+        approval = self.asset_approval_box.isChecked()
+        if adult and not approval:
+            self.asset_approval_box.blockSignals(True)
+            self.asset_approval_box.setChecked(True)
+            self.asset_approval_box.blockSignals(False)
+            approval = True
+        if (adult or not approval) and not self.asset_owner_only_box.isChecked():
+            self.asset_owner_only_box.blockSignals(True)
+            self.asset_owner_only_box.setChecked(True)
+            self.asset_owner_only_box.blockSignals(False)
+
     def _page_memory(self) -> QWidget:
+
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(4, 0, 8, 8)
@@ -1601,6 +1634,13 @@ class SettingsWindow(QWidget):
             self.asset_owner_only_box.setChecked(
                 prompt_choice(self.data.get("asset_owner_only"), default=True)
             )
+            self.asset_adult_box.setChecked(
+                prompt_choice(self.data.get("asset_adult_enabled"), default=False)
+            )
+            self.asset_approval_box.setChecked(
+                prompt_choice(self.data.get("asset_approval_enabled"), default=True)
+            )
+            self._sync_asset_toggles()
         if hasattr(self, "_prompt_tool_boxes"):
             from core.tools import prompt_choice
             for name, box in self._prompt_tool_boxes.items():
@@ -1866,8 +1906,11 @@ class SettingsWindow(QWidget):
                 pass
             payload["admin_tools"] = admin
         if hasattr(self, "asset_enabled_box"):
+            self._sync_asset_toggles()
             payload["asset_enabled"] = "1" if self.asset_enabled_box.isChecked() else "0"
             payload["asset_owner_only"] = "1" if self.asset_owner_only_box.isChecked() else "0"
+            payload["asset_adult_enabled"] = "1" if self.asset_adult_box.isChecked() else "0"
+            payload["asset_approval_enabled"] = "1" if self.asset_approval_box.isChecked() else "0"
         if hasattr(self, "_prompt_tool_boxes"):
             for name, box in self._prompt_tool_boxes.items():
                 payload[f"tool_{name}"] = "1" if box.isChecked() else "0"

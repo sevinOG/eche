@@ -31,6 +31,16 @@ def is_enabled() -> bool:
     )
 
 
+def get_bot():
+    """The running Discord bot, or None if this process is not the bot."""
+    return _bot
+
+
+def get_loop():
+    """The bot event loop, or None."""
+    return _loop
+
+
 def enable() -> None:
     global _enabled
     _enabled = True

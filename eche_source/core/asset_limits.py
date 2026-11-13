@@ -147,13 +147,18 @@ def rate_refusal(user_id, guild_id, *, root: str | None = None) -> str | None:
     except LimitsCorrupt:
         return LIMITS_UNAVAILABLE
     now = _now()
+    try:
+        from core.asset_safety import hourly_caps
+        user_cap, guild_cap = hourly_caps()
+    except Exception:
+        user_cap, guild_cap = USER_HOURLY_CAP, GUILD_HOURLY_CAP
     if user_id is not None:
         stamps = _prune((data.get("users") or {}).get(str(user_id), []), now)
-        if len(stamps) >= USER_HOURLY_CAP:
+        if len(stamps) >= user_cap:
             return USER_CAP_REFUSAL
     if guild_id is not None:
         stamps = _prune((data.get("guilds") or {}).get(str(guild_id), []), now)
-        if len(stamps) >= GUILD_HOURLY_CAP:
+        if len(stamps) >= guild_cap:
             return GUILD_CAP_REFUSAL
     return None
 
