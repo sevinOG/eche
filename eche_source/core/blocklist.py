@@ -155,10 +155,6 @@ BLOCKED_WORDS = (
     "tytto", "tyttö",
     "flicka", "flickor",
     "fetita", "fetiță",
-    "pippi longstocking",
-    "christopher robin",
-    "tiny tim",
-    "anne of green gables",
     "sweet sixteen", "sweet 16",
     "quinceanera", "quinceañera",
     "bat mitzvah", "bar mitzvah",
@@ -178,6 +174,14 @@ SEXUAL_WORDS = (
     "xxx", "onlyfans", "seduce", "seductive", "aroused", "arousing",
     "undress", "undressed", "undressing", "strip", "stripping", "stripper",
     "lingerie", "fuck", "fucking", "fucked", "smut", "explicit",
+    "spicy", "steamy", "intimate", "sensual", "bedroom",
+    "bath", "shower", "bubble bath",
+    "describe her body", "describe her",
+    "flirt", "flirting", "flirted",
+    "hot date", "get physical",
+    "18+", "18 plus", "eighteen+",
+    "kiss", "kissing", "kissed", "kisses",
+    "passionate", "passionately",
 )
 
 # Phrases that are only blocked in a sexual or RP-character context, or
@@ -380,6 +384,8 @@ _MEDIA_RP_RE = re.compile(
     r"character\s+(?:card|sheet|description)|"
     r"stay\s+in\s+character|in\s+character|"
     r"play\s+as|you\s+are\s+playing|"
+    r"pretend\s+you(?:'re|\s+are)|"
+    r"you\s+are\s+\w+\s+now|"
     r"write\s+a\s+scene|scene\s+where|"
     r"describe\s+a\s+character"
     r")",
@@ -629,14 +635,34 @@ _STORYBOOK_RE = re.compile(
 _HOGWARTS_FIRST_YEAR_RE = re.compile(
     r"(?i)first[\s-]+year\s+at\s+hogwarts|hogwarts\s+first[\s-]+year"
 )
-_ALICE_NAME_RE = re.compile(r"(?i)(?<![\w])(?:alice|alicia)(?![\w])")
+_ALICE_NAME_RE = re.compile(
+    r"(?i)(?<![\w])(?:alice|alicia|alyce|ally)(?![\w])"
+    r"|алиса|アリス"
+)
+# Bare Alice/Alicia/Алиса/アリス, like Matilda: sexual or RP only. Ally/Alyce
+# are story-cue names and are not blocked bare.
+_ALICE_BARE_RE = re.compile(
+    r"(?i)(?<![\w])(?:alice|alicia)(?![\w])"
+    r"|алиса|アリス"
+)
 _ALICE_CUES_RE = re.compile(
     r"(?is)(?:wonder[\s-]*land|wundirland|wunderland|"
+    r"land\s+of\s+wonders|"
     r"pa[ií]s\s+de\s+las\s+maravillas|maravillas|"
+    r"pays\s+des\s+merveilles|merveilles|"
+    r"paese\s+delle\s+meraviglie|meraviglie|"
+    r"pa[ií]s\s+das\s+maravilhas|maravilhas|"
+    r"стране\s+чудес|"
+    r"不思議の国|"
     r"carroll|liddell|"
-    r"rabbit\s*hole|looking[\s-]*glass|"
-    r"mad\s+hatter|cheshire)"
+    r"rabbit\s*hole|white\s+rabbit|"
+    r"looking[\s-]*glass|"
+    r"mad\s+hatter|march\s+hare|tea\s+party|"
+    r"queen\s+of\s+hearts|cheshire|"
+    r"pinafore|dinah|tenniel|mcgee|"
+    r"disney|kingdom\s+hearts)"
 )
+_SEXUAL_EMOJI_RE = re.compile(r"[😏🍆💦🍑👅🥵]")
 
 _HEX_TOKEN_RE = re.compile(r"(?<![\w])(?:0x)?([0-9a-f]{6,})(?![\w])", re.IGNORECASE)
 _B64_TOKEN_RE = re.compile(r"(?<![\w])([A-Za-z0-9+/]{8,}={0,2})(?![\w])")
@@ -884,7 +910,9 @@ _LATEST_MARKER_RE = re.compile(
 )
 
 def _has_sexual(candidates) -> bool:
-    return any(_SEXUAL_RE.search(item) for item in candidates)
+    if any(_SEXUAL_RE.search(item) for item in candidates):
+        return True
+    return any(_SEXUAL_EMOJI_RE.search(item) for item in candidates)
 
 
 def _has_character(candidates) -> bool:
@@ -1182,11 +1210,16 @@ def match_info(text: str, *, force_context: bool = False) -> tuple[str, str]:
                 hit = _CONTEXT_RE.search(candidate)
                 if hit:
                     return hit.group(0), "context"
-    # Alice in a story context (Wonderland, Carroll, rabbit hole, …),
+    # Alice in a story context (Wonderland, Carroll, tea party, …),
     # including cues that span lines. "Alice from accounting" is left alone.
+    # In sexual or RP context, bare Alice/Alicia/Алиса/アリス is blocked
+    # the same way Matilda is. A stated 18+ never exempts that.
     alice_blob = "\n".join([text or "", *candidates])
     if _ALICE_NAME_RE.search(alice_blob) and _ALICE_CUES_RE.search(alice_blob):
         return "alice-story", "always"
+    if force_context or _context_applies(candidates) or _has_media_rp(candidates):
+        if _ALICE_BARE_RE.search(alice_blob) or any(_ALICE_BARE_RE.search(c) for c in candidates):
+            return "alice", "context"
     for candidate in list(candidates) + [text or ""]:
         hit = _HOGWARTS_FIRST_YEAR_RE.search(candidate)
         if hit:
