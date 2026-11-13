@@ -12,10 +12,21 @@ class _R(io.BytesIO):
     def __enter__(s): return s
     def __exit__(s, *a): return False
 
+def _is_lg4(req):
+    try:
+        return json.loads(req.data.decode()).get("model") == C.CLASSIFIER_MODEL
+    except Exception:
+        return False
+
+def _pack(v):
+    return _R(json.dumps({"choices": [{"message": {"content": v}}]}).encode())
+
 def _judge(req, *a, **k):
+    if not _is_lg4(req):
+        return _pack("NO")
     txt = req.data.decode()
     v = "unsafe\nS1" if ("HISTORY:" in txt and "BADLINE" in txt) else "safe"
-    return _R(json.dumps({"choices": [{"message": {"content": v}}]}).encode())
+    return _pack(v)
 
 class StaleShift(unittest.TestCase):
     def test_flagged_window_with_stale_history(self):
@@ -48,9 +59,11 @@ class FooterLastProperty(unittest.TestCase):
         self.addCleanup(C.clear_cache)
 
         def judge(req, *a, **k):
+            if not _is_lg4(req):
+                return _pack("NO")
             txt = req.data.decode()
             v = "unsafe\nS1" if ("HISTORY:" in txt and "BADLINE" in txt) else "safe"
-            return _R(json.dumps({"choices": [{"message": {"content": v}}]}).encode())
+            return _pack(v)
 
         for length in range(1, 16):
             for flag_pos in range(length):

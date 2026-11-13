@@ -150,6 +150,32 @@ def discover_asset_http_callers(root: Path = SOURCE) -> set[str]:
     return names
 
 
+def discover_classifier_http_callers(root: Path = SOURCE) -> set[str]:
+    """Top-level functions in core/classifier.py that call urlopen."""
+    path = Path(root) / "core" / "classifier.py"
+    names: set[str] = set()
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    except (OSError, SyntaxError):
+        return names
+
+    def _calls_urlopen(node: ast.AST) -> bool:
+        for child in ast.walk(node):
+            if not isinstance(child, ast.Call):
+                continue
+            func = child.func
+            if isinstance(func, ast.Name) and func.id == "urlopen":
+                return True
+            if isinstance(func, ast.Attribute) and func.attr == "urlopen":
+                return True
+        return False
+
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and _calls_urlopen(node):
+            names.add(node.name)
+    return names
+
+
 def discover_background_tasks(root: Path = SOURCE) -> set[str]:
     """AST-discover create_task targets and @tasks.loop functions."""
     names: set[str] = set()
@@ -404,6 +430,9 @@ REVIEWED_ENTRYPOINTS = {
     "make_asset": "asset tool entry that calls run_asset",
     "asset": " ?asset cog command that calls run_asset",
     "Asset.asset": "?asset cog command that calls run_asset",
+    "_post": "Llama Guard 4 HTTP classify call",
+    "_child_post": "second-check instruction-model HTTP call",
+    "_age_vision_post": "age-vision HTTP call",
 }
 
 
@@ -1298,6 +1327,7 @@ class AuditCompletenessTests(AuditLogTests):
             discovered = set(discovered) | set(extra_discovered)
         # Asset HTTP entry points are discovered from callers of http_json / run_asset.
         discovered = set(discovered) | discover_asset_http_callers() | {"prepare_generation"}
+        discovered = set(discovered) | discover_classifier_http_callers()
         slots = discover_qt_slots()
         if extra_slots:
             slots = set(slots) | set(extra_slots)
@@ -2043,6 +2073,108 @@ class AuditCompletenessTests(AuditLogTests):
                 blob = " ".join(str(r) for r in _records(self.audit)[before:])
                 if "a red paper boat" in blob or "sk-test-key" in blob:
                     gaps.append("run_asset:prompt-or-key-logged")
+
+            import json as _json
+            from core import classifier as C
+
+            class _HttpOk:
+                def __init__(self, content, req_id="cls-req-1", resp_id="cls-resp-1", raw=None):
+                    self.status = 200
+                    self.headers = {"x-request-id": req_id}
+                    self._raw = raw
+                    self._payload = {
+                        "id": resp_id,
+                        "choices": [{"message": {"content": content}}],
+                    }
+
+                def read(self):
+                    if self._raw is not None:
+                        return self._raw
+                    return _json.dumps(self._payload).encode()
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *exc):
+                    return False
+
+            def _probe_classifier_http(fn, service, content, secret, expect_error=False, side=None, arg=None):
+                before = len(_records(self.audit))
+                opener = side if side is not None else (lambda *a, **k: _HttpOk(content))
+                payload = arg if arg is not None else [{"role": "user", "content": secret}]
+                with mock.patch.object(C, "_endpoint", return_value=("gsk_test_audit_key", C.GROQ_URL)), \
+                     mock.patch("urllib.request.urlopen", side_effect=opener):
+                    try:
+                        fn(payload)
+                    except Exception:
+                        if not expect_error:
+                            pass
+                rows = [
+                    r for r in _records(self.audit)[before:]
+                    if r.get("event") == "api" and r.get("service") == service
+                ]
+                blob = " ".join(str(r) for r in _records(self.audit)[before:])
+                return rows, blob
+
+            secret_lg4 = "secret-lg4-prompt-xyz"
+            rows, blob = _probe_classifier_http(C._post, "classifier", "safe", secret_lg4)
+            if not rows:
+                gaps.append("_post")
+            elif "secret-lg4-prompt-xyz" in blob or "gsk_test_audit_key" in blob:
+                gaps.append("_post:prompt-or-key-logged")
+
+            secret_child = "secret-child-prompt-xyz"
+            yes_rows, yes_blob = _probe_classifier_http(C._child_post, "child-check", "YES", secret_child)
+            no_rows, no_blob = _probe_classifier_http(C._child_post, "child-check", "NO", secret_child)
+            err_rows, err_blob = _probe_classifier_http(
+                C._child_post,
+                "child-check",
+                "",
+                secret_child,
+                expect_error=True,
+                side=lambda *a, **k: (_ for _ in ()).throw(TimeoutError("deadline")),
+            )
+            bad_rows, bad_blob = _probe_classifier_http(
+                C._child_post,
+                "child-check",
+                "",
+                secret_child,
+                expect_error=True,
+                side=lambda *a, **k: _HttpOk("", req_id="child-req-bad", raw=b"<html>nope</html>"),
+            )
+            if not yes_rows or not no_rows or not err_rows or not bad_rows:
+                gaps.append("_child_post")
+            leaked = " ".join((yes_blob, no_blob, err_blob, bad_blob))
+            if "secret-child-prompt-xyz" in leaked or "gsk_test_audit_key" in leaked:
+                gaps.append("_child_post:prompt-or-key-logged")
+
+            secret_vision = "data:image/png;base64,SECRETFRAME"
+            imgs = [{"type": "image_url", "image_url": {"url": secret_vision}}]
+            yes_v, yes_vb = _probe_classifier_http(C._age_vision_post, "age-vision", "YES", secret_vision, arg=imgs)
+            no_v, no_vb = _probe_classifier_http(C._age_vision_post, "age-vision", "NO", secret_vision, arg=imgs)
+            err_v, err_vb = _probe_classifier_http(
+                C._age_vision_post,
+                "age-vision",
+                "",
+                secret_vision,
+                expect_error=True,
+                side=lambda *a, **k: (_ for _ in ()).throw(TimeoutError("deadline")),
+                arg=imgs,
+            )
+            bad_v, bad_vb = _probe_classifier_http(
+                C._age_vision_post,
+                "age-vision",
+                "",
+                secret_vision,
+                expect_error=True,
+                side=lambda *a, **k: _HttpOk("", req_id="vision-req-bad", raw=b"<html>nope</html>"),
+                arg=imgs,
+            )
+            if not yes_v or not no_v or not err_v or not bad_v:
+                gaps.append("_age_vision_post")
+            leaked_v = " ".join((yes_vb, no_vb, err_vb, bad_vb))
+            if "SECRETFRAME" in leaked_v or "gsk_test_audit_key" in leaked_v:
+                gaps.append("_age_vision_post:prompt-or-key-logged")
 
             return gaps
 

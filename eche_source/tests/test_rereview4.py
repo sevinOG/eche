@@ -16,9 +16,16 @@ class _R(io.BytesIO):
 
 def _judge_factory(markers):
     def judge(req, *a, **k):
-        txt = req.data.decode()
-        hit = "HISTORY:" in txt and any(m in txt for m in markers)
-        v = "unsafe\nS12" if hit else "safe"
+        try:
+            body = json.loads(req.data.decode())
+            if body.get("model") != C.CLASSIFIER_MODEL:
+                v = "NO"
+            else:
+                txt = req.data.decode()
+                hit = "HISTORY:" in txt and any(m in txt for m in markers)
+                v = "unsafe\nS12" if hit else "safe"
+        except Exception:
+            v = "safe"
         return _R(json.dumps({"choices": [{"message": {"content": v}}]}).encode())
     return judge
 
