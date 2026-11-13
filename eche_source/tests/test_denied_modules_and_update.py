@@ -35,7 +35,6 @@ class DeniedModuleTests(unittest.TestCase):
             "cogs.asset",
             "core.imagine",
             "core.tools_asset",
-            "core.asset_message",
             "core.asset_safety",
             "asset",
         ):

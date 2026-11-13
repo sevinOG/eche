@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 from datetime import datetime, timezone
 
@@ -17,6 +18,14 @@ USER_CAP_REFUSAL = "The hourly asset limit for this user has been reached."
 GUILD_CAP_REFUSAL = "The hourly asset limit for this server has been reached."
 LOCKOUT_REFUSAL = "Asset generation is locked for this user for 24 hours."
 DM_REFUSAL = "Asset generation is not available in direct messages."
+LIMITS_UNAVAILABLE = "Asset generation is temporarily unavailable."
+
+_LOCK = threading.Lock()
+_corrupt_roots: set[str] = set()
+
+
+class LimitsCorrupt(Exception):
+    """The limits file exists but could not be parsed. Fail closed."""
 
 
 def _path(root: str | None = None) -> str:
@@ -34,14 +43,18 @@ def _path(root: str | None = None) -> str:
 
 def _load(root: str | None = None) -> dict:
     path = _path(root)
+    if not os.path.exists(path):
+        return {"users": {}, "guilds": {}, "lockouts": {}}
     try:
         with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
         if isinstance(data, dict):
+            _corrupt_roots.discard(path)
             return data
     except Exception:
         pass
-    return {"users": {}, "guilds": {}, "lockouts": {}}
+    _corrupt_roots.add(path)
+    raise LimitsCorrupt(path)
 
 
 def _save(data: dict, root: str | None = None) -> None:
@@ -50,6 +63,7 @@ def _save(data: dict, root: str | None = None) -> None:
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(data, fh)
     os.replace(tmp, path)
+    _corrupt_roots.discard(path)
 
 
 def _now() -> float:
@@ -63,7 +77,10 @@ def _prune(stamps: list, now: float, window: float = WINDOW_SECONDS) -> list:
 def is_locked(user_id, *, root: str | None = None) -> bool:
     if user_id is None:
         return False
-    data = _load(root)
+    try:
+        data = _load(root)
+    except LimitsCorrupt:
+        return True
     until = (data.get("lockouts") or {}).get(str(user_id))
     try:
         return float(until) > _now()
@@ -74,14 +91,20 @@ def is_locked(user_id, *, root: str | None = None) -> bool:
 def lockout_user(user_id, *, root: str | None = None) -> None:
     if user_id is None:
         return
-    data = _load(root)
+    try:
+        data = _load(root)
+    except LimitsCorrupt:
+        return
     lockouts = data.setdefault("lockouts", {})
     lockouts[str(user_id)] = _now() + LOCKOUT_SECONDS
     _save(data, root)
 
 
 def lockout_until(user_id, *, root: str | None = None) -> str:
-    data = _load(root)
+    try:
+        data = _load(root)
+    except LimitsCorrupt:
+        return ""
     until = (data.get("lockouts") or {}).get(str(user_id))
     try:
         ts = float(until)
@@ -95,8 +118,11 @@ def lockout_until(user_id, *, root: str | None = None) -> str:
 
 def rate_refusal(user_id, guild_id, *, root: str | None = None) -> str | None:
     """A refusal if the user or guild is over the hourly cap. Does not count."""
+    try:
+        data = _load(root)
+    except LimitsCorrupt:
+        return LIMITS_UNAVAILABLE
     now = _now()
-    data = _load(root)
     if user_id is not None:
         stamps = _prune((data.get("users") or {}).get(str(user_id), []), now)
         if len(stamps) >= USER_HOURLY_CAP:
@@ -109,8 +135,11 @@ def rate_refusal(user_id, guild_id, *, root: str | None = None) -> str | None:
 
 
 def record_use(user_id, guild_id, *, root: str | None = None) -> None:
+    try:
+        data = _load(root)
+    except LimitsCorrupt:
+        return
     now = _now()
-    data = _load(root)
     if user_id is not None:
         users = data.setdefault("users", {})
         users[str(user_id)] = _prune(users.get(str(user_id), []), now) + [now]
@@ -118,6 +147,27 @@ def record_use(user_id, guild_id, *, root: str | None = None) -> None:
         guilds = data.setdefault("guilds", {})
         guilds[str(guild_id)] = _prune(guilds.get(str(guild_id), []), now) + [now]
     _save(data, root)
+
+
+def reserve_use(user_id, guild_id, *, root: str | None = None) -> str | None:
+    """Atomically refuse or take a cap slot at the start of an attempt."""
+    with _LOCK:
+        try:
+            data = _load(root)
+        except LimitsCorrupt:
+            return LIMITS_UNAVAILABLE
+        if user_id is not None:
+            until = (data.get("lockouts") or {}).get(str(user_id))
+            try:
+                if float(until) > _now():
+                    return LOCKOUT_REFUSAL
+            except (TypeError, ValueError):
+                pass
+        refusal = rate_refusal(user_id, guild_id, root=root)
+        if refusal:
+            return refusal
+        record_use(user_id, guild_id, root=root)
+        return None
 
 
 def in_direct_message(guild_id) -> bool:

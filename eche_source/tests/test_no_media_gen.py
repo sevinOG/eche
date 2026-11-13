@@ -62,7 +62,6 @@ _OFFICIAL_IMAGINE = {
     ROOT / "core" / "imagine.py",
     ROOT / "core" / "asset_safety.py",
     ROOT / "core" / "tools_asset.py",
-    ROOT / "core" / "asset_message.py",
     ROOT / "core" / "asset_filter.py",
     ROOT / "core" / "asset_backend.py",
     ROOT / "core" / "asset_review.py",
@@ -76,7 +75,6 @@ _MODULE_NEEDLES = (
     "tools_asset",
     "cogs.asset",
     "cogs.flash",
-    "asset_message",
     "plan_asset",
     "?asset",
     "is_asset_command",
@@ -138,7 +136,6 @@ class NoMediaGenerationTests(unittest.TestCase):
         for name in (
             "core.imagine",
             "core.tools_asset",
-            "core.asset_message",
             "core.asset_safety",
             "core.asset_filter",
             "core.asset_backend",
@@ -214,9 +211,9 @@ class NoMediaGenerationTests(unittest.TestCase):
                 elif isinstance(node, ast.ImportFrom):
                     mod = node.module or ""
                     names = {a.name for a in node.names}
-                    if mod in {"core.imagine", "core.tools_asset", "core.asset_message", "core.asset_safety", "cogs.asset"}:
+                    if mod in {"core.imagine", "core.tools_asset", "core.asset_safety", "cogs.asset"}:
                         found.append(f"{path.relative_to(ROOT)} from {mod}")
-                    if "imagine" in names or "tools_asset" in names or "asset_message" in names or "asset_safety" in names:
+                    if "imagine" in names or "tools_asset" in names or "asset_safety" in names:
                         if mod in {"core", "cogs", ""}:
                             found.append(f"{path.relative_to(ROOT)} from {mod} import {names}")
         self.assertEqual(found, [], "generation imports found in production source")
@@ -519,7 +516,6 @@ class NoMediaGenerationTests(unittest.TestCase):
         for name in (
             "core.imagine",
             "core.tools_asset",
-            "core.asset_message",
             "core.asset_safety",
             "core.asset_filter",
             "core.asset_backend",

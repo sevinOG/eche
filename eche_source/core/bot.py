@@ -511,7 +511,10 @@ class Eche(commands.Bot):
 
         loaded = 0
         failed: list[str] = []
-        from core.media_scan import module_is_blocked
+        from core.media_scan import module_is_blocked, official_pins_ok
+        pin_fail = official_pins_ok()
+        if pin_fail:
+            print(f">>> official Imagine pins failed: {pin_fail}")
         for ext in extensions:
             blocked = module_is_blocked(ext)
             if blocked:

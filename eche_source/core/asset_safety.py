@@ -50,7 +50,7 @@ OUTPUT_UNCHECKED = "I could not check that file, so it was not posted."
 VISION_UNAVAILABLE = "Image checks are unavailable, so the file was not posted."
 MEDIA_FILTER_REFUSAL = OUTPUT_REFUSAL
 
-FRAME_FPS = 4
+FRAME_FPS = 8
 LAST_FRAME_EPSILON = 0.05
 
 
@@ -72,11 +72,20 @@ def asset_enabled() -> bool:
         return False
 
 
-def require_enabled() -> None:
+def require_enabled(**ids) -> None:
     """Re-check the kill switch. Used before each poll and before posting."""
     from core.imagine import ImagineError
 
     if not asset_enabled():
+        _audit(
+            "refusal",
+            category="kill-switch",
+            user_id=ids.get("user_id"),
+            guild_id=ids.get("guild_id"),
+            channel_id=ids.get("channel_id"),
+            request_id=ids.get("request_id") or "",
+            response_id=ids.get("response_id") or "",
+        )
         raise ImagineError(KILL_SWITCH_OFF)
 
 
@@ -135,7 +144,21 @@ def _audit(
         pass
 
 
-def _lock_on_block(user_id) -> None:
+_INFRA_NO_LOCKOUT = frozenset({
+    "classifier-error",
+    "child-check-error",
+    "age-vision-error",
+    "frame-extract",
+    "unreadable-output",
+    "classifier-image-unsupported",
+    "footer-order",
+})
+
+
+def _lock_on_block(user_id, category: str = "") -> None:
+    """24h lockout after a safety block, not after an infrastructure error."""
+    if (category or "").endswith("-error") or category in _INFRA_NO_LOCKOUT:
+        return
     try:
         from core.asset_limits import lockout_user
 
@@ -163,17 +186,17 @@ async def prepare_generation(
 
     if asks_to_bypass_filter(raw):
         note("asset prompt bypass")
-        _lock_on_block(user_id)
+        _lock_on_block(user_id, "bypass")
         _audit("refusal", category="bypass", **ids)
         raise ImagineError(BYPASS_REFUSAL)
     if is_blocked(raw, user_id=user_id, channel_id=channel_id):
         note("asset prompt")
-        _lock_on_block(user_id)
+        _lock_on_block(user_id, "matcher")
         _audit("refusal", category="matcher", **ids)
         raise ImagineError(REFUSAL)
     if media_prompt_blocked(raw):
         note("asset prompt media-filter")
-        _lock_on_block(user_id)
+        _lock_on_block(user_id, "media-filter")
         _audit("refusal", category="media-filter", **ids)
         raise ImagineError(REFUSAL)
 
@@ -183,7 +206,7 @@ async def prepare_generation(
         verdict = "classifier-error"
     if verdict:
         note(f"asset-input-{verdict}")
-        _lock_on_block(user_id)
+        _lock_on_block(user_id, verdict)
         _audit("refusal", category=verdict, **ids)
         raise ImagineError(REFUSAL)
 
@@ -389,7 +412,7 @@ async def _classify_image(
     )
     part = _image_part(data, mime)
     if part is None:
-        _lock_on_block(user_id)
+        _lock_on_block(user_id, "unreadable-output")
         _audit("refusal", category="unreadable-output", **ids)
         raise ImagineError(OUTPUT_UNCHECKED)
     try:
@@ -398,12 +421,12 @@ async def _classify_image(
         verdict = "classifier-error"
     if verdict == "classifier-image-unsupported":
         note("asset-output-vision")
-        _lock_on_block(user_id)
+        _lock_on_block(user_id, verdict)
         _audit("refusal", category=verdict, **ids)
         raise ImagineError(VISION_UNAVAILABLE)
     if verdict:
         note(f"asset-output-{verdict}")
-        _lock_on_block(user_id)
+        _lock_on_block(user_id, verdict)
         _audit("refusal", category=verdict, **ids)
         raise ImagineError(OUTPUT_REFUSAL)
     try:
@@ -412,7 +435,7 @@ async def _classify_image(
         age = "age-vision-error"
     if age:
         note(f"asset-output-{age}")
-        _lock_on_block(user_id)
+        _lock_on_block(user_id, age)
         _audit("refusal", category=age, **ids)
         raise ImagineError(OUTPUT_REFUSAL)
 
@@ -444,7 +467,7 @@ async def check_generated_media(
     if needs_frames:
         frames = extract_video_frames(data, mime)
         if not frames:
-            _lock_on_block(user_id)
+            _lock_on_block(user_id, "frame-extract")
             _audit("refusal", category="frame-extract", **ids)
             raise ImagineError(OUTPUT_UNCHECKED)
         for frame in frames:

@@ -42,8 +42,8 @@ class Asset(commands.Cog):
         try:
             plan = plan_asset(prompt)
             result = await run_asset(plan, api_key(), **ids)
-            result = await require_owner_review(result, bot=self.bot, origin=ctx, **ids)
-            require_enabled()
+            result = await require_owner_review(result, bot=self.bot, origin=ctx, prompt=plan.prompt, **ids)
+            require_enabled(**ids)
         except ImagineError as exc:
             await ctx.reply(exc.text, mention_author=False)
             return
@@ -58,9 +58,11 @@ class Asset(commands.Cog):
         if len(caption) > 120:
             caption = caption[:119].rstrip() + "…"
         try:
-            require_enabled()
+            require_enabled(**ids)
             file = discord.File(io.BytesIO(result.data), filename=result.filename)
             await ctx.reply(content=asset_text(caption), file=file, mention_author=False)
+            from core.asset_review import audit_posted
+            audit_posted(**ids)
         except ImagineError as exc:
             await ctx.reply(exc.text, mention_author=False)
             return

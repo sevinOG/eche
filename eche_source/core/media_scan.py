@@ -535,7 +535,6 @@ OFFICIAL_IMAGINE_MODULES = frozenset({
     "cogs.asset",
     "core.imagine",
     "core.tools_asset",
-    "core.asset_message",
     "core.asset_safety",
     "core.asset_filter",
     "core.asset_backend",
@@ -548,7 +547,6 @@ _OFFICIAL_MODULE_FILES = {
     "cogs.asset": "cogs/asset.py",
     "core.imagine": "core/imagine.py",
     "core.tools_asset": "core/tools_asset.py",
-    "core.asset_message": "core/asset_message.py",
     "core.asset_safety": "core/asset_safety.py",
     "core.asset_filter": "core/asset_filter.py",
     "core.asset_backend": "core/asset_backend.py",
@@ -611,6 +609,31 @@ def official_hash_ok(module: str, path: Path | None, source_root: str | Path | N
     return file_sha256(path) == pinned
 
 
+# SHA-256 of official_imagine.sha256 as shipped. A rewritten pin file fails.
+EMBEDDED_MANIFEST_SHA256 = "c194f8c3572741b58daf9c5d617bfa72d42b4b98984de6825f4ad37cf0d1776e"
+
+
+def manifest_file_sha256(source_root: str | Path | None = None) -> str:
+    path = official_imagine_manifest_path(source_root)
+    if not path.is_file():
+        return ""
+    return file_sha256(path)
+
+
+def official_pins_ok(source_root: str | Path | None = None) -> str:
+    """Why the official Imagine pins failed, or '' if every pin matches."""
+    digest = manifest_file_sha256(source_root)
+    if not digest or digest != EMBEDDED_MANIFEST_SHA256:
+        return "official manifest hash mismatch"
+    if len(_OFFICIAL_MODULE_FILES) != len(OFFICIAL_IMAGINE_MODULES):
+        return "official pin set mismatch"
+    for name, rel in _OFFICIAL_MODULE_FILES.items():
+        path = module_source_path(name, source_root)
+        if not official_hash_ok(name, path, source_root):
+            return f"official hash mismatch: {rel}"
+    return ""
+
+
 def module_is_blocked(module: str, source_root: str | Path | None = None) -> str:
     """Why this module must not load, or '' if it is fine."""
     from core.denied_modules import is_denied_module, normalize_module
@@ -618,8 +641,12 @@ def module_is_blocked(module: str, source_root: str | Path | None = None) -> str
     if is_denied_module(module):
         return "denied media module"
     path = module_source_path(module, source_root)
-    if is_official_imagine_module(module):
-        if official_hash_ok(module, path, source_root):
+    name = normalize_module(module)
+    if is_official_imagine_module(module) or name == "cogs.asset":
+        reason = official_pins_ok(source_root)
+        if reason:
+            return reason
+        if official_hash_ok(name, path, source_root):
             return ""
         return "official hash mismatch"
     if path is None:

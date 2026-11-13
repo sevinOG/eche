@@ -430,6 +430,7 @@ REVIEWED_ENTRYPOINTS = {
     "make_asset": "asset tool entry that calls run_asset",
     "asset": " ?asset cog command that calls run_asset",
     "Asset.asset": "?asset cog command that calls run_asset",
+    "require_owner_review": "owner review of a generated asset",
     "_post": "Llama Guard 4 HTTP classify call",
     "_child_post": "second-check instruction-model HTTP call",
     "_age_vision_post": "age-vision HTTP call",
@@ -1326,7 +1327,7 @@ class AuditCompletenessTests(AuditLogTests):
         if extra_discovered:
             discovered = set(discovered) | set(extra_discovered)
         # Asset HTTP entry points are discovered from callers of http_json / run_asset.
-        discovered = set(discovered) | discover_asset_http_callers() | {"prepare_generation"}
+        discovered = set(discovered) | discover_asset_http_callers() | {"prepare_generation", "require_owner_review"}
         discovered = set(discovered) | discover_classifier_http_callers()
         slots = discover_qt_slots()
         if extra_slots:
@@ -2175,6 +2176,32 @@ class AuditCompletenessTests(AuditLogTests):
             leaked_v = " ".join((yes_vb, no_vb, err_vb, bad_vb))
             if "SECRETFRAME" in leaked_v or "gsk_test_audit_key" in leaked_v:
                 gaps.append("_age_vision_post:prompt-or-key-logged")
+
+
+            before = len(_records(self.audit))
+            from core.asset_review import require_owner_review, set_review_hook
+            from core.imagine import AssetFile
+            async def _approve(result):
+                return True
+            set_review_hook(_approve)
+            try:
+                await require_owner_review(
+                    AssetFile(data=b"\xff\xd8\xff" + b"\x00" * 8, filename="x.jpg", mime="image/jpeg", mode="image"),
+                    user_id=11,
+                    guild_id=22,
+                    channel_id=33,
+                    prompt="secret-review-prompt-xyz",
+                )
+            except Exception:
+                pass
+            set_review_hook(None)
+            rows = [r for r in _records(self.audit)[before:] if r.get("event") == "review"]
+            if not rows:
+                gaps.append("require_owner_review")
+            else:
+                blob = " ".join(str(r) for r in _records(self.audit)[before:])
+                if "secret-review-prompt-xyz" in blob:
+                    gaps.append("require_owner_review:prompt-logged")
 
             return gaps
 

@@ -103,9 +103,9 @@ async def make_asset(ctx, arguments: dict) -> ToolResult:
         if not isinstance(result, AssetFile):
             raise ImagineError("I couldn't make that.")
         result = await require_owner_review(
-            result, bot=getattr(ctx, "bot", None), origin=ctx, **ids
+            result, bot=getattr(ctx, "bot", None), origin=ctx, prompt=plan.prompt, **ids
         )
-        require_enabled()
+        require_enabled(**ids)
     except ImagineError as exc:
         return ToolResult(text=exc.text, fence=False, detail=exc.text)
     except Exception as exc:
@@ -115,8 +115,10 @@ async def make_asset(ctx, arguments: dict) -> ToolResult:
     if len(caption) > 120:
         caption = caption[:119].rstrip() + "…"
     try:
-        require_enabled()
+        require_enabled(**ids)
         await _post(ctx.message, result, caption)
+        from core.asset_review import audit_posted
+        audit_posted(**ids)
     except Exception as exc:
         dprint(f"[asset] send failed: {type(exc).__name__}")
         return ToolResult(

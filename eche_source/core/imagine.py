@@ -17,7 +17,6 @@ from dataclasses import dataclass
 API = "https://api.x.ai/v1"
 IMAGE_MODEL = "grok-imagine-image-2.0"
 VIDEO_MODEL = "grok-imagine-video-1.5-lite"
-VIDEO_EDIT_MODEL = "grok-imagine-video"
 MAX_PROMPT = 2000
 MAX_SECONDS = 8
 DEFAULT_SECONDS = 6
@@ -92,24 +91,11 @@ _SUFFIX_MIME = {
 
 
 @dataclass
-class SourceMedia:
-    data: bytes
-    mime: str
-
-    @property
-    def kind(self) -> str:
-        if self.mime in _VIDEO_MIME:
-            return "video"
-        return "image"
-
-
-@dataclass
 class AssetPlan:
     mode: str
     prompt: str
     seconds: int = DEFAULT_SECONDS
     aspect: str = ""
-    source: SourceMedia | None = None
 
 
 @dataclass
@@ -436,7 +422,7 @@ def _needs_source(text: str) -> bool:
     return bool(_SOURCE_MARK.search(text or ""))
 
 
-def plan_asset(text: str, *, kind: str = "", source: SourceMedia | None = None) -> AssetPlan:
+def plan_asset(text: str, *, kind: str = "", source=None) -> AssetPlan:
     """Decide image, video, edit, or image-to-video. Raises ImagineError when the ask is not one of those."""
     raw = _words(text)
     asked, body = _leading_kind(raw)
@@ -487,13 +473,9 @@ def plan_asset(text: str, *, kind: str = "", source: SourceMedia | None = None) 
         prompt=prompt,
         seconds=_seconds(raw) if mode == "video" else DEFAULT_SECONDS,
         aspect=_aspect(raw, aspects),
-        source=None,
     )
 
 
-def _data_uri(source: SourceMedia) -> str:
-    encoded = base64.b64encode(source.data).decode("ascii")
-    return f"data:{source.mime};base64,{encoded}"
 
 
 def request_for(plan: AssetPlan, prepared) -> tuple[str, dict]:
@@ -846,7 +828,7 @@ async def run_asset(
     wait for owner review before posting.
     """
     from core.asset_backend import get_backend
-    from core.asset_limits import record_use
+    from core.asset_limits import reserve_use
     from core.asset_safety import (
         KILL_SWITCH_OFF,
         MISSING_KEY,
@@ -864,6 +846,10 @@ async def run_asset(
     if not key:
         _audit("refusal", category="missing-key", **ids)
         raise ImagineError(MISSING_KEY)
+    capped = reserve_use(user_id, guild_id)
+    if capped:
+        _audit("refusal", category="rate-limit", **ids)
+        raise ImagineError(capped)
     prepared = await prepare_generation(
         getattr(plan, "prompt", "") or "",
         user_id=user_id,
@@ -882,7 +868,7 @@ async def run_asset(
         posted = await asyncio.to_thread(_post)
         _status, payload = posted
         job_ids = posted.ids() if hasattr(posted, "ids") else {}
-        require_enabled()
+        require_enabled(user_id=user_id, guild_id=guild_id, channel_id=channel_id)
         if plan.mode == "image":
             url = backend.image_url(payload)
         else:
@@ -890,7 +876,7 @@ async def run_asset(
             deadline = asyncio.get_running_loop().time() + VIDEO_WAIT_SECONDS
             url = ""
             while True:
-                require_enabled()
+                require_enabled(user_id=user_id, guild_id=guild_id, channel_id=channel_id)
 
                 def _poll(rid=request_id):
                     return http_json("GET", f"{backend.api_base()}/videos/{rid}", key, None, timeout=60)
@@ -910,7 +896,7 @@ async def run_asset(
                 if asyncio.get_running_loop().time() >= deadline:
                     raise ImagineError("That video took too long. Try a shorter one.")
                 await asyncio.sleep(_POLL_SECONDS)
-        require_enabled()
+        require_enabled(user_id=user_id, guild_id=guild_id, channel_id=channel_id)
         data, mime = await asyncio.to_thread(http_bytes, url)
     except ImagineError as exc:
         _audit(
@@ -943,7 +929,7 @@ async def run_asset(
     name = filename_for(mime)
     if name == "asset.bin":
         name = "asset.mp4" if "video" in plan.mode else "asset.jpg"
-    require_enabled()
+    require_enabled(user_id=user_id, guild_id=guild_id, channel_id=channel_id)
     await check_generated_media(
         data,
         mime,
@@ -954,8 +940,7 @@ async def run_asset(
         request_id=job_ids.get("request_id", ""),
         response_id=job_ids.get("response_id", ""),
     )
-    require_enabled()
-    record_use(user_id, guild_id)
+    require_enabled(user_id=user_id, guild_id=guild_id, channel_id=channel_id)
     _audit(
         "success",
         footer_hash=prepared.footer_hash,
