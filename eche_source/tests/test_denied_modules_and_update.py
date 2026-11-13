@@ -124,4 +124,5 @@ class UnsplashFilterTests(unittest.TestCase):
         src = (SOURCE / "cogs" / "image_search.py").read_text(encoding="utf-8")
         self.assertIn("is_blocked", src)
         self.assertIn('content_filter": "high"', src)
-        self.assertIn("author_is_owner", src)
+        self.assertNotIn("author_is_owner", src)
+        self.assertIn("refuse_query", src)

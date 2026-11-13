@@ -244,15 +244,6 @@ class ImageSearch(commands.Cog):
     @commands.command(name="image")
     async def image(self, ctx, *, query: str = None):
         dprint(f">>> [image] Triggered by {ctx.author}")
-        try:
-            from core.admin_tools import author_is_owner
-            if not await author_is_owner(self.bot, ctx.author):
-                await ctx.send("Only an owner from Settings can use that command.")
-                return
-        except Exception as exc:
-            dprint(f">>> [image] owner check failed: {exc}")
-            await ctx.send("Only an owner from Settings can use that command.")
-            return
 
         if query:
             refused = await self.refuse_query(
