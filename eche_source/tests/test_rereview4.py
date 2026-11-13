@@ -6,6 +6,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from core import classifier as C, client
+from tests.checker_fixtures import patch_legacy_checker_settings
 from core.safety import SAFETY_FOOTER, USER_GUARD, MinorsBlocked
 
 SHA = "66e2062573080eb6f55015acabf38fc33848fbfa8d450a2821918196b464d7f1"
@@ -49,8 +50,9 @@ def build(n_hist, flagged, wordlist_at=(), combined_latest=False, assistant_ever
 class StaleAndWindow(unittest.TestCase):
     def setUp(self):
         C.allow_in_tests(False); C.clear_cache()
+        self._legacy = patch_legacy_checker_settings(); self._legacy.start()
     def tearDown(self):
-        C.allow_in_tests(True); C.clear_cache()
+        self._legacy.stop(); C.allow_in_tests(True); C.clear_cache()
 
     def _run(self, msgs, markers):
         with mock.patch.dict(os.environ, {"GROQ_API_KEY": "gsk_x"}), \

@@ -7,6 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from core import classifier as C, client
 from core.safety import SAFETY_FOOTER, USER_GUARD
+from tests.checker_fixtures import patch_legacy_checker_settings
 
 class _R(io.BytesIO):
     def __enter__(s): return s
@@ -29,6 +30,11 @@ def _judge(req, *a, **k):
     return _pack(v)
 
 class StaleShift(unittest.TestCase):
+    def setUp(self):
+        C.allow_in_tests(False); C.clear_cache()
+        self._legacy = patch_legacy_checker_settings(); self._legacy.start()
+    def tearDown(self):
+        self._legacy.stop(); C.allow_in_tests(True); C.clear_cache()
     def test_flagged_window_with_stale_history(self):
         C.allow_in_tests(False); C.clear_cache()
         msgs = [{"role": "system", "content": "Persona: Eche."}]
@@ -52,11 +58,20 @@ class StaleShift(unittest.TestCase):
 class FooterLastProperty(unittest.TestCase):
     """Footer is last and no flagged history line survives, for any length or flag index."""
 
+    def setUp(self):
+        C.allow_in_tests(False)
+        C.clear_cache()
+        self._legacy = patch_legacy_checker_settings()
+        self._legacy.start()
+
+    def tearDown(self):
+        self._legacy.stop()
+        C.allow_in_tests(True)
+        C.clear_cache()
+
     def test_any_length_and_flag_position(self):
         C.allow_in_tests(False)
         C.clear_cache()
-        self.addCleanup(lambda: C.allow_in_tests(True))
-        self.addCleanup(C.clear_cache)
 
         def judge(req, *a, **k):
             if not _is_lg4(req):

@@ -75,6 +75,11 @@ PUBLIC_KEYS = (
     "local_history_turns",          # desktop chat turns sent; blank uses 20
     "blocked_words",                # extra hard-blocked words, one per line or comma (core/blocklist.py)
     "memory_mask_slurs",            # "0" stops masking slurs in memory pins. Blank stays on.
+    # Safety checkers. Settings-only (not in ENV_MAP). Blank = current chat provider/model.
+    "content_filter_provider",      # cloud | openrouter | ollama. Blank uses the chat provider.
+    "content_filter_model",         # Model id. Blank uses the chat model.
+    "child_check_provider",
+    "child_check_model",
 )
 
 # Map settings key -> environment variable used by the bot
@@ -538,6 +543,7 @@ def save_all(data: dict[str, Any], root: str | None = None) -> None:
     secrets = {k: str(data.get(k) or "").strip() for k in SECRET_KEYS}
 
     existing = _load_encrypted_secrets(root)
+    existing_public = _load_public(root)
     for key in SECRET_KEYS:
         if not secrets.get(key) and existing.get(key):
             secrets[key] = existing[key]
@@ -546,7 +552,19 @@ def save_all(data: dict[str, Any], root: str | None = None) -> None:
     _save_encrypted_secrets(root, secrets)
     try:
         from core.audit import safe_activity
-        safe_activity("settings-save", outcome="success")
+        fields = {}
+        for key in (
+            "content_filter_provider",
+            "content_filter_model",
+            "child_check_provider",
+            "child_check_model",
+        ):
+            old_val = str(existing_public.get(key) or "").strip()
+            new_val = str(public.get(key) or "").strip()
+            if old_val != new_val:
+                fields[f"{key}_old"] = old_val
+                fields[f"{key}_new"] = new_val
+        safe_activity("settings-save", outcome="success", **fields)
     except Exception:
         pass
 

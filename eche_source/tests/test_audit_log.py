@@ -2036,7 +2036,23 @@ class AuditCompletenessTests(AuditLogTests):
                 opener = side if side is not None else (lambda *a, **k: _HttpOk(content))
                 payload = arg if arg is not None else [{"role": "user", "content": secret}]
                 ep = endpoint if endpoint is not None else ("gsk_test_audit_key", C.GROQ_URL)
+                def _probe_setting(key):
+                    if "OLLAMA" in (ep[1] or "").upper() or "11434" in (ep[1] or ""):
+                        if key in ("content_filter_model", "child_check_model"):
+                            return "llama-guard3:8b"
+                        if key in ("content_filter_provider", "child_check_provider"):
+                            return "ollama"
+                    else:
+                        if key == "content_filter_model":
+                            return "meta-llama/llama-guard-4-12b"
+                        if key == "child_check_model":
+                            return "llama-3.1-8b-instant"
+                        if key in ("content_filter_provider", "child_check_provider"):
+                            return "cloud"
+                    return ""
                 with mock.patch.object(C, "_endpoint", return_value=ep), \
+                     mock.patch.object(C, "_child_endpoint", return_value=ep), \
+                     mock.patch.object(C, "_checker_setting", side_effect=_probe_setting), \
                      mock.patch("urllib.request.urlopen", side_effect=opener):
                     try:
                         fn(payload)

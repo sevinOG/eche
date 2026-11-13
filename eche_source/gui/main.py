@@ -48,6 +48,7 @@ from gui.widgets.dialogs import (
     present_failure,
     show_error,
     looks_like_traceback,
+    match_config_hint,
 )
 
 # Tip jar (Cash App + on-chain Bitcoin)
@@ -1162,8 +1163,13 @@ class MainWindow(QMainWindow):
                 channel = data.get("channel", "")
                 text = f"[{channel}] {msg}" if channel else str(msg)
                 self.append_log(text)
-                if looks_like_traceback(str(msg)):
+                if looks_like_traceback(str(msg)) or match_config_hint(str(msg)):
                     self._present_failure(str(msg), log_fn=None)
+            elif event == "error":
+                msg = str(data.get("message") or "")
+                self.append_log(f"[ERROR] {msg}")
+                if msg:
+                    self._present_failure(msg, log_fn=None)
             elif event == "fatal":
                 msg = str(data.get("message") or "Bot failed to start")
                 self.append_log(f"[FATAL] {msg}")
