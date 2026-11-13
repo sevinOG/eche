@@ -274,6 +274,16 @@ async def summarize_context(
     New:
     <last few USER/bot lines verbatim>
     """
+    try:
+        from core.audit import safe_activity
+        safe_activity(
+            "summarizer",
+            outcome="success",
+            user_id=user_id,
+            guild_id=getattr(guild, "id", None),
+        )
+    except Exception:
+        pass
 
     if override_header:
         from core.bot_memory import ensure_bot_memory_channel

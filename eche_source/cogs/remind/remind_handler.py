@@ -276,6 +276,19 @@ class ReminderHandler:
             await original_message.forward(channel)
         except Exception:
             await channel.send("(Could not forward original message.)")
+        try:
+            from core.audit import safe_activity
+            author = getattr(ctx, "author", None)
+            guild = getattr(ctx, "guild", None)
+            safe_activity(
+                "reminder-fire",
+                outcome="success",
+                user_id=getattr(author, "id", None),
+                guild_id=getattr(guild, "id", None),
+                channel_id=getattr(channel, "id", None),
+            )
+        except Exception:
+            pass
 
         await self._drop_record(record)
         self.active_reminders.pop(reminder_id, None)
@@ -306,6 +319,17 @@ class ReminderHandler:
                 await original.forward(channel)
             except Exception:
                 await channel.send("(Could not forward original message.)")
+        try:
+            from core.audit import safe_activity
+            safe_activity(
+                "reminder-fire",
+                outcome="success" if channel is not None else "error",
+                user_id=data.get("user"),
+                guild_id=data.get("guild_id"),
+                channel_id=data.get("channel_id"),
+            )
+        except Exception:
+            pass
         await self._drop_record(record)
         self.active_reminders.pop(data["id"], None)
 

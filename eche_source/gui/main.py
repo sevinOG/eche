@@ -1017,6 +1017,11 @@ class MainWindow(QMainWindow):
 
     def shutdown_for_update(self):
         """Stop the bot and quit so the detached update script can replace Eche.exe."""
+        try:
+            from core.audit import safe_activity
+            safe_activity("shutdown", kind="gui-update", outcome="success")
+        except Exception:
+            pass
         self.append_log("[update] Closing Eche so the update can replace the running files.")
         try:
             self.on_stop_clicked()
@@ -1388,6 +1393,11 @@ class MainWindow(QMainWindow):
             print(f"FATAL ERROR: Could not save GUI logs to {LOG_FILE_PATH}: {e}")
 
     def closeEvent(self, event):
+        try:
+            from core.audit import safe_activity
+            safe_activity("shutdown", kind="gui-close", outcome="success")
+        except Exception:
+            pass
         self.append_log("[INFO] GUI closing...")
         try:
             self.save_logs_to_file()

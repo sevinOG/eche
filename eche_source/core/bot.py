@@ -227,6 +227,78 @@ class Eche(commands.Bot):
             await ensure_queue_message(self)
         except Exception as exc:
             print(f">>> music queue thread: {exc}")
+        try:
+            from core.audit import safe_activity
+            safe_activity(
+                "ready",
+                outcome="success",
+                user_id=getattr(self.user, "id", None),
+            )
+        except Exception:
+            pass
+
+    async def on_disconnect(self):
+        try:
+            from core.audit import safe_activity
+            safe_activity("disconnect", outcome="success")
+        except Exception:
+            pass
+
+    async def on_resumed(self):
+        try:
+            from core.audit import safe_activity
+            safe_activity("reconnect", outcome="success")
+        except Exception:
+            pass
+
+    async def on_guild_join(self, guild):
+        try:
+            from core.audit import safe_activity
+            safe_activity("guild-join", outcome="success", guild_id=getattr(guild, "id", None))
+        except Exception:
+            pass
+
+    async def on_guild_remove(self, guild):
+        try:
+            from core.audit import safe_activity
+            safe_activity("guild-leave", outcome="success", guild_id=getattr(guild, "id", None))
+        except Exception:
+            pass
+
+    async def on_voice_state_update(self, member, before, after):
+        try:
+            me = getattr(self, "user", None)
+            if me is not None and getattr(member, "id", None) != getattr(me, "id", None):
+                return
+            from core.audit import safe_activity
+            before_ch = getattr(before, "channel", None)
+            after_ch = getattr(after, "channel", None)
+            if before_ch == after_ch:
+                return
+            if after_ch and not before_ch:
+                action = "join"
+            elif before_ch and not after_ch:
+                action = "leave"
+            else:
+                action = "move"
+            safe_activity(
+                "voice-state",
+                outcome="success",
+                action=action,
+                user_id=getattr(member, "id", None),
+                guild_id=getattr(getattr(member, "guild", None), "id", None),
+                channel_id=getattr(after_ch or before_ch, "id", None),
+            )
+        except Exception:
+            pass
+
+    async def close(self):
+        try:
+            from core.audit import safe_activity
+            safe_activity("shutdown", outcome="success")
+        except Exception:
+            pass
+        await super().close()
 
     # ---------------------------------------------------------
     # ⭐ GLOBAL BOT/BOT INTERACTION CHECK
@@ -325,9 +397,11 @@ class Eche(commands.Bot):
                 if getattr(item, "command", None) is not None or getattr(item, "send", None) is not None:
                     ctx = item
                     break
+            import sys
+            exc = sys.exc_info()[1]
             audit_error(
                 str(event_method or "event"),
-                error_type="unhandled",
+                error_type=type(exc).__name__ if exc is not None else "unhandled",
                 ctx=ctx,
                 message=message,
             )
@@ -481,6 +555,12 @@ class Eche(commands.Bot):
 
         # ⭐ START ENTERTAINER BACKGROUND LOOP
         self.loop.create_task(entertainer_background_loop(self))
+
+        try:
+            from core.audit_hooks import instrument_bot
+            instrument_bot(self)
+        except Exception as exc:
+            print(f">>> audit hooks skipped: {exc}")
 
 
 # ---------------------------------------------------------
