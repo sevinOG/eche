@@ -115,11 +115,12 @@ def normalize_cog_module(module: str) -> str:
 
 def _deny_if_media(module: str) -> str:
     """Return a log line if this module must never load; otherwise empty."""
-    from core.denied_modules import is_denied_module, normalize_module
+    from core.media_scan import module_is_blocked
 
     name = normalize_cog_module(module)
-    if is_denied_module(name) or is_denied_module(normalize_module(module)):
-        return f"Refused to load denied media module: {name}"
+    blocked = module_is_blocked(name) or module_is_blocked(module)
+    if blocked:
+        return f"Refused to load denied media module: {name} ({blocked})"
     return ""
 
 

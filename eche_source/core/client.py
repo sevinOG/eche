@@ -347,12 +347,19 @@ def _model_is_unset(raw: str) -> bool:
 def _model() -> str:
     raw = (os.getenv("GROQ_MODEL") or "").strip()
     backend = _provider_backend()
+    if backend == "ollama":
+        fallback = DEFAULT_OLLAMA_MODEL
+    elif backend == "openrouter":
+        fallback = DEFAULT_OPENROUTER_MODEL
+    else:
+        fallback = DEFAULT_MODEL
+    try:
+        from core.media_scan import reject_image_model
+        raw = reject_image_model(raw, "")
+    except Exception:
+        pass
     if _model_is_unset(raw):
-        if backend == "ollama":
-            return DEFAULT_OLLAMA_MODEL
-        if backend == "openrouter":
-            return DEFAULT_OPENROUTER_MODEL
-        return DEFAULT_MODEL
+        return fallback
     return raw
 
 
@@ -911,7 +918,18 @@ def _after_http_ok(payload: dict, visible: int, stage: int, data: dict) -> int |
 
 
 def _request_body(payload: dict) -> dict:
-    return {key: value for key, value in payload.items() if not str(key).startswith("_")}
+    # Never request image/video modalities. Providers that accept a
+    # modalities field would otherwise generate pictures.
+    return {
+        key: value
+        for key, value in payload.items()
+        if not str(key).startswith("_")
+        and str(key) not in {
+            "modal" + "ities",
+            "response_" + "modalities",
+            "response" + "Modalities",
+        }
+    }
 
 
 def _ollama_native_url(url: str) -> str | None:
@@ -1614,7 +1632,12 @@ def _extract_message(data: dict) -> dict | None:
         msg = data["choices"][0]["message"]
     except (KeyError, IndexError, TypeError):
         return None
-    return msg if isinstance(msg, dict) else None
+    if not isinstance(msg, dict):
+        return None
+    # Ignore provider image-generation payloads (OpenRouter message.images).
+    if "images" in msg:
+        msg = {key: value for key, value in msg.items() if key != "images"}
+    return msg
 
 
 def _parse_tool_arguments(arguments) -> dict:
