@@ -379,6 +379,21 @@ class OnMessage(commands.Cog):
         if media.message is not None:
             message = media.message
 
+        # Replied-to pictures: Eche's own asset posts need no recheck; anyone
+        # else's get the hardcoded image check once (cached by sha256). One
+        # that does not pass is left out (fail closed), with a short note.
+        if getattr(media, "reply_images", None):
+            from core.reply_images import WITHHELD_NOTE, cleared_reply_parts
+
+            try:
+                parts, withheld = await cleared_reply_parts(media, message)
+            except Exception as e:
+                dprint(f"[on_message] reply image check failed: {type(e).__name__}")
+                parts, withheld = [], True
+            media.reply_parts = list(parts)
+            if withheld:
+                media.text = (f"{media.text}\n{WITHHELD_NOTE}" if media.text else WITHHELD_NOTE)
+
         # Clean message
         cleaned = (
             message.content
@@ -403,8 +418,14 @@ class OnMessage(commands.Cog):
         # Hold this user's memory lock through the reply and the pin writes.
         # The Discord reply is sent before those writes. The fold, when it
         # runs, is the last write on this turn.
-        async with _memory_lock(message.author.id):
-            await self._answer_and_remember(message, guild, cleaned, remembered, media)
+        from core.client import reset_precleared_images, set_precleared_images
+
+        token = set_precleared_images(getattr(media, "reply_parts", None) or [])
+        try:
+            async with _memory_lock(message.author.id):
+                await self._answer_and_remember(message, guild, cleaned, remembered, media)
+        finally:
+            reset_precleared_images(token)
 
     async def _answer_and_remember(self, message, guild, cleaned, remembered, media):
         # Hard block before any prompt is built or model is called. Nothing
@@ -413,7 +434,11 @@ class OnMessage(commands.Cog):
         # is its only guard. A message with pictures takes the image path,
         # whose checks stay on and cannot be turned off.
         user_id, channel_id = _scope(message)
+        # Only pictures in the message itself take the image path. Replied-to
+        # pictures were already cleared (core/reply_images); the reply text
+        # gets no text filter.
         has_images = bool(getattr(media, "images", None))
+        all_images = list(getattr(media, "images", None) or []) + list(getattr(media, "reply_parts", None) or [])
         if has_images and (
             asks_to_bypass_filter(cleaned) or asks_to_bypass_filter(getattr(media, "text", "") or "")
         ):
@@ -442,7 +467,7 @@ class OnMessage(commands.Cog):
             message.author.name,
             cleaned,
             media_note=media.text,
-            image_count=len(media.images),
+            image_count=len(all_images),
             server_id=getattr(message.guild, "id", None),
         )
 
@@ -474,7 +499,7 @@ class OnMessage(commands.Cog):
             max_completion_tokens=completion_tokens,
             tools=offered,
             extra_system=admin_injection(enabled=admin_visible),
-            images=media.images or None,
+            images=all_images or None,
         )
 
         reply = turn.reply or ""
@@ -491,7 +516,7 @@ class OnMessage(commands.Cog):
                 turn,
                 prompt,
                 message.author.id,
-                images=media.images or None,
+                images=all_images or None,
             )
             reply = turn.reply or ""
             quota_reply = turn.quota or reply.strip().lower().startswith(

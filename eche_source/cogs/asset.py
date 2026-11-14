@@ -77,7 +77,11 @@ class Asset(commands.Cog):
             confirm_asset_delivery(mode, channel, **ids)
             require_enabled(mode, **ids)
             file = discord.File(io.BytesIO(result.data), filename=result.filename)
-            await ctx.reply(content=asset_text(caption), file=file, mention_author=False)
+            sent = await ctx.reply(content=asset_text(caption), file=file, mention_author=False)
+            # This file passed the hardcoded checks; a reply to it is not rechecked.
+            from core.reply_images import record_sent_message
+
+            record_sent_message(sent, result.data)
             from core.asset_review import audit_posted
             audit_posted(**ids)
         except ImagineError as exc:

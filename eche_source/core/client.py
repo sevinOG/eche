@@ -37,6 +37,42 @@ _output_context: contextvars.ContextVar[str] = contextvars.ContextVar(
 _request_images: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "eche_request_images", default=False
 )
+# Image parts (by data URL) that already passed the hardcoded image checks:
+# replied-to pictures cleared by core/reply_images. They do not put the
+# request on the image path, so the reply text gets no text filter.
+_precleared_images: contextvars.ContextVar[frozenset] = contextvars.ContextVar(
+    "eche_precleared_images", default=frozenset()
+)
+
+
+def _part_url(part) -> str:
+    if not isinstance(part, dict):
+        return ""
+    url = part.get("image_url")
+    if isinstance(url, dict):
+        url = url.get("url")
+    return str(url or "")
+
+
+def set_precleared_images(parts) -> contextvars.Token:
+    """Mark image parts as already checked for this task's chat request."""
+    urls = frozenset(u for u in (_part_url(p) for p in parts or []) if u)
+    return _precleared_images.set(urls)
+
+
+def reset_precleared_images(token) -> None:
+    try:
+        _precleared_images.reset(token)
+    except Exception:
+        _precleared_images.set(frozenset())
+
+
+def _unchecked_images(prepared) -> list:
+    """Image parts that still need the image path (all but pre-cleared ones)."""
+    from core.classifier import extract_images
+
+    cleared = _precleared_images.get(frozenset())
+    return [p for p in extract_images(prepared) if not (cleared and _part_url(p) in cleared)]
 
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 
@@ -787,11 +823,10 @@ def _sanitize_outgoing(messages: list) -> list:
     image classifier.
     """
     from core.blocklist import note, sanitize_messages
-    from core.classifier import extract_images
     from core.safety import MinorsBlocked, prepare_llm_messages
 
     prepared = prepare_llm_messages(messages)
-    has_images = bool(extract_images(prepared))
+    has_images = bool(_unchecked_images(prepared))
     _request_images.set(has_images)
     if has_images:
         prepared, check = sanitize_messages(prepared)
@@ -849,8 +884,7 @@ def _outgoing_messages(messages: list) -> list:
         asyncio.get_running_loop()
     except RuntimeError:
         return asyncio.run(_classify_outgoing(prepared))
-    from core.classifier import extract_images
-    if extract_images(prepared):
+    if _unchecked_images(prepared):
         from core.blocklist import note
         from core.safety import MinorsBlocked
         note("llm-input-classifier-error")
@@ -867,13 +901,12 @@ async def _classify_outgoing(prepared: list) -> list:
     from core.blocklist import note, split_transcript
     from core.classifier import (
         classify_async,
-        extract_images,
         HISTORY_WINDOW,
     )
     from core.safety import MinorsBlocked, is_footer_message, is_user_guard, message_text
 
     _output_context.set(_request_output_context(prepared))
-    images = extract_images(prepared)
+    images = _unchecked_images(prepared)
 
     hard_parts: list[str] = []
     history_parts: list[str] = []

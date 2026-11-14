@@ -52,6 +52,7 @@ _CODE_SUFFIXES = {".py", ".pyc", ".pyo", ".pyd", ".pyw"}
 # extras, and anything else not on this list) are never deleted.
 REMOVED_PROGRAM_FILES = (
     "cogs/flash.py",
+    "tests/test_video_approval_off.py",
 )
 
 

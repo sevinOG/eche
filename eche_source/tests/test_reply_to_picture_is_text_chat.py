@@ -4,6 +4,8 @@
 # picture was loaded into the turn, so the text reply took the image path,
 # age vision ran on Eche's own post, and the reply was "Nope. Not going
 # there." (llm-input-age). A text reply to a picture is text chat.
+# Since 22:02 ET the model sees replied-to pictures again, pre-cleared by
+# core/reply_images (see tests/test_reply_images_seen.py).
 from __future__ import annotations
 
 import asyncio
@@ -63,11 +65,15 @@ def _owner_reply(attachments=()):
 
 
 class ReplyMediaTests(unittest.TestCase):
-    def test_reply_to_asset_post_loads_no_pictures(self):
+    def test_reply_to_asset_post_keeps_its_pictures_off_the_image_path(self):
+        # 22:02 ET: replied-to pictures are loaded again, but kept apart in
+        # reply_images until core/reply_images clears them. media.images (the
+        # image path) holds only the person's own attachments.
         msg, post = _owner_reply()
         media = asyncio.run(mm.collect_discord_media(msg))
         self.assertEqual(media.images, [])
-        post.attachments[0].read.assert_not_awaited()
+        self.assertEqual(len(media.reply_images), 1)
+        self.assertEqual(media.reply_images[0]["data"], JPEG)
         # The model still knows what was replied to.
         self.assertIn("Replied-to message", media.text)
         self.assertIn("asset.jpg", media.text)

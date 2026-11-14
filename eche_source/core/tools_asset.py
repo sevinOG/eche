@@ -98,7 +98,11 @@ async def _post(message, result: AssetFile, caption: str) -> None:
     if not isinstance(result, AssetFile):
         raise ImagineError("I couldn't make that.")
     file = discord.File(io.BytesIO(result.data), filename=result.filename)
-    await message.reply(content=asset_text(caption), file=file, mention_author=False)
+    sent = await message.reply(content=asset_text(caption), file=file, mention_author=False)
+    # This file passed the hardcoded checks; a reply to it is not rechecked.
+    from core.reply_images import record_sent_message
+
+    record_sent_message(sent, result.data)
 
 
 async def make_asset(ctx, arguments: dict) -> ToolResult:
