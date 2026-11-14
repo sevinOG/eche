@@ -490,6 +490,7 @@ class Music(commands.Cog):
         self.queue_loaded = False
         self._load_error = None
         self._queue_lock = asyncio.Lock()
+        self._connect_lock = asyncio.Lock()
         self._starting = False
 
     # ---------------------------------------------------------
@@ -602,8 +603,20 @@ class Music(commands.Cog):
             await ctx.send("You need to be in a voice channel.")
             return False
 
-        if self.vc is None or not self.vc.is_connected():
-            self.vc = await ctx.author.voice.channel.connect()
+        # One join at a time: a second ?play waits for the first join instead of
+        # starting another handshake. connect_voice bounds the wait, retries once
+        # after dropping a half-open client, logs the missing handshake stage,
+        # and tells the channel when Discord never finishes the join.
+        from core.voice_connect import connect_voice
+
+        async with self._connect_lock:
+            if self.vc is not None and self.vc.is_connected():
+                return True
+            vc = await connect_voice(ctx)
+            if vc is None:
+                self.vc = None
+                return False
+            self.vc = vc
         return True
 
     # ---------------------------------------------------------
