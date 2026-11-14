@@ -31,6 +31,12 @@ OLLAMA_API_URL = "http://localhost:11434/v1/chat/completions"
 _output_context: contextvars.ContextVar[str] = contextvars.ContextVar(
     "eche_output_context", default=""
 )
+# True while the current request carries pictures. Text-only chat has no
+# keyword filter (the safety footer is its guard); the image path keeps its
+# checks on.
+_request_images: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "eche_request_images", default=False
+)
 
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 
@@ -773,15 +779,25 @@ def _request_output_context(messages: list) -> str:
 
 
 def _sanitize_outgoing(messages: list) -> list:
-    """Word-list input check and history quarantine. Sync, no classifier."""
+    """Apply the hardcoded safety footer. Sync, no classifier.
+
+    Text-only chat gets the footer and nothing else: no keyword filter, no
+    memory, history, episode, or system-prompt scan. Only a request with
+    pictures runs the word-list check and history quarantine, ahead of the
+    image classifier.
+    """
     from core.blocklist import note, sanitize_messages
+    from core.classifier import extract_images
     from core.safety import MinorsBlocked, prepare_llm_messages
 
     prepared = prepare_llm_messages(messages)
-    prepared, check = sanitize_messages(prepared)
-    if check:
-        note(check)
-        raise MinorsBlocked(check)
+    has_images = bool(extract_images(prepared))
+    _request_images.set(has_images)
+    if has_images:
+        prepared, check = sanitize_messages(prepared)
+        if check:
+            note(check)
+            raise MinorsBlocked(check)
     _output_context.set(_request_output_context(prepared))
     return prepared
 
@@ -821,9 +837,9 @@ def _drop_or_rebuild_history(prepared: list, drop_indices: set[int]) -> list:
 
 
 def _outgoing_messages(messages: list) -> list:
-    """Apply the hardcoded safety footer and the minors keyword/blocklist check.
+    """Apply the hardcoded safety footer.
 
-    Text-only chat does not run model-based LG or child checks. If the
+    Text-only chat runs no keyword filter and no model-based LG or child checks. If the
     request has images, the image-path classifier stays fail-closed:
     sync callers with no loop run it here; a running loop must use
     _outgoing_messages_async rather than skip those checks.
@@ -964,6 +980,24 @@ async def _output_blocked(*texts, tool_calls=None) -> bool:
                 parts.append(_json.dumps(args, ensure_ascii=False))
             except Exception:
                 parts.append(str(args))
+    if not _request_images.get(False):
+        # Text-only chat: no keyword filter on the reply. Only an image tool
+        # call keeps its argument check; the asset command keeps its own checks too.
+        image_parts: list[str] = []
+        for call in tool_calls or []:
+            if isinstance(call, dict) and str(call.get("name") or "").casefold() == "asset":
+                args = call.get("arguments")
+                if isinstance(args, str):
+                    image_parts.append(args)
+                elif args:
+                    try:
+                        image_parts.append(_json.dumps(args, ensure_ascii=False))
+                    except Exception:
+                        image_parts.append(str(args))
+        if image_parts and is_blocked(*image_parts):
+            note("llm-output")
+            return True
+        return False
     reply = "\n".join(parts)
     context = _output_context.get("")
     combined = (context + "\n" + reply).strip() if context else reply

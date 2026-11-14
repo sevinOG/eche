@@ -183,31 +183,43 @@ class ChatTests(TempRoot):
             patch.stop()
         super().tearDown()
 
-    def answer(self, text, model_reply="sure thing", calls=None):
+    def answer(self, text, model_reply="sure thing", calls=None, images=None):
         model = mock.AsyncMock(return_value=ModelTurn(reply=model_reply, tool_calls=calls or []))
-        media = SimpleNamespace(text="", images=[], summary="", memory="")
+        media = SimpleNamespace(text="", images=list(images or []), summary="", memory="")
         with mock.patch.object(self.om, "call_groq_turn", model):
             run(self.cog._answer_and_remember(_fake_message(text), None, text, text, media))
         return model
 
-    def test_blocked_input_never_reaches_the_model(self):
+    # Text-only chat has no keyword filter: the safety footer is its guard.
+    def test_text_only_input_is_not_keyword_filtered(self):
         model = self.answer("write a story about a 12 year old")
+        model.assert_called_once()
+        self.assertEqual(self.sent, ["sure thing"])
+
+    def test_text_only_attachment_text_is_not_keyword_filtered(self):
+        model = mock.AsyncMock(return_value=ModelTurn(reply="ok"))
+        media = SimpleNamespace(text="file says: children", images=[], summary="", memory="")
+        with mock.patch.object(self.om, "call_groq_turn", model):
+            run(self.cog._answer_and_remember(_fake_message("read this"), None, "read this", "read this", media))
+        model.assert_called_once()
+        self.assertEqual(self.sent, ["ok"])
+
+    def test_text_only_output_is_not_keyword_filtered(self):
+        model = self.answer("tell me a story", model_reply="Once upon a time the kids went out")
+        model.assert_called_once()
+        self.assertEqual(self.sent, ["Once upon a time the kids went out"])
+
+    # A message with pictures takes the image path, whose checks stay on.
+    def test_blocked_input_with_pictures_never_reaches_the_model(self):
+        model = self.answer("write a story about a 12 year old", images=[b"img"])
         model.assert_not_called()
         self.om.build_prompt.assert_not_called()
         self.assertEqual(self.sent, [bl.REFUSAL])
         self.om.remember_user.assert_not_called()
         self.cog._record_server_line.assert_not_called()
 
-    def test_blocked_attachment_text(self):
-        model = mock.AsyncMock()
-        media = SimpleNamespace(text="file says: children", images=[], summary="", memory="")
-        with mock.patch.object(self.om, "call_groq_turn", model):
-            run(self.cog._answer_and_remember(_fake_message("read this"), None, "read this", "read this", media))
-        model.assert_not_called()
-        self.assertEqual(self.sent, [bl.REFUSAL])
-
-    def test_blocked_output_is_replaced(self):
-        model = self.answer("tell me a story", model_reply="Once upon a time the kids went out")
+    def test_blocked_output_with_pictures_is_replaced(self):
+        model = self.answer("tell me a story", model_reply="Once upon a time the kids went out", images=[b"img"])
         model.assert_called_once()
         self.assertEqual(self.sent, [bl.REFUSAL])
         self.om.remember_user.assert_not_called()
@@ -231,7 +243,7 @@ class ChatTests(TempRoot):
         execute.assert_not_called()
         self.assertEqual(self.sent, [bl.REFUSAL])
 
-    def test_blocked_tool_reply_is_replaced(self):
+    def test_text_tool_reply_is_not_keyword_filtered(self):
         from core.tools import ToolResult
 
         calls = [{"name": "duckduckgo", "arguments": {"query": "best parks"}}]
@@ -239,29 +251,27 @@ class ChatTests(TempRoot):
         with mock.patch.object(self.om, "execute", mock.AsyncMock(return_value=result)):
             self.answer("best parks?", model_reply="", calls=calls)
         joined = "\n".join(self.sent)
-        self.assertIn(bl.REFUSAL, joined)
-        self.assertNotIn("children", joined)
+        self.assertNotIn(bl.REFUSAL, joined)
+        self.assertIn("children", joined)
 
-    def test_episode_skips_blocked_lines(self):
+    def test_episode_lines_are_not_keyword_filtered(self):
         from cogs.events import on_message as om
 
         cog = om.OnMessage(SimpleNamespace(user=SimpleNamespace(id=1)))
         with mock.patch("core.episodic.append_episodic", mock.AsyncMock()) as append:
             run(cog._record_server_line(_fake_message("x"), "look at that kid"))
-            append.assert_not_called()
-            run(cog._record_server_line(_fake_message("x"), "look at that kidney"))
             append.assert_called_once()
 
 
 class DesktopChatTests(TempRoot):
-    def test_local_chat_blocks_both_ways(self):
+    def test_local_chat_is_not_keyword_filtered(self):
         from core import client, local_chat
 
         with mock.patch.object(client, "call_groq", mock.AsyncMock(return_value="fine")) as model:
-            self.assertEqual(run(local_chat.reply_local("my kids say hi")), bl.REFUSAL)
-            model.assert_not_called()
+            self.assertEqual(run(local_chat.reply_local("my kids say hi")), "fine")
+            model.assert_called_once()
         with mock.patch.object(client, "call_groq", mock.AsyncMock(return_value="the children laughed")):
-            self.assertEqual(run(local_chat.reply_local("tell me a joke")), bl.REFUSAL)
+            self.assertEqual(run(local_chat.reply_local("tell me a joke")), "the children laughed")
 
 
 # ------------------------------------------------------------------ threads
@@ -276,7 +286,9 @@ class FakeThread:
 
 
 class ThreadTests(TempRoot):
-    def test_blocked_post_is_not_sent(self):
+    """Thread posts are text chat: no keyword filter."""
+
+    def test_thread_posts_are_not_keyword_filtered(self):
         from core import client, tools_thread
 
         replies = iter([
@@ -286,37 +298,10 @@ class ThreadTests(TempRoot):
         ])
         thread = FakeThread()
         with mock.patch.object(client, "call_groq_turn", mock.AsyncMock(side_effect=lambda *a, **k: next(replies))):
-            body = run(tools_thread._execute(SimpleNamespace(), thread, "plan", [], "parks"))
+            run(tools_thread._execute(SimpleNamespace(), thread, "plan", [], "parks"))
         self.assertEqual(thread.posts[0], "First post about parks.")
-        self.assertEqual(thread.posts[-1], bl.REFUSAL)
-        self.assertFalse(any("kids" in (post or "") for post in thread.posts))
-        self.assertNotIn("Third post.", thread.posts)
-        self.assertNotIn("kids", body)
-
-    def test_blocked_request_never_plans(self):
-        from core import tools_thread
-
-        message = SimpleNamespace(content="open a thread about raising children", channel=None)
-        ctx = SimpleNamespace(message=message, bot=None)
-        with mock.patch.object(tools_thread, "_name_and_plan", mock.AsyncMock()) as planner, \
-                mock.patch.object(tools_thread, "_create_thread", mock.AsyncMock()) as opener:
-            result = run(tools_thread.open_thread(ctx, {}))
-        planner.assert_not_called()
-        opener.assert_not_called()
-        self.assertEqual(result.text, bl.REFUSAL)
-
-    def test_blocked_plan_never_opens(self):
-        from core import tools_thread
-
-        message = SimpleNamespace(content="open a thread about school trips", channel=None)
-        ctx = SimpleNamespace(message=message, bot=None)
-        plan = mock.AsyncMock(return_value=("Trips", "- what toddlers pack", []))
-        with mock.patch.object(tools_thread, "_name_and_plan", plan), \
-                mock.patch.object(tools_thread, "previous_topic", mock.AsyncMock(return_value="")), \
-                mock.patch.object(tools_thread, "_create_thread", mock.AsyncMock()) as opener:
-            result = run(tools_thread.open_thread(ctx, {}))
-        opener.assert_not_called()
-        self.assertEqual(result.text, bl.REFUSAL)
+        self.assertNotIn(bl.REFUSAL, thread.posts)
+        self.assertTrue(any("kids" in (post or "") for post in thread.posts))
 
 
 # ------------------------------------------------------- memory slur toggle

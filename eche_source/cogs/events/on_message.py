@@ -190,7 +190,10 @@ class OnMessage(commands.Cog):
             seen.add(name.casefold())
             arguments = (call or {}).get("arguments") or {}
             user_id, channel_id = _scope(message)
-            if asks_to_bypass_filter(_flat_arguments(arguments)):
+            # Only the image tool keeps argument checks. Text tools (lookup,
+            # thread, context) are text chat and are not keyword-filtered.
+            image_tool = name.casefold() == "asset"
+            if image_tool and asks_to_bypass_filter(_flat_arguments(arguments)):
                 block_note(f"{name} arguments bypass")
                 try:
                     await _send_reply(message, BYPASS_REFUSAL)
@@ -200,7 +203,7 @@ class OnMessage(commands.Cog):
                 said.append(BYPASS_REFUSAL)
                 ran_any = True
                 break
-            if is_blocked(_flat_arguments(arguments), user_id=user_id, channel_id=channel_id):
+            if image_tool and is_blocked(_flat_arguments(arguments), user_id=user_id, channel_id=channel_id):
                 # The model asked a tool for something on the block list.
                 block_note(f"{name} arguments")
                 try:
@@ -222,10 +225,10 @@ class OnMessage(commands.Cog):
                     "sorry, i'm being rate limited"
                 ):
                     lookup_quota = True
-            if not result.quiet and is_blocked(spoken, user_id=user_id, channel_id=channel_id):
+            if image_tool and not result.quiet and is_blocked(spoken, user_id=user_id, channel_id=channel_id):
                 block_note(f"{name} reply")
                 spoken = BLOCK_REFUSAL
-            elif not result.quiet and coaches_bypass(spoken):
+            elif image_tool and not result.quiet and coaches_bypass(spoken):
                 block_note(f"{name} reply bypass")
                 spoken = BYPASS_REFUSAL
             # A quiet tool already posted everything, including its announcement.
@@ -379,15 +382,23 @@ class OnMessage(commands.Cog):
     async def _answer_and_remember(self, message, guild, cleaned, remembered, media):
         # Hard block before any prompt is built or model is called. Nothing
         # from this message is remembered or added to the episode.
+        # Text-only chat has no keyword filter; the hardcoded safety footer
+        # is its only guard. A message with pictures takes the image path,
+        # whose checks stay on and cannot be turned off.
         user_id, channel_id = _scope(message)
-        if asks_to_bypass_filter(cleaned) or asks_to_bypass_filter(getattr(media, "text", "") or ""):
+        has_images = bool(getattr(media, "images", None))
+        if has_images and (
+            asks_to_bypass_filter(cleaned) or asks_to_bypass_filter(getattr(media, "text", "") or "")
+        ):
             block_note("chat message bypass")
             try:
                 await _send_reply(message, BYPASS_REFUSAL)
             except Exception as e:
                 dprint(f"[on_message] refusal send failed: {e}")
             return
-        if is_blocked(cleaned, getattr(media, "text", ""), user_id=user_id, channel_id=channel_id):
+        if has_images and is_blocked(
+            cleaned, getattr(media, "text", ""), user_id=user_id, channel_id=channel_id
+        ):
             block_note("chat message")
             try:
                 await _send_reply(message, BLOCK_REFUSAL)
@@ -483,11 +494,13 @@ class OnMessage(commands.Cog):
                 dprint(f"[on_message] tool delivery failed: {e}")
                 ran_tools = False
 
-        if not ran_tools and reply.strip() and is_blocked(reply, user_id=user_id, channel_id=channel_id):
+        if has_images and not ran_tools and reply.strip() and is_blocked(
+            reply, user_id=user_id, channel_id=channel_id
+        ):
             # The model's own reply is checked before it is sent.
             block_note("model reply")
             reply = BLOCK_REFUSAL
-        elif not ran_tools and coaches_bypass(reply):
+        elif has_images and not ran_tools and coaches_bypass(reply):
             block_note("model reply bypass")
             reply = BYPASS_REFUSAL
         elif not ran_tools and part_stub(reply):
@@ -567,9 +580,6 @@ class OnMessage(commands.Cog):
             return
         body = " ".join((text or "").split())
         if not body and not tool_lines and not getattr(message, "attachments", None):
-            return
-        if is_blocked(body):
-            # Blocked text never reaches the episode or its summarizer.
             return
         try:
             from core.episodic import append_episodic, turn_lines

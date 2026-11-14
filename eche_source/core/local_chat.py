@@ -24,15 +24,7 @@ async def reply_local(user_text: str) -> str:
     user_text = (user_text or "").strip()
     if not user_text:
         return ""
-    from core.blocklist import REFUSAL, is_blocked, note
-    from core.guardrails import BYPASS_REFUSAL, asks_to_bypass_filter, coaches_bypass
-
-    if asks_to_bypass_filter(user_text):
-        note("desktop-bypass")
-        return BYPASS_REFUSAL
-    if is_blocked(user_text, user_id="local", channel_id="desktop"):
-        note("desktop-input")
-        return REFUSAL
+    # Text-only desktop chat: the safety footer is the guard; no keyword filter.
 
     # Push settings (incl. Ollama mode + key) into this process for client.py
     try:
@@ -107,12 +99,6 @@ async def reply_local(user_text: str) -> str:
         else:
             text = out
         text = _strip_tags(str(text or ""))
-        if is_blocked(text, user_id="local", channel_id="desktop"):
-            note("desktop-output")
-            return REFUSAL
-        if coaches_bypass(text):
-            note("desktop-output-bypass")
-            return BYPASS_REFUSAL
         audit_mod.chat(kind="desktop", user_id="local", channel_id="desktop", outcome="success")
         return text or "(empty model reply)"
     except Exception as e:

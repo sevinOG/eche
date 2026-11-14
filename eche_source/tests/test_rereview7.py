@@ -119,7 +119,7 @@ class OutputPath(Base):
         self.assertIn("small clear answer", reply.lower())
         self.assertNotEqual(raw, REFUSAL)
 
-    def test_call_groq_refuses_when_the_keyword_filter_blocks_the_reply(self):
+    def test_call_groq_text_only_reply_is_not_keyword_filtered(self):
         import core.client as client
         from core.blocklist import REFUSAL
 
@@ -130,8 +130,10 @@ class OutputPath(Base):
              mock.patch.object(client, "_groq_sdk_call", side_effect=fake_sdk):
             reply, _thoughts = asyncio.run(client.call_groq("hello there, this is a normal user message."))
             raw = asyncio.run(client.call_groq_raw("hello there, this is a normal user message."))
-        self.assertEqual(reply, REFUSAL)
-        self.assertEqual(raw, REFUSAL)
+        # Text-only chat has no keyword filter; the safety footer is its guard.
+        self.assertNotEqual(reply, REFUSAL)
+        self.assertNotEqual(raw, REFUSAL)
+        self.assertIn("walked into the room", reply)
 
 
 # The 23 cases from the review repro. Official copy asserts the gaps are closed.

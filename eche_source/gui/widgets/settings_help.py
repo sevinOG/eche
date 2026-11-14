@@ -545,8 +545,9 @@ def _cap_help() -> dict[str, tuple[str, str]]:
     out["blocked_words"] = (
         "Blocked words",
         "### What it does\n"
-        "Eche refuses anything involving minors: the message, its own reply, "
-        "tool calls, and thread posts. The model is not called for a blocked request. "
+        "Image requests (?asset and chat messages with pictures) are refused when "
+        "they match this list, before any model is called. Text-only chat is not "
+        "word-filtered; the built-in safety footer still goes with every request. "
         "The built-in list is in core/blocklist.py.\n\n"
         "### Adding words\n"
         "One word or phrase per line, or commas between them. Whole words only, "
