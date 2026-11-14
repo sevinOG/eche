@@ -51,6 +51,12 @@ _PEOPLE_WORDS = (
     r"wom[ae]n|m[ae]n|girls?|boys?|guys?|lad(?:y|ies)|gals?|dudes?|females?|males?|"
     r"wives?|wife|husbands?|mothers?|moms?|fathers?|dads?|brides?|grooms?|"
     r"he|she|him|her|his|hers|they|them|"
+    # Self-portraits and "what I look like" requests show a person too
+    # (live 09:59 ET: "generate what you think I look like eche" got no hint
+    # and the output was read as an apparent minor).
+    r"me|myself|yourself|you|look(?:s|ing)?\s+like|lookalikes?|"
+    # Common misspellings (live 09:31 ET: "anthromorphic heavyset femlale").
+    r"anthr\w*morph\w*|fem\w*|"
     r"portraits?|selfies?|faces?|bod(?:y|ies)|"
     r"models?|dancers?|singers?|actors?|actress(?:es)?|celebrit(?:y|ies)|"
     r"pilots?|soldiers?|warriors?|knights?|heroes|hero|heroines?|villains?|"
@@ -66,7 +72,7 @@ _PEOPLE_WORDS = (
 )
 _CHARACTER_RE = re.compile(rf"\b(?:{_PEOPLE_WORDS})\b", re.IGNORECASE)
 _FEMALE_RE = re.compile(
-    r"\b(?:female|woman|women|girls?|lad(?:y|ies)|gals?|she|her|hers|feminine|wife|wives|"
+    r"\b(?:female|fem\w*|woman|women|girls?|lad(?:y|ies)|gals?|she|her|hers|feminine|wife|wives|"
     r"mothers?|moms?|brides?|actress(?:es)?|princess(?:es)?|queens?|heroines?|witch(?:es)?|"
     r"mermaids?|cowgirls?|catgirls?|waifus?)\b",
     re.IGNORECASE,

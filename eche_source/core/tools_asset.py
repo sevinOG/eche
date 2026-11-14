@@ -190,8 +190,10 @@ async def make_asset(ctx, arguments: dict) -> ToolResult:
             # A short excerpt of the declined message, so a decline can be
             # diagnosed from the log (the prompt is already logged on runs).
             excerpt = " ".join(str(user_text or "").split())[:200]
+            # The tool prompt the model wrote, so an over-decline can be
+            # reproduced (prompts are logged on runs too).
             record("asset-request", source="chat", outcome="declined", reason=declined,
-                   message=excerpt, **_ids(message))
+                   message=excerpt, prompt=raw_prompt[:500], **_ids(message))
         except Exception:
             pass
         return ToolResult(text=NO_REQUEST_DECLINED, fence=False, declined=True, outcome="declined")

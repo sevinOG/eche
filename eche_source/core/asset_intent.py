@@ -83,7 +83,11 @@ def shares_meaningful_word(prompt: str, text: str) -> bool:
 
 # An open request leaves the subject to Eche, so the prompt need not overlap.
 _OPEN_RE = re.compile(
-    r"(?i)\b(?:something|anything|surprise\s+me|whatever|random|your\s+choice|you\s+pick|up\s+to\s+you)\b"
+    r"(?i)\b(?:something|anything|surprise\s+me|whatever|random|your\s+choice|you\s+pick|up\s+to\s+you|"
+    # A plain go-ahead that leaves the subject to Eche or the chat context
+    # (live 10:01 ET: "just do it based off my context" was declined).
+    r"(?:just\s+)?do\s+it|go\s+ahead|you\s+decide|"
+    r"(?:based|base\s+it)\s+(?:on|off(?:\s+of)?)\s+(?:my|our|the|this)\s+(?:context|chat|convo|conversation|messages?))\b"
 )
 
 
