@@ -101,8 +101,11 @@ class LocalAgeVisionTests(unittest.TestCase):
         self._run(_ollama("NO"), adult=True)
         prompt = self.sent[0][1]["messages"][0]["content"]
         self.assertEqual(prompt, C.AGE_VISION_ADULT_PROMPT)
-        for word in ("anime", "cartoon", "chibi", "doll", "real or identifiable person", "clearly an adult"):
+        for word in ("anime", "cartoon", "chibi", "doll", "real or identifiable person", "clearly an adult",
+                     "If unsure, answer YES."):
             self.assertIn(word, prompt)
+        # Images with no people or characters at all are not age-blocked in 18+ mode.
+        self.assertIn("no people, characters, or human-like figures at all", prompt)
 
     def test_yes_blocks(self):
         self.assertEqual(self._run(_ollama("YES")), "age-vision-yes")
