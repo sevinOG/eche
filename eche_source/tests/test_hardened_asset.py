@@ -17,11 +17,8 @@ from core.asset_filter import media_prompt_blocked
 from core.asset_limits import (
     DM_REFUSAL,
     GUILD_HOURLY_CAP,
-    LOCKOUT_REFUSAL,
     USER_HOURLY_CAP,
     in_direct_message,
-    is_locked,
-    lockout_user,
     rate_refusal,
     record_use,
 )
@@ -271,7 +268,6 @@ class HardenedAssetTests(unittest.TestCase):
     def test_owner_only_is_an_extra_gate(self):
         with mock.patch("core.asset_safety.asset_enabled", return_value=True), \
              mock.patch("core.imagine.asset_audience", return_value="owner"), \
-             mock.patch("core.asset_limits.is_locked", return_value=False), \
              mock.patch("core.asset_limits.rate_refusal", return_value=None):
             self.assertIsNone(refuse_speaker(True, user_id=1, guild_id=2, channel_id=3, asset_mode=AssetMode(enabled=True, adult=False, approval=True, owner_only=True, user_cap=10, guild_cap=30, video=True)))
             self.assertIsNotNone(refuse_speaker(False, user_id=1, guild_id=2, channel_id=3, asset_mode=AssetMode(enabled=True, adult=False, approval=True, owner_only=True, user_cap=10, guild_cap=30, video=True)))
@@ -285,11 +281,8 @@ class HardenedAssetTests(unittest.TestCase):
                 DM_REFUSAL,
             )
 
-    def test_lockout_and_hourly_caps(self):
+    def test_hourly_caps(self):
         with tempfile.TemporaryDirectory(prefix="eche-limits-") as raw:
-            lockout_user(77, root=raw)
-            self.assertTrue(is_locked(77, root=raw))
-            self.assertFalse(is_locked(78, root=raw))
             for _ in range(USER_HOURLY_CAP):
                 record_use(88, 99, root=raw)
             self.assertTrue(
@@ -540,17 +533,12 @@ class OfficialImagineHashTests(unittest.TestCase):
             self.assertEqual(got.count(None), USER_HOURLY_CAP)
             self.assertEqual(sum(1 for x in got if x), 15 - USER_HOURLY_CAP)
             path = Path(raw) / "config" / "asset_limits.json"
-            # lock someone out, then corrupt the file
-            from core.asset_limits import lockout_user, is_locked
-            lockout_user(9, root=raw)
-            self.assertTrue(is_locked(9, root=raw))
+            # Corrupt the file: caps fail closed.
             path.write_text("{not json", encoding="utf-8")
             self.assertEqual(rate_refusal(3, 4, root=raw), LIMITS_UNAVAILABLE)
-            self.assertTrue(is_locked(9, root=raw))
             self.assertIsNotNone(reserve_use(3, 4, root=raw))
 
-    def test_classifier_error_does_not_lock_the_user(self):
-        from core.asset_limits import is_locked
+    def test_classifier_error_still_blocks(self):
         from core.asset_safety import prepare_generation
 
         with tempfile.TemporaryDirectory(prefix="eche-lock-") as raw:
@@ -563,7 +551,6 @@ class OfficialImagineHashTests(unittest.TestCase):
                     asyncio.run(
                         prepare_generation("a red paper boat", user_id=44, guild_id=55, channel_id=66)
                     )
-            self.assertFalse(is_locked(44, root=raw))
 
     def test_review_decide_denies_when_owner_id_is_missing(self):
         from core.asset_review import _OwnerReviewView
@@ -629,29 +616,23 @@ class OfficialImagineHashTests(unittest.TestCase):
             # prompt_choice is not reached when pins fail.
             self.assertFalse(asset_enabled())
 
-    def test_output_verdict_does_not_lock_the_requester(self):
-        from core.asset_limits import is_locked
+    def test_output_verdict_blocks(self):
         from core.asset_safety import check_generated_media
 
         frame = b"\xff\xd8\xff" + b"\x00" * 16
-        with tempfile.TemporaryDirectory(prefix="eche-outlock-") as raw:
-            with mock.patch("core.secrets._user_root", return_value=raw), \
-                 mock.patch("core.classifier.classify_media_async", new=mock.AsyncMock(return_value="S2")), \
-                 mock.patch("core.classifier.age_vision_async", new=mock.AsyncMock(return_value="")):
-                with self.assertRaises(ImagineError):
-                    asyncio.run(check_generated_media(frame, "image/jpeg", footer_hash=FOOTER_HASH, user_id=81))
-            self.assertFalse(is_locked(81, root=raw))
+        with mock.patch("core.classifier.classify_media_async", new=mock.AsyncMock(return_value="S2")), \
+             mock.patch("core.classifier.age_vision_async", new=mock.AsyncMock(return_value="")):
+            with self.assertRaises(ImagineError):
+                asyncio.run(check_generated_media(frame, "image/jpeg", footer_hash=FOOTER_HASH, user_id=81))
 
-    def test_prompt_block_still_locks_the_requester(self):
-        from core.asset_limits import is_locked
+    def test_prompt_block_still_blocks_and_is_logged(self):
         from core.asset_safety import prepare_generation
 
-        with tempfile.TemporaryDirectory(prefix="eche-inlock-") as raw:
-            with mock.patch("core.secrets._user_root", return_value=raw), \
-                 mock.patch("core.blocklist.is_blocked", return_value=True):
-                with self.assertRaises(ImagineError):
-                    asyncio.run(prepare_generation("blocked", user_id=82, guild_id=1, channel_id=1))
-            self.assertTrue(is_locked(82, root=raw))
+        with mock.patch("core.blocklist.is_blocked", return_value=True), \
+             mock.patch("core.blocklist.note") as note:
+            with self.assertRaises(ImagineError):
+                asyncio.run(prepare_generation("blocked", user_id=82, guild_id=1, channel_id=1))
+        note.assert_called()
 
     def test_one_owner_decision_stops_the_other_owners_view(self):
         from core.asset_review import _OwnerReviewView
@@ -914,20 +895,6 @@ class HeldOutIncidentFilterTests(unittest.TestCase):
     def test_brushes_and_chopsticks_count_as_objects(self):
         self.assertTrue(media_prompt_blocked("two brushes kissing"))
         self.assertTrue(media_prompt_blocked("a pair of chopsticks in love"))
-
-    def test_media_filter_locks_only_after_two_hits_in_an_hour(self):
-        from core.asset_limits import (
-            is_locked,
-            note_media_filter_block,
-        )
-        with tempfile.TemporaryDirectory(prefix="eche-strike-") as raw:
-            self.assertFalse(note_media_filter_block(42, root=raw))
-            self.assertFalse(is_locked(42, root=raw))
-            self.assertTrue(note_media_filter_block(42, root=raw))
-            # The helper only reports that a lock is due; lockout_user is
-            # applied by the caller. A second user is unaffected.
-            self.assertFalse(is_locked(99, root=raw))
-            self.assertFalse(note_media_filter_block(99, root=raw))
 
 
 if __name__ == "__main__":

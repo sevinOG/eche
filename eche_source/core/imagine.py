@@ -119,10 +119,9 @@ class ImagineError(Exception):
 #   safety_block       Eche's own checks refused the request or the file
 #   provider_filtered  xAI Imagine's own moderation refused it
 #   capped             the hourly limit was reached
-#   locked             a 24h minors-safety lockout is active
 #   not_allowed        a setting or permission gate (kill switch, owner only, DMs, review)
 #   error              something failed (timeout, checker or provider unavailable)
-ASSET_STATUSES = ("safety_block", "provider_filtered", "capped", "locked", "not_allowed", "error")
+ASSET_STATUSES = ("safety_block", "provider_filtered", "capped", "not_allowed", "error")
 RETRY_RULE = "Do not retry or rephrase unless they ask again in a new message."
 
 
@@ -133,7 +132,7 @@ def error_status(exc) -> str:
         return status
     text = str(getattr(exc, "text", "") or exc or "")
     try:
-        from core.asset_limits import DM_REFUSAL, is_cap_refusal, is_lockout_refusal, LOCKOUT_REFUSAL
+        from core.asset_limits import DM_REFUSAL, is_cap_refusal
         from core.asset_safety import (
             CHANNEL_CHANGED_REFUSAL,
             KILL_SWITCH_OFF,
@@ -150,8 +149,6 @@ def error_status(exc) -> str:
         return "provider_filtered"
     if is_cap_refusal(text):
         return "capped"
-    if text == LOCKOUT_REFUSAL or is_lockout_refusal(text):
-        return "locked"
     if text in (OUTPUT_REFUSAL, SOURCE_REFUSAL, REFUSAL, BYPASS_REFUSAL):
         return "safety_block"
     if text in (KILL_SWITCH_OFF, MISSING_KEY, DM_REFUSAL, CHANNEL_CHANGED_REFUSAL, MODE_CHANGED_REFUSAL, ADULT_CHANNEL_REFUSAL):
@@ -876,16 +873,14 @@ def refuse_speaker(
     asset_mode=None,
     out=None,
 ) -> str | None:
-    """Audit and return a refusal if a gate applies (kill switch, owner-only, DMs, lockout, caps).
+    """Audit and return a refusal if a gate applies (kill switch, owner-only, DMs, caps).
 
     Reads one AssetMode snapshot when the caller does not pass one, and
     stores it on out['mode'] so the rest of the request can reuse it.
     """
     from core.asset_limits import (
         DM_REFUSAL,
-        LOCKOUT_REFUSAL,
         in_direct_message,
-        is_locked,
         no_slot_refusal,
     )
     from core.asset_safety import (
@@ -913,15 +908,6 @@ def refuse_speaker(
     if not speaker_allowed(is_owner, snap):
         _audit("refusal", category="owner-only", mode=snap, **ids)
         return refusal(is_owner, snap)
-    # The bot owner is exempt from the lockout, the same as the caps.
-    if not is_owner and is_locked(user_id):
-        _audit("refusal", category="lockout", mode=snap, **ids)
-        try:
-            from core.asset_limits import lockout_message
-
-            return lockout_message(user_id)
-        except Exception:
-            return LOCKOUT_REFUSAL
     if out is not None:
         out["owner"] = bool(is_owner)
     # The bot owner has no hourly or daily cap. Safety checks still apply.
@@ -1011,9 +997,6 @@ async def _run_asset_reserved(plan, key, snap, ids, get_backend, prepare_generat
         channel_id=channel_id,
         mode=snap,
     )
-    from core.asset_safety import prompt_is_sexual
-
-    sexual = prompt_is_sexual(getattr(plan, "prompt", "") or "")
     source = getattr(plan, "source", None)
     if source is not None:
         # The replied-to file goes through the same hardcoded child checks
@@ -1037,7 +1020,6 @@ async def _run_asset_reserved(plan, key, snap, ids, get_backend, prepare_generat
                 guild_id=guild_id,
                 channel_id=channel_id,
                 mode=snap,
-                sexual=sexual,
             )
         require_enabled(snap, user_id=user_id, guild_id=guild_id, channel_id=channel_id)
     elif plan.mode in ("image_edit", "video_edit"):
@@ -1133,7 +1115,6 @@ async def _run_asset_reserved(plan, key, snap, ids, get_backend, prepare_generat
         request_id=job_ids.get("request_id", ""),
         response_id=job_ids.get("response_id", ""),
         mode=snap,
-        sexual=sexual,
     )
     require_enabled(snap, user_id=user_id, guild_id=guild_id, channel_id=channel_id)
     _audit(

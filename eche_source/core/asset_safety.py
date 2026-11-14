@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import base64
 import math
-import re
 import os
 import shutil
 import subprocess
@@ -510,73 +509,6 @@ def _audit(
         pass
 
 
-_INFRA_NO_LOCKOUT = frozenset({
-    "classifier-error",
-    "child-check-error",
-    "age-vision-error",
-    "frame-extract",
-    "unreadable-output",
-    "classifier-image-unsupported",
-    "footer-order",
-})
-
-# Strikes count only for clear sexual-plus-minor signals:
-#   matcher         the minors keyword list on the request (locks now)
-#   child-check     the child check on the request (locks now)
-#   classifier-s4   Llama Guard S4 (child sexual exploitation) on the request (locks now)
-#   media-filter    youthful cues in a sexual request (two in an hour)
-#   age-block       a source or output age block on a sexual request (two in an hour)
-# Bypass wording, other classifier categories, and age blocks on non-sexual
-# requests never add a strike. The owner is never locked (see refuse_speaker).
-STRIKE_RULES = ("matcher", "child-check", "classifier-s4", "media-filter", "age-block")
-
-_SEXUAL_RE = re.compile(
-    r"(?i)\b(?:sex|sexy|sexual\w*|sexi\w*|nsfw|nude|nudes|nudity|naked|porn\w*|hentai|"
-    r"erotic\w*|lewd|horny|fetish\w*|kinky|lingerie|topless|bottomless|tits?|titties|"
-    r"titty|boobs?|boobies|breasts?|cleavage|nipples?|areolae?|booty|ass|thicc|curvy|"
-    r"curvaceous|busty|bulge|dicks?|cocks?|penis|penises|pussy|vagina|genitals?|"
-    r"cum|cumming|cumshot|orgasm\w*|seduc\w*|strip(?:s|ped|ping|per|pers|tease)?|"
-    r"undress\w*|bikini|thong|panties|bra|onlyfans|milf|bdsm|bondage|spank\w*|"
-    r"moan\w*)\b"
-)
-
-
-def prompt_is_sexual(text: str) -> bool:
-    """A plain keyword read of whether the request asks for sexual content."""
-    return bool(_SEXUAL_RE.search(str(text or "")))
-
-
-def _lock_on_block(user_id, category: str = "") -> None:
-    """24h lockout for a clear sexual-plus-minor signal (see STRIKE_RULES)."""
-    if (category or "").endswith("-error") or category in _INFRA_NO_LOCKOUT:
-        return
-    if category not in STRIKE_RULES:
-        return
-    try:
-        from core.asset_limits import lockout_user
-
-        lockout_user(user_id, reason=category)
-    except Exception:
-        pass
-    try:
-        from core.audit import record
-
-        record("asset", outcome="lockout", category=f"strike-{category}", user_id=user_id, safety=True)
-    except Exception:
-        pass
-
-
-def _prompt_strike(verdict: str, signals: list) -> str:
-    """The strike rule a prompt classifier verdict triggers, or ''."""
-    if verdict == "child-check-unsafe":
-        return "child-check"
-    if verdict == "classifier-unsafe":
-        for kind, value in signals or []:
-            if kind == "classifier-categories" and "S4" in {str(c).upper() for c in (value or ())}:
-                return "classifier-s4"
-    return ""
-
-
 async def prepare_generation(
     prompt: str,
     *,
@@ -598,36 +530,23 @@ async def prepare_generation(
 
     if asks_to_bypass_filter(raw):
         note("asset prompt bypass")
-        # Bypass wording is refused but is not a sexual-plus-minor strike.
         _audit("refusal", category="bypass", mode=snap, **ids)
         raise ImagineError(BYPASS_REFUSAL)
     if is_blocked(raw, user_id=user_id, channel_id=channel_id):
         note("asset prompt")
-        _lock_on_block(user_id, "matcher")
         _audit("refusal", category="matcher", mode=snap, **ids)
         raise ImagineError(REFUSAL)
     if media_prompt_blocked(raw, adult=snap.adult):
         note("asset prompt media-filter")
-        from core.asset_limits import note_media_filter_block
-
-        # Youthful cues only count as a strike in a sexual request.
-        if prompt_is_sexual(raw) and note_media_filter_block(user_id):
-            _lock_on_block(user_id, "media-filter")
         _audit("refusal", category="media-filter", mode=snap, **ids)
         raise ImagineError(REFUSAL)
 
-    from core.classifier import collect_signals
-
-    signals = collect_signals()
     try:
         verdict = await classify_async(raw)
     except Exception:
         verdict = "classifier-error"
     if verdict:
         note(f"asset-input-{verdict}")
-        strike = _prompt_strike(verdict, signals)
-        if strike:
-            _lock_on_block(user_id, strike)
         _audit("refusal", category=verdict, mode=snap, **ids)
         raise ImagineError(REFUSAL)
 
@@ -814,23 +733,6 @@ def _is_animated_image(mime: str, data: bytes) -> bool:
     return False
 
 
-def _age_strike(user_id, *, sexual: bool, labels: list) -> None:
-    """A source or output age block adds a strike only on a sexual request.
-
-    Two in an hour lock (asset_limits.note_age_block_strike). A non-sexual
-    request (a cartoon jet, a robot toy) never adds one.
-    """
-    if not sexual or user_id is None:
-        return
-    try:
-        from core.asset_limits import note_age_block_strike
-
-        if note_age_block_strike(user_id):
-            _lock_on_block(user_id, "age-block")
-    except Exception:
-        pass
-
-
 async def _classify_image(
     data: bytes,
     mime: str,
@@ -844,7 +746,6 @@ async def _classify_image(
     mode: AssetMode | None = None,
     stage: str = "output",
     frame: str = "",
-    sexual: bool = False,
 ) -> None:
     from core.blocklist import note
     from core.classifier import age_vision_async, classify_media_async, collect_signals
@@ -901,7 +802,6 @@ async def _classify_image(
         _audit("refusal", category=tag + age, reason=",".join(str(x) for x in labels), **ids)
         if age.endswith("-error"):
             raise ImagineError(unchecked, status="error")
-        _age_strike(user_id, sexual=sexual, labels=labels)
         raise ImagineError(refused, status="safety_block")
 
 
@@ -917,7 +817,6 @@ async def check_generated_media(
     response_id: str = "",
     mode: AssetMode | None = None,
     stage: str = "output",
-    sexual: bool = False,
 ) -> None:
     """Classify one image, or every required frame. Fail closed. No retries."""
     from core.imagine import ImagineError
@@ -953,7 +852,6 @@ async def check_generated_media(
                 mode=snap,
                 stage=stage,
                 frame=f"{index}/{total}",
-                sexual=sexual,
             )
         return
     await _classify_image(
@@ -967,7 +865,6 @@ async def check_generated_media(
         response_id=response_id,
         mode=snap,
         stage=stage,
-        sexual=sexual,
     )
 
 
@@ -980,7 +877,6 @@ async def check_source_media(
     guild_id=None,
     channel_id=None,
     mode: AssetMode | None = None,
-    sexual: bool = False,
 ) -> None:
     """The same hardcoded checks as a finished file, on an edit source.
 
@@ -997,5 +893,4 @@ async def check_source_media(
         channel_id=channel_id,
         mode=mode,
         stage="source",
-        sexual=sexual,
     )

@@ -1478,7 +1478,7 @@ def _content_filter_yesno_messages(text: str) -> list[dict]:
 
 # Per-request signal sink. A caller (the asset prompt and media checks) opens
 # one with collect_signals() and reads which checker categories and age labels
-# fired, to decide on strikes. Context copies share the same list, so checks
+# fired, for the audit reason. Context copies share the same list, so checks
 # run on worker threads or tasks still report here. Never prompts or images.
 _SIGNAL_SINK: contextvars.ContextVar = contextvars.ContextVar("eche_check_signals", default=None)
 
@@ -2541,6 +2541,10 @@ async def _with_child_check_async(lg4: str, text: str, *, images: list | None = 
 # Normal channels: judge age cues, not art style. SFW cartoons and stylized
 # art with clearly adult characters may pass; anime, chibi, and any
 # youthful-looking style are always YES (no attempt to judge anime ages).
+# Sexual content is not judged here: the image content check (Grok vision,
+# local backup, fail closed) blocks nudity and sexual content in normal
+# channels. A "sexualized stylized" clause here blocked a non-sexual dancing
+# cartoon jet on frame 1/49 (live, 2026-11-14 00:04 ET).
 # Line 1 decides (YES or NO). Line 2 is one fixed label for the audit log,
 # from the same call, so the logged reason matches the verdict.
 AGE_VISION_PROMPT = (
@@ -2553,13 +2557,12 @@ AGE_VISION_PROMPT = (
     "uniforms, playgrounds, nurseries, toys). Answer YES if any human, humanoid, "
     "or anthropomorphic character could be read as under 21 from those cues. "
     "Always answer YES for anime, manga, chibi, kawaii, doll-like, or any "
-    "youthful-looking style, whatever age is claimed. Answer YES if a cartoon, "
-    "illustrated, or stylized character is shown in a sexual or sexualized way. "
+    "youthful-looking style, whatever age is claimed. "
     "A cartoon, illustrated, or stylized character with a clearly adult face "
-    "and adult body proportions, shown in a non-sexual way, is NO. "
+    "and adult body proportions is NO. "
     "If unsure, answer YES. "
     "Line 2: exactly one label: apparent minor, uncertain age, anime or chibi "
-    "style, youthful style, sexualized stylized, adult, no people, other. "
+    "style, youthful style, adult, no people, other. "
     "Reply with only those two lines, no punctuation or explanation."
 )
 # 18+ channels: realistic adults only. Anime, cartoon, chibi, doll, stylized,

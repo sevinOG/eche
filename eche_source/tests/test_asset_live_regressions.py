@@ -85,7 +85,6 @@ class FinishedImageTests(unittest.TestCase):
 class ChannelModeTests(unittest.TestCase):
     def test_18_plus_on_runs_sfw_in_an_ordinary_channel(self):
         with mock.patch("core.imagine.speaker_allowed", return_value=True), \
-                mock.patch("core.asset_limits.is_locked", return_value=False), \
                 mock.patch("core.asset_limits.rate_refusal", return_value=None), \
                 mock.patch("core.asset_safety._audit"):
             out = {}
@@ -156,8 +155,7 @@ class QuotaTests(unittest.TestCase):
 
     def test_owner_has_no_hourly_or_daily_cap(self):
         self._fill_cap(uid=7)
-        with mock.patch("core.asset_limits.is_locked", return_value=False), \
-                mock.patch("core.asset_safety._audit"):
+        with mock.patch("core.asset_safety._audit"):
             out = {}
             # A non-owner at the cap is refused; the owner is not.
             self.assertIsNotNone(refuse_speaker(False, user_id=7, guild_id=9, nsfw=True, asset_mode=ADULT_ON, out={}))

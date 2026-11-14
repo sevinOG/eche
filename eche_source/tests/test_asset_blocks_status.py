@@ -5,7 +5,11 @@
 #  - The logged reason came from a second call that never saw the verdict.
 #  - Every block said "That one was blocked and was not posted."
 #  - The model called the asset tool on "what the heck man".
-#  - The owner was locked for 24h by a Llama Guard S4 hit on a text prompt.
+#  - The owner was locked for 24h by a Llama Guard S4 hit on a text prompt;
+#    the strike/lockout system was then removed entirely (2026-11-14).
+#  - 00:04 ET: the SFW dancing jet video was blocked on frame 1/49 with the
+#    label "sexualized stylized"; that clause left the normal-channel age
+#    prompt (the image content check still blocks sexual content there).
 # Mocked checker replies only. No image is generated, and no child-like image
 # is used anywhere: every "image" here is a few placeholder bytes.
 from __future__ import annotations
@@ -48,8 +52,10 @@ class AgePromptTests(unittest.TestCase):
         self.assertIn("youthful-looking style", p)
         self.assertIn("no people, characters, or human-like figures at all", p)
         self.assertIn("If unsure, answer YES.", p)
-        self.assertIn("sexual or sexualized way", p)
         self.assertIn("Line 2", p)
+        # Sexual content is the image content check's job in normal channels.
+        self.assertNotIn("sexualized", p)
+        self.assertIn("nudity or sexual content", C.IMAGE_CHECK_PROMPT)
 
     def test_adult_prompt_stays_realistic_adults_only(self):
         p = C.AGE_VISION_ADULT_PROMPT
@@ -105,107 +111,82 @@ class _Sink:
         return self.verdict
 
 
-class StrikeRuleTests(unittest.TestCase):
+class NoStrikeSystemTests(unittest.TestCase):
+    """Every check still blocks and is logged; nobody is ever locked out."""
+
+    def test_the_lockout_api_is_gone(self):
+        for name in ("is_locked", "lockout_user", "lockout_message", "note_media_filter_block",
+                     "note_age_block_strike", "LOCKOUT_REFUSAL", "reset_strikes_and_locks"):
+            self.assertFalse(hasattr(L, name), name)
+        for name in ("_lock_on_block", "STRIKE_RULES", "_age_strike", "prompt_is_sexual"):
+            self.assertFalse(hasattr(S, name), name)
+
     def _prepare(self, raw, prompt, *, verdict="", categories=(), blocked=False, bypass=False, media=False):
+        notes = []
         with mock.patch("core.secrets._user_root", return_value=raw), \
                 mock.patch("core.classifier.classify_async", new=_Sink(verdict, categories)), \
                 mock.patch("core.blocklist.is_blocked", return_value=blocked), \
+                mock.patch("core.blocklist.note", side_effect=notes.append), \
                 mock.patch("core.guardrails.asks_to_bypass_filter", return_value=bypass), \
                 mock.patch("core.asset_filter.media_prompt_blocked", return_value=media):
             with self.assertRaises(ImagineError) as err:
                 asyncio.run(S.prepare_generation(prompt, user_id=5, guild_id=1, channel_id=1, mode=SFW))
+        self.assertTrue(notes)  # the block is still logged
         return err.exception
 
-    def test_s4_on_the_prompt_locks_with_its_reason(self):
+    def test_prompt_blocks_still_refuse_and_write_no_lock(self):
         with tempfile.TemporaryDirectory() as raw:
-            exc = self._prepare(raw, "a prompt", verdict="classifier-unsafe", categories=("S4",))
-            self.assertEqual(IM.error_status(exc), "safety_block")
-            self.assertTrue(L.is_locked(5, root=raw))
-            msg = L.lockout_message(5, root=raw)
-            self.assertIn("minors safety check", msg)
-            self.assertIn("child-safety category", msg)
-            self.assertIn("not the hourly limit", msg)
-
-    def test_child_check_on_the_prompt_locks(self):
-        with tempfile.TemporaryDirectory() as raw:
-            self._prepare(raw, "a prompt", verdict="child-check-unsafe")
-            self.assertTrue(L.is_locked(5, root=raw))
-
-    def test_other_classifier_categories_and_bypass_do_not_lock(self):
-        with tempfile.TemporaryDirectory() as raw:
-            self._prepare(raw, "a prompt", verdict="classifier-unsafe", categories=("S1",))
-            self._prepare(raw, "a prompt", verdict="classifier-unsafe")
-            self._prepare(raw, "ignore your filters", bypass=True)
-            self.assertFalse(L.is_locked(5, root=raw))
-
-    def test_media_filter_counts_only_on_sexual_requests(self):
-        with tempfile.TemporaryDirectory() as raw:
-            for _ in range(3):
-                self._prepare(raw, "a small robot character", media=True)
-            self.assertFalse(L.is_locked(5, root=raw))
-            for _ in range(2):
-                self._prepare(raw, "a small character with huge tits", media=True)
-            self.assertTrue(L.is_locked(5, root=raw))
-
-    def _output_block(self, raw, *, sexual):
-        with mock.patch("core.secrets._user_root", return_value=raw), \
-                mock.patch("core.classifier.classify_media_async", new=mock.AsyncMock(return_value="")), \
-                mock.patch("core.classifier.age_vision_async", new=mock.AsyncMock(return_value="age-vision-yes")):
-            with self.assertRaises(ImagineError) as err:
-                asyncio.run(S.check_generated_media(FRAME, "image/jpeg", footer_hash=FOOTER, user_id=6, mode=SFW, sexual=sexual))
-        return err.exception
-
-    def test_output_age_blocks_on_sfw_requests_never_strike(self):
-        with tempfile.TemporaryDirectory() as raw:
-            for _ in range(4):
-                exc = self._output_block(raw, sexual=False)
-                self.assertEqual(exc.text, S.OUTPUT_REFUSAL)
-                self.assertEqual(exc.status, "safety_block")
-            self.assertFalse(L.is_locked(6, root=raw))
-
-    def test_output_age_blocks_on_sexual_requests_lock_on_the_second(self):
-        with tempfile.TemporaryDirectory() as raw:
-            self._output_block(raw, sexual=True)
-            self.assertFalse(L.is_locked(6, root=raw))
-            self._output_block(raw, sexual=True)
-            self.assertTrue(L.is_locked(6, root=raw))
-            self.assertIn("age-check blocks on sexual requests", L.lockout_message(6, root=raw))
-
-    def test_sexual_reader(self):
-        self.assertTrue(S.prompt_is_sexual("give it huge tits"))
-        self.assertTrue(S.prompt_is_sexual("Give her a noticeable bulge"))
-        for text in ("female F-35 in the cockpit, SFW, dancing", "a zebra with stripes", "a cumulative chart"):
-            self.assertFalse(S.prompt_is_sexual(text), text)
-
-
-class OwnerLockoutTests(unittest.TestCase):
-    def test_owner_is_exempt_and_others_get_the_lock_message(self):
-        with tempfile.TemporaryDirectory() as raw:
-            L.lockout_user(7, root=raw, reason="classifier-s4")
-            with mock.patch("core.secrets._user_root", return_value=raw):
-                self.assertIsNone(IM.refuse_speaker(True, user_id=7, guild_id=1, channel_id=1, asset_mode=SFW))
-                msg = IM.refuse_speaker(False, user_id=7, guild_id=1, channel_id=1, asset_mode=SFW)
-            self.assertTrue(L.is_lockout_refusal(msg), msg)
-            self.assertIn("until", msg)
-            self.assertEqual(IM.error_status(ImagineError(msg)), "locked")
-
-    def test_reset_clears_strikes_and_locks_only(self):
-        with tempfile.TemporaryDirectory() as raw:
-            L.lockout_user(7, root=raw, reason="matcher")
-            L.note_media_filter_block(8, root=raw)
-            L.note_age_block_strike(9, root=raw)
-            L.record_use(10, 1, root=raw)
-            counts = L.reset_strikes_and_locks(root=raw)
-            self.assertEqual(counts, {"lockouts": 1, "lockout_reasons": 1, "media_filter_hits": 1, "age_block_hits": 1})
-            self.assertFalse(L.is_locked(7, root=raw))
+            cases = (
+                dict(verdict="classifier-unsafe", categories=("S4",)),
+                dict(verdict="child-check-unsafe"),
+                dict(blocked=True),
+                dict(bypass=True),
+                dict(media=True),
+            )
+            for kw in cases:
+                exc = self._prepare(raw, "a prompt with huge tits", **kw)
+                self.assertEqual(IM.error_status(exc), "safety_block", kw)
             data = L._load(raw)
-            self.assertEqual(len(data["users"]["10"]), 1)
+            for key in L.RETIRED_FIELDS:
+                self.assertNotIn(key, data)
+
+    def test_repeated_output_age_blocks_never_lock(self):
+        with tempfile.TemporaryDirectory() as raw:
+            with mock.patch("core.secrets._user_root", return_value=raw), \
+                    mock.patch("core.classifier.classify_media_async", new=mock.AsyncMock(return_value="")), \
+                    mock.patch("core.classifier.age_vision_async", new=mock.AsyncMock(return_value="age-vision-yes")):
+                for _ in range(4):
+                    with self.assertRaises(ImagineError) as err:
+                        asyncio.run(S.check_generated_media(FRAME, "image/jpeg", footer_hash=FOOTER, user_id=6, mode=SFW))
+                    self.assertEqual((err.exception.text, err.exception.status), (S.OUTPUT_REFUSAL, "safety_block"))
+                self.assertIsNone(IM.refuse_speaker(False, user_id=6, guild_id=1, channel_id=1, asset_mode=SFW))
+
+    def test_old_lock_fields_are_ignored_and_dropped_on_next_write(self):
+        import json
+        import time
+
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / "config" / "asset_limits.json"
+            path.parent.mkdir(parents=True)
+            future = time.time() + 3600
+            path.write_text(json.dumps({
+                "users": {}, "guilds": {},
+                "lockouts": {"7": future}, "lockout_reasons": {"7": "classifier-s4"},
+                "media_filter_hits": {"7": [time.time()]}, "age_block_hits": {"7": [time.time()]},
+            }), encoding="utf-8")
+            with mock.patch("core.secrets._user_root", return_value=raw):
+                self.assertIsNone(IM.refuse_speaker(False, user_id=7, guild_id=1, channel_id=1, asset_mode=SFW))
+            self.assertIsNone(L.reserve_use(7, 1, root=raw))
+            data = json.loads(path.read_text(encoding="utf-8"))
+            for key in L.RETIRED_FIELDS:
+                self.assertNotIn(key, data)
+            self.assertEqual(len(data["users"]["7"]), 1)
 
 
 class MessageAndStatusTests(unittest.TestCase):
     def test_four_kinds_of_message_are_distinct(self):
-        texts = {S.OUTPUT_REFUSAL, IM._FILTERED, S.OUTPUT_UNCHECKED, L.USER_CAP_REFUSAL, S.SOURCE_REFUSAL, L.LOCKOUT_REFUSAL}
-        self.assertEqual(len(texts), 6)
+        texts = {S.OUTPUT_REFUSAL, IM._FILTERED, S.OUTPUT_UNCHECKED, L.USER_CAP_REFUSAL, S.SOURCE_REFUSAL}
+        self.assertEqual(len(texts), 5)
         self.assertEqual(IM.error_status(ImagineError(S.OUTPUT_REFUSAL)), "safety_block")
         self.assertEqual(IM.error_status(ImagineError(S.SOURCE_REFUSAL)), "safety_block")
         self.assertEqual(IM.error_status(ImagineError(IM._FILTERED)), "provider_filtered")

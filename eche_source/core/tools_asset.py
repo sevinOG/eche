@@ -47,7 +47,6 @@ _OUTCOME_FOR_STATUS = {
     "safety_block": "refusal",
     "provider_filtered": "refusal",
     "capped": "refusal",
-    "locked": "refusal",
     "not_allowed": "refusal",
     "error": "error",
 }

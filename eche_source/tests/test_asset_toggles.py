@@ -175,7 +175,6 @@ class GateTests(unittest.TestCase):
     def test_18_plus_runs_sfw_outside_age_restricted_channels_and_refuses_dms(self):
         mode = AssetMode(enabled=True, adult=True, approval=True, owner_only=True, user_cap=10, guild_cap=30, video=True)
         with mock.patch("core.imagine.speaker_allowed", return_value=True), \
-             mock.patch("core.asset_limits.is_locked", return_value=False), \
              mock.patch("core.asset_limits.rate_refusal", return_value=None), \
              mock.patch("core.asset_safety._audit"):
             for kwargs in ({"nsfw": False}, {"channel": _Channel(False)}):
@@ -204,8 +203,7 @@ class GateTests(unittest.TestCase):
         locked = AssetMode(enabled=True, adult=True, approval=True, owner_only=True, user_cap=10, guild_cap=30, video=True)
         self.assertTrue(speaker_allowed(True, locked))
         self.assertFalse(speaker_allowed(False, locked))
-        with mock.patch("core.asset_limits.is_locked", return_value=False), \
-             mock.patch("core.asset_limits.rate_refusal", return_value=None), \
+        with mock.patch("core.asset_limits.rate_refusal", return_value=None), \
              mock.patch("core.asset_safety._audit"):
             self.assertIsNone(
                 refuse_speaker(False, guild_id=1, channel_id=2, nsfw=True, asset_mode=open_mode),
