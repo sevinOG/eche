@@ -513,14 +513,13 @@ class SettingsWindow(QWidget):
         checker_body.setSpacing(12)
         checker_hint = QLabel(
             "These checkers run on the image and asset path only and cannot be "
-            "turned off. Text chat uses the safety footer and the minors "
-            "keyword/blocklist filter. Blank uses the chat provider and model "
+            "turned off. Text-only chat uses only the safety footer. Blank uses the chat provider and model "
             "selected above. Llama Guard models use the Guard prompt; other "
             "models use a YES/NO prompt. A missing or retired model fails "
             "closed and never falls back to another model. The image content "
             "check is separate: it must be set to a vision-capable model and "
-            "does not follow the content filter. Age vision stays on the pinned "
-            "Scout path."
+            "does not follow the content filter. Age vision uses pinned Scout "
+            "with a cloud key, else the local Ollama model below."
         )
         checker_hint.setObjectName("FieldHint")
         checker_hint.setWordWrap(True)
@@ -575,6 +574,15 @@ class SettingsWindow(QWidget):
                 help_key=help_key,
             ))
             checker_body.addLayout(row)
+        checker_body.addLayout(self._field_block(
+            "Age vision local model",
+            "Ollama vision model for the under-21 / adult-only image check when there is no "
+            "Groq or OpenRouter key. Blank uses qwen3-vl:4b-instruct. Missing, slow, or "
+            "unclear answers block the image.",
+            secret=False,
+            key="age_vision_ollama_model",
+            help_key="age_vision_ollama_model",
+        ))
         layout.addWidget(self._card(
             "Safety checkers",
             "Image and asset path only. Always on and fail closed. Each can use a different provider and model.",
@@ -639,15 +647,15 @@ class SettingsWindow(QWidget):
         self.asset_adult_box.setToolTip(
             "Off by default, settings-only. When it is on, any user in a Discord "
             "age-restricted channel can use 18+ ?asset, not just the owner. "
-            "Turns owner approval on and keeps every minors check. "
+            "Owner approval is a separate toggle. Every minors check stays on. "
             "While 18+ is on, ?asset is refused in every channel that is not "
             "age-restricted, including ordinary SFW requests, and is refused in DMs."
         )
         self.asset_approval_box = QCheckBox("Require owner approval")
         self.asset_approval_box.setObjectName("asset_approval_enabled")
         self.asset_approval_box.setToolTip(
-            "On by default. Turning it off is owner-only, lowers the caps, and disables video. "
-            "It cannot be off while 18+ is on."
+            "On by default. Turning it off lowers the caps and disables video. "
+            "Without 18+ it also makes ?asset owner-only. 18+ can run with approval off."
         )
         self.asset_adult_box.toggled.connect(self._sync_asset_toggles)
         self.asset_approval_box.toggled.connect(self._sync_asset_toggles)
@@ -665,17 +673,12 @@ class SettingsWindow(QWidget):
         return page
 
     def _sync_asset_toggles(self, *_args) -> None:
-        """18+ forces approval on. Approval-off forbids 18+ and forces owner-only."""
+        """Approval-off without 18+ forces owner-only. 18+ and approval are independent."""
         if not hasattr(self, "asset_adult_box"):
             return
         adult = self.asset_adult_box.isChecked()
         approval = self.asset_approval_box.isChecked()
-        if adult and not approval:
-            self.asset_approval_box.blockSignals(True)
-            self.asset_approval_box.setChecked(True)
-            self.asset_approval_box.blockSignals(False)
-            approval = True
-        if (not approval) and not self.asset_owner_only_box.isChecked():
+        if (not approval) and (not adult) and not self.asset_owner_only_box.isChecked():
             self.asset_owner_only_box.blockSignals(True)
             self.asset_owner_only_box.setChecked(True)
             self.asset_owner_only_box.blockSignals(False)

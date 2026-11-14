@@ -79,16 +79,32 @@ class ToggleDefaultsTests(unittest.TestCase):
 
 
 class CouplingTests(unittest.TestCase):
-    def test_runtime_18_plus_forces_approval_on(self):
+    def test_runtime_18_plus_with_approval_on(self):
         mode, _invalid = _mode_from_store({
             "asset_adult_enabled": "1",
-            "asset_approval_enabled": "0",
+            "asset_approval_enabled": "1",
             "asset_owner_only": "0",
         })
         self.assertTrue(asset_approval_enabled(mode))
         self.assertTrue(video_allowed(mode))
         self.assertFalse(owner_only_required(mode))
         self.assertEqual(hourly_caps(mode), (10, 30))
+        self.assertEqual(adult_output_ignore_lg4(mode), frozenset({"S12"}))
+
+    def test_runtime_18_plus_can_run_with_approval_off(self):
+        # The owner may run 18+ without reviewing outputs. Approval-off keeps
+        # its own limits (3/10 caps, no video); 18+ stays on and is not
+        # forced owner-only. Every minors check still runs (see GateTests).
+        mode, _invalid = _mode_from_store({
+            "asset_adult_enabled": "1",
+            "asset_approval_enabled": "0",
+            "asset_owner_only": "0",
+        })
+        self.assertTrue(mode.adult)
+        self.assertFalse(asset_approval_enabled(mode))
+        self.assertFalse(owner_only_required(mode))
+        self.assertFalse(video_allowed(mode))
+        self.assertEqual(hourly_caps(mode), (3, 10))
         self.assertEqual(adult_output_ignore_lg4(mode), frozenset({"S12"}))
 
     def test_approval_off_lowers_caps_and_disables_video(self):
@@ -102,22 +118,17 @@ class CouplingTests(unittest.TestCase):
         self.assertEqual(hourly_caps(mode), (APPROVAL_OFF_USER_CAP, APPROVAL_OFF_GUILD_CAP))
         self.assertEqual(hourly_caps(mode), (3, 10))
 
-    def test_save_time_18_plus_forces_approval_but_not_owner_only(self):
+    def test_save_time_18_plus_keeps_approval_off_and_audience(self):
         out = couple_asset_toggles({
             "asset_adult_enabled": "1",
             "asset_approval_enabled": "0",
             "asset_owner_only": "0",
         })
         self.assertEqual(out["asset_adult_enabled"], "1")
-        self.assertEqual(out["asset_approval_enabled"], "1")
+        self.assertEqual(out["asset_approval_enabled"], "0")
         self.assertEqual(out["asset_owner_only"], "0")
 
-    def test_save_time_approval_off_forbids_18_plus_and_forces_owner_only(self):
-        out = couple_asset_toggles({
-            "asset_adult_enabled": "1",  # would be on, but see 18+ first... wait
-        })
-        # 18+ wins and forces approval on. A request to have both 18+ on and
-        # approval off is stored as 18+ on, approval on.
+    def test_save_time_approval_off_without_18_plus_forces_owner_only(self):
         out = couple_asset_toggles({
             "asset_adult_enabled": "0",
             "asset_approval_enabled": "0",
@@ -147,13 +158,13 @@ class CouplingTests(unittest.TestCase):
                 }, root=raw)
             cfg = load_all(raw)
             self.assertEqual(cfg.get("asset_adult_enabled"), "1")
-            self.assertEqual(cfg.get("asset_approval_enabled"), "1")
+            self.assertEqual(cfg.get("asset_approval_enabled"), "0")
             self.assertEqual(cfg.get("asset_owner_only"), "0")
             self.assertEqual(recorded.get("kind"), "settings-save")
             self.assertEqual(recorded.get("asset_adult_enabled_old"), "0")
             self.assertEqual(recorded.get("asset_adult_enabled_new"), "1")
             self.assertEqual(recorded.get("asset_approval_enabled_old"), "1")
-            self.assertEqual(recorded.get("asset_approval_enabled_new"), "1")
+            self.assertEqual(recorded.get("asset_approval_enabled_new"), "0")
             notify.assert_called()
 
 

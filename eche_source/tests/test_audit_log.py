@@ -464,6 +464,7 @@ REVIEWED_ENTRYPOINTS = {
     "_post": "Llama Guard 4 HTTP classify call",
     "_child_post": "second-check instruction-model HTTP call",
     "_age_vision_post": "age-vision HTTP call",
+    "_age_vision_post_ollama": "local Ollama age-vision HTTP call",
     "_post_ollama_chat": "local Llama Guard 3 classify HTTP call",
     "_post_ollama_child": "local Llama Guard 3 child-check HTTP call",
     "_post_ollama_generate": "local Llama Guard 3 raw classify HTTP call",
@@ -2242,6 +2243,25 @@ class AuditCompletenessTests(AuditLogTests):
             leaked_v = " ".join((yes_vb, no_vb, err_vb, bad_vb))
             if "SECRETFRAME" in leaked_v or "gsk_test_audit_key" in leaked_v:
                 gaps.append("_age_vision_post:prompt-or-key-logged")
+
+            ollama_ep = ("", C.OLLAMA_CHAT_URL)
+            ok_o, ok_ob = _probe_classifier_http(
+                C._age_vision_post_ollama, "age-vision", "NO", secret_vision, arg=imgs, endpoint=ollama_ep,
+            )
+            err_o, err_ob = _probe_classifier_http(
+                C._age_vision_post_ollama,
+                "age-vision",
+                "",
+                secret_vision,
+                expect_error=True,
+                side=lambda *a, **k: (_ for _ in ()).throw(TimeoutError("deadline")),
+                arg=imgs,
+                endpoint=ollama_ep,
+            )
+            if not ok_o or not err_o:
+                gaps.append("_age_vision_post_ollama")
+            if "SECRETFRAME" in " ".join((ok_ob, err_ob)):
+                gaps.append("_age_vision_post_ollama:prompt-logged")
 
             before = len(_records(self.audit))
             from core.asset_review import require_owner_review, set_review_hook

@@ -76,29 +76,30 @@ FIELD_HELP: dict[str, tuple[str, str]] = {
         "Off by default, set only in Settings. When it is on, any user in a Discord age-restricted channel can use 18+ ?asset, not just the owner, and never in DMs. "
         "While 18+ is on, ?asset is refused in every channel that is not age-restricted, "
         "including ordinary SFW requests. "
-        "It turns owner approval on. Every minors check stays, including the matcher, media filter, "
+        "Owner approval is separate and can be on or off. Every minors check stays, including the matcher, media filter, "
         "child check, age vision, incident rule, and the safety footer (the footer text does not change). "
         "The age check is stricter: anything short of clearly adult is blocked, and so are anime, "
         "cartoon, chibi, doll, stylized, and real or identifiable people. The only relaxation is "
         "consensual adult sexual content (Llama Guard S12) on generated output; input still blocks S12, "
         "and S4 and every other category still block.\n\n"
         "### Owner approval\n"
-        "On by default. Turning it off is owner-only, lowers the caps to 3 per user and 10 per "
-        "server each hour, and disables video. It cannot be off while 18+ is on.",
+        "On by default. Turning it off lowers the caps to 3 per user and 10 per "
+        "server each hour and disables video. Without 18+ it also makes ?asset owner-only. "
+        "18+ can run with approval off; the minors checks still run on every request.",
     ),
     "asset_adult_enabled": (
         "18+",
         "### 18+ mode\n"
         "Off by default, settings-only. See the ?asset help for the full rules: any user in an age-restricted "
         "channels only (every non-NSFW channel is refused, including SFW requests), "
-        "approval forced on, stricter age and style checks, and S12 relaxed "
+        "owner approval optional, stricter age and style checks, and S12 relaxed "
         "on output only.",
     ),
     "asset_approval_enabled": (
         "Require owner approval",
         "### Owner approval\n"
-        "On by default. Turning it off is owner-only, lowers the caps, and disables video. "
-        "It cannot be off while 18+ is on.",
+        "On by default. Turning it off lowers the caps and disables video. "
+        "Without 18+ it also makes ?asset owner-only. 18+ can run with approval off.",
     ),
     "prompt_tools": (
         "Tools in the prompt",
@@ -642,5 +643,21 @@ FIELD_HELP["image_check_model"] = (
     "If the provider or model is blank, or the model cannot see images, the "
     "image check fails closed. It never follows content_filter_model.\n\n"
     "### Age vision\n"
-    "The separate Scout age-vision path is unchanged and stays pinned.",
+    "Age vision is separate: pinned Scout with a cloud key, else the local "
+    "model in age_vision_ollama_model.",
+)
+
+FIELD_HELP["age_vision_ollama_model"] = (
+    "Age vision local model",
+    "### What it does\n"
+    "Every image on the asset path (and chat pictures) gets an age check. With a Groq "
+    "or OpenRouter key it uses the pinned Llama 4 Scout. Without one it uses this local "
+    "Ollama vision model. Blank uses qwen3-vl:4b-instruct.\n\n"
+    "### Rules\n"
+    "Normal mode blocks anything that could read as under 21. 18+ mode blocks anything "
+    "not clearly adult, anime, cartoon, chibi, doll, or stylized images, and real or "
+    "identifiable people. It cannot be turned off.\n\n"
+    "### Failing closed\n"
+    "A missing model, a timeout, or any answer other than YES or NO blocks the image and "
+    "shows an error naming this field. Pull the model with `ollama pull <name>`.",
 )

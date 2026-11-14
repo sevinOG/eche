@@ -90,6 +90,7 @@ PUBLIC_KEYS = (
     "child_check_model",
     "image_check_provider",         # settings-only vision content check. Blank is off/fail-closed.
     "image_check_model",            # Must be vision-capable. Does not follow content_filter_model.
+    "age_vision_ollama_model",      # local Ollama vision model for age vision when no cloud key; blank = qwen3-vl:4b-instruct
 )
 
 # Map settings key -> environment variable used by the bot
@@ -574,18 +575,16 @@ def _asset_flag_raw(store: dict | None, key: str, *, default: bool) -> tuple[boo
 
 
 def couple_asset_toggles(public: dict, *, invalid: list | None = None) -> dict:
-    """18+ forces approval on. Approval-off forces owner-only and forbids 18+.
+    """Approval-off without 18+ forces owner-only. 18+ and approval are independent.
 
-    18+ itself is not owner-only: the audience follows asset_owner_only.
+    18+ itself is not owner-only: the audience follows asset_owner_only, and
+    18+ may run with owner approval off.
     """
     data = dict(public or {})
     adult, ad_bad, ad_raw = _asset_flag_raw(data, "asset_adult_enabled", default=False)
     approval, ap_bad, ap_raw = _asset_flag_raw(data, "asset_approval_enabled", default=True)
     owner, ow_bad, ow_raw = _asset_flag_raw(data, "asset_owner_only", default=True)
-    if adult:
-        approval = True
-    elif not approval:
-        adult = False
+    if not approval and not adult:
         owner = True
     data["asset_adult_enabled"] = "1" if adult else "0"
     data["asset_approval_enabled"] = "1" if approval else "0"

@@ -344,7 +344,8 @@ def _field_for(kind: str) -> str:
 
 
 
-# Vision-capable content checkers only. Age vision stays on the pinned Scout path.
+# Vision-capable content checkers only. Age vision uses pinned Scout with a
+# cloud key, else the local Ollama model in age_vision_ollama_model.
 _VISION_MODEL_NAME = re.compile(
     r"(?i)(?:^|.*/)?(?:"
     r"llama-guard-4"
@@ -356,6 +357,7 @@ _VISION_MODEL_NAME = re.compile(
     r"|internvl"
     r"|minicpm-v"
     r"|qwen(?:2(?:\.5)?)?-vl"
+    r"|qwen\d(?:\.\d)?-?vl"
     r"|qwen-vl"
     r"|llama3\.2-vision"
     r"|llama-3\.2-vision"
@@ -381,6 +383,7 @@ _CHECKER_WATCH_KEYS = (
     CHILD_CHECK_MODEL_KEY,
     IMAGE_CHECK_PROVIDER_KEY,
     IMAGE_CHECK_MODEL_KEY,
+    "age_vision_ollama_model",
     "provider_backend",
     "groq_model",
     "cloud_model",
@@ -1852,7 +1855,7 @@ def log_safety_models() -> None:
             url = GROQ_URL if groq else OPENROUTER_URL
             log_fn(f"Age-vision model: {_vision(url)}")
         else:
-            log_fn("Age-vision: unavailable (no cloud key); images stay off")
+            log_fn(f"Age-vision model: {age_vision_ollama_model()} (local Ollama; no cloud key)")
         for name in ("CHILD_CHECK_MODEL", "AGE_VISION_MODEL", "CLASSIFIER_MODEL"):
             if os.environ.get(name):
                 log_fn(f"{name} is ignored; set content_filter_model or child_check_model in Settings.")
@@ -2330,13 +2333,119 @@ AGE_VISION_TIMEOUT = 20
 AGE_VISION_DEADLINE = 25
 
 
+# Local age vision (no Groq/OpenRouter key): a small Ollama vision model.
+AGE_VISION_OLLAMA_KEY = "age_vision_ollama_model"
+AGE_VISION_OLLAMA_DEFAULT = "qwen3-vl:4b-instruct"
+AGE_VISION_OLLAMA_NUM_CTX = 4096
+AGE_VISION_OLLAMA_TIMEOUT = OLLAMA_CHECKER_TIMEOUT
+AGE_VISION_OLLAMA_DEADLINE = OLLAMA_CHECKER_DEADLINE
+
+
+def age_vision_ollama_model() -> str:
+    """Settings → Safety checkers → Age vision local model. Blank uses the default."""
+    try:
+        from core.secrets import public_value
+        value = (public_value(AGE_VISION_OLLAMA_KEY) or "").strip()
+    except Exception:
+        value = ""
+    return value or AGE_VISION_OLLAMA_DEFAULT
+
+
+def age_vision_backend() -> str:
+    """'cloud' (pinned Scout) when a Groq/OpenRouter key exists, else 'ollama'."""
+    return "cloud" if vision_backend_available() else "ollama"
+
+
 def age_vision_model() -> str:
     from core.safety_models import age_vision_model as _model
 
     if not vision_backend_available():
+        return age_vision_ollama_model()
+    groq = _real_key(_secret("GROQ_API_KEY"))
+    return _model(GROQ_URL if groq else OPENROUTER_URL)
+
+
+def _report_age_vision_problem(message: str, model: str, *, detail: str = "") -> None:
+    extra = f" {detail.strip()[:200]}" if detail else ""
+    _emit_checker_error(
+        f"{message} Backend: ollama. Model: {model or '(none)'}."
+        f" Update {AGE_VISION_OLLAMA_KEY} in Settings (Safety checkers → Age vision local model)"
+        f" or run: ollama pull {model or AGE_VISION_OLLAMA_DEFAULT}.{extra}"
+    )
+
+
+def _image_part_base64(part: dict) -> str:
+    """Base64 payload of an inline data: image part, or '' (remote URLs are refused)."""
+    if not isinstance(part, dict):
         return ""
-    _key, url = _endpoint()
-    return _model(url or "")
+    url = part.get("image_url")
+    if isinstance(url, dict):
+        url = url.get("url")
+    if not isinstance(url, str):
+        url = part.get("url") if isinstance(part.get("url"), str) else ""
+    if not url.startswith("data:") or ";base64," not in url:
+        return ""
+    data = url.split(";base64,", 1)[1].strip()
+    return data if data else ""
+
+
+def _age_vision_post_ollama(images: list, *, adult: bool = False) -> str:
+    model = age_vision_ollama_model()
+    encoded = []
+    for part in images or []:
+        b64 = _image_part_base64(part)
+        if not b64:
+            raise RuntimeError("age-vision image is not inline base64")
+        encoded.append(b64)
+    if not encoded:
+        raise RuntimeError("age-vision has no image")
+    prompt = AGE_VISION_ADULT_PROMPT if adult else AGE_VISION_PROMPT
+    body = json.dumps({
+        "model": model,
+        "messages": [{"role": "user", "content": prompt, "images": encoded}],
+        "stream": False,
+        "think": False,
+        "keep_alive": OLLAMA_KEEP_ALIVE,
+        "options": {"temperature": 0, "num_predict": 8, "num_ctx": AGE_VISION_OLLAMA_NUM_CTX},
+    }).encode("utf-8")
+    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    req = urllib.request.Request(OLLAMA_CHAT_URL, data=body, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=AGE_VISION_OLLAMA_TIMEOUT) as resp:
+            raw = resp.read()
+            http_resp = resp
+    except Exception as exc:
+        status, err_body = _http_error_payload(exc)
+        if is_missing_model_error(exc, err_body, status):
+            _report_age_vision_problem("Age-vision model is missing.", model, detail=err_body)
+        elif _is_timeout_error(exc):
+            _report_age_vision_problem("Age-vision model timed out; the image was blocked.", model)
+        else:
+            _report_age_vision_problem(
+                f"Age-vision request failed ({type(exc).__name__}); the image was blocked.", model
+            )
+        try:
+            from core.audit import api as audit_api
+            audit_api("age-vision", outcome="error", backend="ollama", model=model)
+        except Exception:
+            pass
+        raise RuntimeError(f"age-vision request failed: {type(exc).__name__}") from exc
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+        text = _ollama_message_text(payload)
+        try:
+            from core.audit import api_from_http
+            api_from_http("age-vision", http_resp, payload, outcome="success", backend="ollama", model=model)
+        except Exception:
+            pass
+        return text
+    except Exception as exc:
+        try:
+            from core.audit import api_from_http
+            api_from_http("age-vision", http_resp, outcome="error", backend="ollama", model=model)
+        except Exception:
+            pass
+        raise RuntimeError("age-vision response unreadable") from exc
 
 
 def _parse_age_vision(text: str) -> str:
@@ -2409,14 +2518,30 @@ def _age_vision_post(images: list, *, adult: bool = False) -> str:
 
 
 def _age_vision_sync(images: list, *, adult: bool = False) -> str:
+    """Cloud Scout when a key exists, else the local Ollama vision model. Fail closed."""
     if tests_are_allowing():
         return ""
-    if not images or not vision_backend_available():
+    if not images:
         return "age-vision-error"
+    if vision_backend_available():
+        try:
+            return _parse_age_vision(_age_vision_post(images, adult=adult))
+        except Exception:
+            return "age-vision-error"
     try:
-        return _parse_age_vision(_age_vision_post(images, adult=adult))
+        raw = _age_vision_post_ollama(images, adult=adult)
     except Exception:
         return "age-vision-error"
+    verdict = _parse_age_vision(raw)
+    if verdict == "age-vision-error":
+        _report_age_vision_problem(
+            "Age-vision reply was not YES or NO; the image was blocked.", age_vision_ollama_model()
+        )
+    return verdict
+
+
+def _age_vision_deadline() -> int:
+    return AGE_VISION_DEADLINE if vision_backend_available() else AGE_VISION_OLLAMA_DEADLINE
 
 
 async def age_vision_async(images: list, *, adult: bool = False) -> str:
@@ -2428,7 +2553,7 @@ async def age_vision_async(images: list, *, adult: bool = False) -> str:
     try:
         return await asyncio.wait_for(
             asyncio.to_thread(_age_vision_sync, images, adult=adult),
-            timeout=AGE_VISION_DEADLINE,
+            timeout=_age_vision_deadline(),
         )
     except Exception:
         return "age-vision-error"

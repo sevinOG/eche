@@ -120,12 +120,11 @@ def _mode_from_store(store: dict | None, *, pins_ok: bool = True) -> tuple[Asset
     adult, ad_bad = parse_safety_flag(data.get("asset_adult_enabled"), default=False)
     approval, ap_bad = parse_safety_flag(data.get("asset_approval_enabled"), default=True)
     owner, ow_bad = parse_safety_flag(data.get("asset_owner_only"), default=True)
-    if adult:
-        # 18+ forces approval on, but is not owner-only. Any member of an
-        # age-restricted channel may use it while the toggle is on.
-        approval = True
-    elif not approval:
-        adult = False
+    # 18+ and approval are independent. 18+ is not owner-only: any member of
+    # an age-restricted channel may use it while the toggle is on, with or
+    # without owner approval. Every minors check stays on either way.
+    if not approval and not adult:
+        # Approval off on the ordinary (non-18+) path stays owner-only.
         owner = True
     if approval:
         user_cap, guild_cap = 10, 30
@@ -319,7 +318,7 @@ def asset_adult_enabled(mode: AssetMode | None = None) -> bool:
 
 
 def asset_approval_stored() -> bool:
-    """Stored approval toggle before 18+ coupling. Blank or missing is ON."""
+    """Stored approval toggle. Blank or missing is ON."""
     try:
         from core.secrets import public_value
         value, _invalid = parse_safety_flag(public_value("asset_approval_enabled"), default=True)
@@ -329,7 +328,7 @@ def asset_approval_stored() -> bool:
 
 
 def asset_approval_enabled(mode: AssetMode | None = None) -> bool:
-    """Effective approval flag. 18+ forces this ON."""
+    """Effective approval flag. 18+ does not change it."""
     if mode is not None:
         return mode.approval
     return _live_mode().approval
@@ -340,13 +339,13 @@ def approval_required(mode: AssetMode | None = None) -> bool:
 
 
 def owner_only_required(mode: AssetMode | None = None) -> bool:
-    """18+ and approval-off both require the owner, as does the default audience."""
+    """Owner-only flag. Approval-off without 18+ forces it; 18+ never does."""
     if mode is not None:
         return mode.owner_only
     return _live_mode().owner_only
 
 
-# Lower caps while approval is off (and therefore while 18+ is not on).
+# Lower caps and no video while approval is off, with or without 18+.
 APPROVAL_OFF_USER_CAP = 3
 APPROVAL_OFF_GUILD_CAP = 10
 
