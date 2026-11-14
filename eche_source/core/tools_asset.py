@@ -42,6 +42,22 @@ _DESCRIPTION = (
 
 COMMAND_MESSAGE_SKIPPED = "That message is a ? command; the command handles it."
 NO_REQUEST_DECLINED = "That message does not ask for a picture or video, so nothing was made."
+# The chat turn is re-asked without the asset tool after a decline. Without
+# this note the model saw an image request and no asset tool, and told the
+# user the asset tool "isn't loaded" (live, 2026-11-14 08:33 ET).
+DECLINED_MODEL_NOTE = (
+    "Note for this reply only: the asset tool is loaded and working, but it did "
+    "not run for this message because the message does not clearly ask for a "
+    "picture or video (for example \"make ...\", \"draw ...\", \"generate ...\", "
+    "or \"try again\"). Do not say the asset tool is unavailable, missing, broken, "
+    "or not loaded. Reply briefly in character, and if they seem to want a "
+    "picture, ask them to say what to make."
+)
+
+
+def declined_turn_system(admin_text: str = "") -> str:
+    """extra_system for the chat re-ask after a declined asset call."""
+    return "\n\n".join(part for part in ((admin_text or "").strip(), DECLINED_MODEL_NOTE) if part)
 
 _OUTCOME_FOR_STATUS = {
     "safety_block": "refusal",
@@ -171,7 +187,11 @@ async def make_asset(ctx, arguments: dict) -> ToolResult:
         try:
             from core.audit import record
 
-            record("asset-request", source="chat", outcome="declined", reason=declined, **_ids(message))
+            # A short excerpt of the declined message, so a decline can be
+            # diagnosed from the log (the prompt is already logged on runs).
+            excerpt = " ".join(str(user_text or "").split())[:200]
+            record("asset-request", source="chat", outcome="declined", reason=declined,
+                   message=excerpt, **_ids(message))
         except Exception:
             pass
         return ToolResult(text=NO_REQUEST_DECLINED, fence=False, declined=True, outcome="declined")

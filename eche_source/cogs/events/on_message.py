@@ -30,6 +30,7 @@ import core.tools_duckduckgo  # noqa: F401  registers duckduckgo
 import core.tools_thread  # noqa: F401  registers thread
 import core.tools_admin  # noqa: F401  registers mute, timeout, kick, ban
 import core.tools_asset  # noqa: F401  registers asset
+from core.tools_asset import declined_turn_system
 from core.admin_tools import admin_injection, admin_tools_enabled, author_is_owner
 from core.tools import (
     ToolContext,
@@ -563,7 +564,7 @@ class OnMessage(commands.Cog):
                         spec for spec in (offered or [])
                         if str(((spec or {}).get("function") or {}).get("name") or "").casefold() != "asset"
                     ] or None,
-                    extra_system=admin_injection(enabled=admin_visible),
+                    extra_system=declined_turn_system(admin_injection(enabled=admin_visible)),
                     images=all_images or None,
                 )
                 if not list(retry_turn.tool_calls or []):
