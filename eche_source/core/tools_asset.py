@@ -31,6 +31,9 @@ _DESCRIPTION = (
 )
 
 
+COMMAND_MESSAGE_SKIPPED = "That message is a ? command; the command handles it."
+
+
 def _ids(message) -> dict:
     author = getattr(message, "author", None)
     guild = getattr(message, "guild", None)
@@ -43,6 +46,17 @@ def _ids(message) -> dict:
 
 
 async def _allowed(ctx) -> tuple[bool, str]:
+    # A message with a registered ?command line belongs to that command only.
+    # The chat path already skips it; this keeps the tool from ever running
+    # (and using a cap slot) for it.
+    message = getattr(ctx, "message", None)
+    try:
+        from core.command_lines import is_command_message
+
+        if is_command_message(getattr(ctx, "bot", None), message):
+            return False, COMMAND_MESSAGE_SKIPPED
+    except Exception:
+        return False, COMMAND_MESSAGE_SKIPPED
     is_owner = False
     try:
         from core.admin_tools import author_is_owner

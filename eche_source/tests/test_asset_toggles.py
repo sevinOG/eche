@@ -11,10 +11,6 @@ import unittest
 from unittest import mock
 
 from core.asset_safety import (
-    APPROVAL_OFF_GUILD_CAP,
-    APPROVAL_OFF_USER_CAP,
-    APPROVAL_OFF_VIDEO_GUILD_CAP,
-    APPROVAL_OFF_VIDEO_USER_CAP,
     ADULT_OUTPUT_IGNORE_LG4,
     AssetMode,
     adult_output_ignore_lg4,
@@ -71,7 +67,7 @@ class ToggleDefaultsTests(unittest.TestCase):
             self.assertTrue(asset_approval_enabled())
             self.assertTrue(video_allowed())
             user_cap, guild_cap = hourly_caps()
-            self.assertEqual((user_cap, guild_cap), (10, 30))
+            self.assertEqual((user_cap, guild_cap), (10, 40))
             self.assertIsNone(adult_output_ignore_lg4())
 
     def test_footer_hash_is_unchanged(self):
@@ -91,12 +87,12 @@ class CouplingTests(unittest.TestCase):
         self.assertTrue(asset_approval_enabled(mode))
         self.assertTrue(video_allowed(mode))
         self.assertFalse(owner_only_required(mode))
-        self.assertEqual(hourly_caps(mode), (10, 30))
+        self.assertEqual(hourly_caps(mode), (10, 40))
         self.assertEqual(adult_output_ignore_lg4(mode), frozenset({"S12"}))
 
     def test_runtime_18_plus_can_run_with_approval_off(self):
         # The owner may run 18+ without reviewing outputs. Approval-off keeps
-        # its own limits (3/10 caps, video 1/3 on top); 18+ stays on and is not
+        # the same caps as approval on (10/40 images, 5/15 videos); 18+ stays on and is not
         # forced owner-only. Every minors check still runs (see GateTests).
         mode, _invalid = _mode_from_store({
             "asset_adult_enabled": "1",
@@ -107,22 +103,23 @@ class CouplingTests(unittest.TestCase):
         self.assertFalse(asset_approval_enabled(mode))
         self.assertFalse(owner_only_required(mode))
         self.assertTrue(video_allowed(mode))
-        self.assertEqual(video_caps(mode), (1, 3))
-        self.assertEqual(hourly_caps(mode), (3, 10))
+        self.assertEqual(video_caps(mode), (5, 15))
+        self.assertEqual(hourly_caps(mode), (10, 40))
         self.assertEqual(adult_output_ignore_lg4(mode), frozenset({"S12"}))
 
-    def test_approval_off_lowers_caps_and_keeps_video_with_its_own_cap(self):
-        mode, _invalid = _mode_from_store({
-            "asset_adult_enabled": "0",
-            "asset_approval_enabled": "0",
-        })
-        self.assertFalse(asset_approval_enabled(mode))
-        self.assertTrue(video_allowed(mode))
-        self.assertEqual(video_caps(mode), (APPROVAL_OFF_VIDEO_USER_CAP, APPROVAL_OFF_VIDEO_GUILD_CAP))
-        self.assertEqual(video_caps(mode), (1, 3))
-        self.assertTrue(owner_only_required(mode))
-        self.assertEqual(hourly_caps(mode), (APPROVAL_OFF_USER_CAP, APPROVAL_OFF_GUILD_CAP))
-        self.assertEqual(hourly_caps(mode), (3, 10))
+    def test_caps_are_the_same_with_approval_on_or_off(self):
+        from core.asset_limits import STANDARD_CAPS
+
+        off, _ = _mode_from_store({"asset_adult_enabled": "0", "asset_approval_enabled": "0"})
+        on, _ = _mode_from_store({"asset_adult_enabled": "0", "asset_approval_enabled": "1"})
+        self.assertFalse(asset_approval_enabled(off))
+        self.assertTrue(owner_only_required(off))
+        for mode in (off, on):
+            self.assertTrue(video_allowed(mode))
+            self.assertEqual(hourly_caps(mode), STANDARD_CAPS.images)
+            self.assertEqual(video_caps(mode), STANDARD_CAPS.videos)
+            self.assertEqual(hourly_caps(mode), (10, 40))
+            self.assertEqual(video_caps(mode), (5, 15))
 
     def test_save_time_18_plus_keeps_approval_off_and_audience(self):
         out = couple_asset_toggles({

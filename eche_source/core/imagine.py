@@ -829,7 +829,7 @@ def refuse_speaker(
         LOCKOUT_REFUSAL,
         in_direct_message,
         is_locked,
-        rate_refusal,
+        no_slot_refusal,
     )
     from core.asset_safety import (
         KILL_SWITCH_OFF,
@@ -862,7 +862,13 @@ def refuse_speaker(
     if out is not None:
         out["owner"] = bool(is_owner)
     # The bot owner has no hourly or daily cap. Safety checks still apply.
-    capped = None if is_owner else rate_refusal(user_id, guild_id, caps=(snap.user_cap, snap.guild_cap))
+    # The kind is not known yet, so only refuse when no image or video slot
+    # is left; run_asset reserves the exact slot.
+    from core.asset_safety import video_caps as _video_caps
+
+    capped = None if is_owner else no_slot_refusal(
+        user_id, guild_id, caps=(snap.user_cap, snap.guild_cap), video_caps=_video_caps(snap)
+    )
     if capped:
         _audit("refusal", category="rate-limit", mode=snap, **ids)
         return capped
@@ -913,6 +919,7 @@ async def run_asset(
         return await _run_asset_reserved(plan, key, snap, ids, get_backend, prepare_generation, check_generated_media)
     from core.asset_safety import video_caps
 
+    # Images and videos have separate hourly slots (asset_limits.STANDARD_CAPS).
     is_video = "video" in (getattr(plan, "mode", "") or "")
     extra = video_caps(snap) if is_video else None
     capped = reserve_use(user_id, guild_id, caps=(snap.user_cap, snap.guild_cap), video_caps=extra)

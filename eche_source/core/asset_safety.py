@@ -109,11 +109,11 @@ class AssetMode:
     adult: bool
     approval: bool
     owner_only: bool
-    user_cap: int
-    guild_cap: int
+    user_cap: int  # images per user per hour
+    guild_cap: int  # images per server per hour
     video: bool
-    # Extra hourly video caps (user, guild). None means videos only count
-    # toward user_cap / guild_cap. Set while approval is off.
+    # Videos per user / server per hour, counted apart from images. None
+    # falls back to the image caps (only in hand-built test modes).
     video_user_cap: int | None = None
     video_guild_cap: int | None = None
 
@@ -132,21 +132,14 @@ def _mode_from_store(store: dict | None, *, pins_ok: bool = True) -> tuple[Asset
     if not approval and not adult:
         # Approval off on the ordinary (non-18+) path stays owner-only.
         owner = True
-    if approval:
-        user_cap, guild_cap = 10, 30
-        try:
-            from core.asset_limits import GUILD_HOURLY_CAP, USER_HOURLY_CAP
-            user_cap, guild_cap = USER_HOURLY_CAP, GUILD_HOURLY_CAP
-        except Exception:
-            pass
-        video = True
-        video_caps = (None, None)
-    else:
-        user_cap, guild_cap = APPROVAL_OFF_USER_CAP, APPROVAL_OFF_GUILD_CAP
-        # Video is allowed with approval off (owner request 2026-11-13
-        # 21:39 ET), under its own lower cap on top of the shared one.
-        video = True
-        video_caps = (APPROVAL_OFF_VIDEO_USER_CAP, APPROVAL_OFF_VIDEO_GUILD_CAP)
+    # Caps are the same with approval on or off (owner request 2026-11-13
+    # 21:54 ET) and come from the one config spot, asset_limits.STANDARD_CAPS.
+    from core.asset_limits import STANDARD_CAPS
+
+    user_cap, guild_cap = STANDARD_CAPS.images
+    video_caps = STANDARD_CAPS.videos
+    # Video is allowed with approval on or off (owner request 21:39 ET).
+    video = True
     invalid = []
     if en_bad:
         invalid.append(("asset_enabled", str(data.get("asset_enabled") or "")))
@@ -358,19 +351,9 @@ def owner_only_required(mode: AssetMode | None = None) -> bool:
     return _live_mode().owner_only
 
 
-# Lower caps while approval is off, with or without 18+. Videos count
-# toward these and also toward their own lower hourly cap.
-APPROVAL_OFF_USER_CAP = 3
-APPROVAL_OFF_GUILD_CAP = 10
-APPROVAL_OFF_VIDEO_USER_CAP = 1
-APPROVAL_OFF_VIDEO_GUILD_CAP = 3
-
-
-def video_caps(mode: AssetMode | None = None) -> tuple[int, int] | None:
-    """Extra (user, guild) hourly video caps, or None when there are none."""
+def video_caps(mode: AssetMode | None = None) -> tuple[int, int]:
+    """(user, guild) hourly video caps, counted apart from images."""
     snap = mode if mode is not None else _live_mode()
-    if snap.video_user_cap is None and snap.video_guild_cap is None:
-        return None
     return (
         snap.video_user_cap if snap.video_user_cap is not None else snap.user_cap,
         snap.video_guild_cap if snap.video_guild_cap is not None else snap.guild_cap,
@@ -378,6 +361,7 @@ def video_caps(mode: AssetMode | None = None) -> tuple[int, int] | None:
 
 
 def hourly_caps(mode: AssetMode | None = None) -> tuple[int, int]:
+    """(user, guild) hourly image caps."""
     snap = mode if mode is not None else _live_mode()
     return snap.user_cap, snap.guild_cap
 

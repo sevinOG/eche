@@ -142,10 +142,15 @@ BOT_BLACKLIST = {
 # ⭐ CUSTOM PREFIX — ONLY RESPOND TO MESSAGES STARTING WITH '?'
 # ---------------------------------------------------------
 def strict_prefix(bot, message):
-    content = message.content
-    if content.startswith("?"):
-        return ["?"]   # must be iterable
-    return []          # safe: “no prefixes”
+    # A registered ?command at the start of any line (leading spaces or an
+    # earlier line such as "how" allowed) runs that command; the chat path
+    # skips the same messages (core/command_lines.py). Anything else: no prefix.
+    try:
+        from core.command_lines import command_prefix_for
+        return command_prefix_for(bot, message)
+    except Exception:
+        content = getattr(message, "content", "") or ""
+        return ["?"] if content.startswith("?") else []
 
 
 class Eche(commands.Bot):

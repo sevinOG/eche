@@ -83,10 +83,11 @@ FIELD_HELP: dict[str, tuple[str, str]] = {
         "consensual adult sexual content (Llama Guard S12) on generated output; input still blocks S12, "
         "and S4 and every other category still block.\n\n"
         "### Owner approval\n"
-        "On by default. Turning it off lowers the caps to 3 per user and 10 per "
-        "server each hour. Video stays available; a video counts toward those caps "
-        "and also toward its own cap of 1 per user and 3 per server each hour. "
-        "The bot owner has no caps. Without 18+ it also makes ?asset owner-only. "
+        "On by default. Turning it off skips owner review of each asset. Video stays "
+        "available. The hourly caps are the same either way: each user gets 10 images "
+        "and 5 videos an hour, counted separately, and each server 40 images and 15 "
+        "videos. A blocked or failed try gives its slot back. The bot owner has no caps. "
+        "Without 18+ it also makes ?asset owner-only. "
         "18+ can run with approval off; the minors checks still run on every request.",
     ),
     "asset_adult_enabled": (
@@ -100,8 +101,9 @@ FIELD_HELP: dict[str, tuple[str, str]] = {
     "asset_approval_enabled": (
         "Require owner approval",
         "### Owner approval\n"
-        "On by default. Turning it off lowers the hourly caps (3 per user, 10 per "
-        "server; videos also 1 per user, 3 per server). Video stays available. "
+        "On by default. Turning it off skips owner review of each asset. The hourly "
+        "caps stay the same: 10 images and 5 videos per user, 40 images and 15 videos "
+        "per server (the owner has none). "
         "Without 18+ it also makes ?asset owner-only. 18+ can run with approval off.",
     ),
     "prompt_tools": (

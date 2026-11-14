@@ -568,8 +568,9 @@ class SettingsWindow(QWidget):
         self.asset_approval_box = QCheckBox("Require owner approval")
         self.asset_approval_box.setObjectName("asset_approval_enabled")
         self.asset_approval_box.setToolTip(
-            "On by default. Turning it off lowers the hourly caps (3 per user, 10 per "
-            "server; videos also 1 per user, 3 per server). Video stays available. "
+            "On by default. Turning it off skips your review of each asset. The hourly "
+            "caps stay the same either way: 10 images and 5 videos per user, 40 images "
+            "and 15 videos per server (you have none). "
             "Without 18+ it also makes ?asset owner-only. 18+ can run with approval off."
         )
         self.asset_adult_box.toggled.connect(self._sync_asset_toggles)

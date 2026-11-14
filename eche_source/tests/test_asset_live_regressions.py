@@ -147,8 +147,11 @@ class QuotaTests(unittest.TestCase):
         self.assertEqual(self._count(), 0)
 
     def _fill_cap(self, uid=7):
+        # Images and videos have separate slots; fill both so the early gate
+        # (which refuses only when no slot of either kind is left) refuses.
         for _ in range(3):
             L.record_use(uid, 9, root=self.tmp)
+            L.record_use(uid, 9, root=self.tmp, video=True)
         self.assertIsNotNone(L.rate_refusal(uid, 9, root=self.tmp, caps=(3, 10)))
 
     def test_owner_has_no_hourly_or_daily_cap(self):

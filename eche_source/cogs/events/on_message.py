@@ -117,24 +117,21 @@ COMMAND_PREFIXES = ("?",)
 
 
 def is_prefix_command(bot, message) -> bool:
-    """True when the message invokes a registered prefix command.
+    """True when any line of the message starts with a registered ?command.
 
-    Matches command names and aliases, including subcommand parents, after
-    the bot's ``?`` prefix. Unknown words after ``?`` are left to chat.
+    Matches command names and aliases after the bot's ``?`` prefix, at the
+    start of the message or of any later line (leading spaces allowed).
+    Unknown words after ``?`` are left to chat.
     """
-    content = getattr(message, "content", None) or ""
-    for prefix in COMMAND_PREFIXES:
-        if not content.startswith(prefix):
-            continue
-        rest = content[len(prefix):]
-        if not rest or rest[0].isspace():
-            return False
-        name = rest.split(None, 1)[0]
-        try:
-            return bot.get_command(name) is not None
-        except Exception:
-            return False
-    return False
+    from core.command_lines import is_command_message
+
+    try:
+        return is_command_message(bot, message)
+    except Exception:
+        # Fail toward the command: never let chat (and its asset tool) run
+        # on a message whose ? check broke.
+        content = getattr(message, "content", None) or ""
+        return any(line.lstrip().startswith("?") for line in content.splitlines())
 
 class OnMessage(commands.Cog):
     def __init__(self, bot):

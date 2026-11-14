@@ -8,10 +8,35 @@ import os
 import tempfile
 import threading
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
-USER_HOURLY_CAP = 10
-GUILD_HOURLY_CAP = 30
+
+@dataclass(frozen=True)
+class HourlyCaps:
+    """Hourly ?asset caps. Images and videos are counted separately."""
+
+    user_images: int
+    user_videos: int
+    guild_images: int
+    guild_videos: int
+
+    @property
+    def images(self) -> tuple[int, int]:
+        return (self.user_images, self.guild_images)
+
+    @property
+    def videos(self) -> tuple[int, int]:
+        return (self.user_videos, self.guild_videos)
+
+
+# The one place the hourly caps are set. They are the same with owner
+# approval on or off; the bot owner has none. A future plan could supply a
+# different HourlyCaps here; only the standard one exists today.
+STANDARD_CAPS = HourlyCaps(user_images=10, user_videos=5, guild_images=40, guild_videos=15)
+
+USER_HOURLY_CAP = STANDARD_CAPS.user_images
+GUILD_HOURLY_CAP = STANDARD_CAPS.guild_images
 LOCKOUT_SECONDS = 24 * 60 * 60
 WINDOW_SECONDS = 60 * 60
 
@@ -156,7 +181,7 @@ def lockout_until(user_id, *, root: str | None = None) -> str:
 
 
 def rate_refusal(user_id, guild_id, *, root: str | None = None, caps: tuple[int, int] | None = None) -> str | None:
-    """A refusal if the user or guild is over the hourly cap. Does not count."""
+    """A refusal if the user or guild is over the hourly image cap. Does not count."""
     try:
         data = _load(root)
     except LimitsCorrupt:
@@ -182,7 +207,7 @@ def rate_refusal(user_id, guild_id, *, root: str | None = None, caps: tuple[int,
 
 
 def video_rate_refusal(user_id, guild_id, caps: tuple[int, int], *, root: str | None = None) -> str | None:
-    """A refusal if the user or guild is over the extra hourly video cap."""
+    """A refusal if the user or guild is over the hourly video cap. Does not count."""
     try:
         data = _load(root)
     except LimitsCorrupt:
@@ -198,9 +223,27 @@ def video_rate_refusal(user_id, guild_id, caps: tuple[int, int], *, root: str | 
     return None
 
 
+def no_slot_refusal(
+    user_id,
+    guild_id,
+    *,
+    root: str | None = None,
+    caps: tuple[int, int] | None = None,
+    video_caps: tuple[int, int] | None = None,
+) -> str | None:
+    """Early gate before the kind is known: refuse only when neither an image
+    nor a video slot is left. The exact check is reserve_use."""
+    image = rate_refusal(user_id, guild_id, root=root, caps=caps)
+    if not image or video_caps is None:
+        return image
+    video = video_rate_refusal(user_id, guild_id, video_caps, root=root)
+    return image if video else None
+
+
 def _buckets(video: bool) -> tuple[tuple[str, str], ...]:
+    # Images and videos have separate buckets; a video uses no image slot.
     if video:
-        return (("users", "guilds"), ("video_users", "video_guilds"))
+        return (("video_users", "video_guilds"),)
     return (("users", "guilds"),)
 
 
@@ -255,8 +298,8 @@ def reserve_use(
 ) -> str | None:
     """Atomically refuse or take a cap slot at the start of an attempt.
 
-    With video_caps, the attempt is a video: it needs a slot under the
-    shared caps and under the video caps, and takes both.
+    With video_caps, the attempt is a video and is checked and counted only
+    against the video caps. Otherwise it is an image under caps.
     """
     with _LOCK:
         try:
@@ -270,13 +313,12 @@ def reserve_use(
                     return LOCKOUT_REFUSAL
             except (TypeError, ValueError):
                 pass
-        refusal = rate_refusal(user_id, guild_id, root=root, caps=caps)
-        if refusal:
-            return refusal
         if video_caps is not None:
             refusal = video_rate_refusal(user_id, guild_id, video_caps, root=root)
-            if refusal:
-                return refusal
+        else:
+            refusal = rate_refusal(user_id, guild_id, root=root, caps=caps)
+        if refusal:
+            return refusal
         record_use(user_id, guild_id, root=root, video=video_caps is not None)
         return None
 
