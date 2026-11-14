@@ -11,8 +11,10 @@
 #    label "sexualized stylized"; that clause left the normal-channel age
 #    prompt (the image content check still blocks sexual content there).
 #  - 00:43 ET: the same request passed frames 1-15 ("no people") and was
-#    blocked on frame 16/49 as "apparent minor"; character prompts in normal
-#    channels now carry an explicit adult-age hint for the generator.
+#    blocked on frame 16/49 as "apparent minor"; any prompt that could show a
+#    person or character now carries a strict adult-age hint (all channels).
+#  - 00:31 ET: "?asset adderall jaso" was refused by Llama Guard S6; Llama
+#    Guard no longer runs on asset prompts (the child checks all stay).
 # Mocked checker replies only. No image is generated, and no child-like image
 # is used anywhere: every "image" here is a few placeholder bytes.
 from __future__ import annotations
@@ -50,17 +52,25 @@ class CharacterAdultHintTests(unittest.TestCase):
     JET = "a video of a female f35 fighter jet but anthropomorphized and dancing around"
 
     def test_character_prompts_get_the_adult_hint(self):
-        self.assertIn("clearly mature adult woman in her 30s", S.character_adult_hint(self.JET))
-        self.assertIn("adult face and adult body proportions", S.character_adult_hint(self.JET))
-        self.assertIn("adult man in his 30s", S.character_adult_hint("turn my cat into a man"))
-        self.assertIn("adult person in their 30s", S.character_adult_hint("a toaster mascot"))
-        for plain in ("a sunset over mountains", "a jet dancing", "a pink cockpit", ""):
+        hint = S.character_adult_hint(self.JET)
+        for part in ("unmistakably and unambiguously an adult", "no possible question",
+                     "mature adult woman in her 30s or older", "fully adult face",
+                     "adult body proportions", "clearly adult features",
+                     "no youthful, childlike, or teen-like traits"):
+            self.assertIn(part, hint)
+        self.assertIn("adult man in his 30s or older", S.character_adult_hint("turn my cat into a man"))
+        self.assertIn("adult person in their 30s or older", S.character_adult_hint("a toaster mascot"))
+        for people in ("a chef cooking pasta", "two people at a cafe", "a jet dancing", "a cute toaster",
+                       "portrait of a knight", "a sexy robot", "she is surfing"):
+            self.assertTrue(S.character_adult_hint(people), people)
+        for plain in ("a sunset over mountains", "a pink cockpit", "a cat sleeping", "a red sports car", ""):
             self.assertEqual(S.character_adult_hint(plain), "", plain)
 
     def test_hint_does_not_force_photoreal(self):
         hint = S.character_adult_hint(self.JET).casefold()
         for word in ("photo", "realistic", "non-stylized"):
             self.assertNotIn(word, hint)
+        self.assertIn("Keep the requested art style.", S.character_adult_hint(self.JET))
 
     def test_normal_sent_prompt_has_hint_before_footer_last(self):
         sent, _ = S.build_sent_prompt(self.JET)
@@ -68,19 +78,20 @@ class CharacterAdultHintTests(unittest.TestCase):
         self.assertIn(self.JET + "\n\n" + S.character_adult_hint(self.JET), sent)
         self.assertTrue(S.footer_is_last(sent))
         plain, _ = S.build_sent_prompt("a sunset over mountains")
-        self.assertNotIn("Depict every character", plain)
+        self.assertNotIn("unmistakably", plain)
 
-    def test_adult_channels_keep_the_strict_rule_only(self):
+    def test_adult_channels_get_the_strict_rule_and_the_hint(self):
         sent, _ = S.build_sent_prompt(self.JET, adult=True)
         self.assertTrue(sent.startswith(S.ADULT_RULE_STRICT))
-        self.assertNotIn("Depict every character", sent)
+        self.assertIn(self.JET + "\n\n" + S.character_adult_hint(self.JET), sent)
+        self.assertTrue(S.footer_is_last(sent))
 
     def test_prepare_generation_sends_and_audits_the_hint_and_still_checks_the_raw_prompt(self):
         seen, audits = [], []
         async def classify(text, **_k):
             seen.append(text)
             return ""
-        with mock.patch("core.classifier.classify_async", new=classify), \
+        with mock.patch("core.classifier.asset_prompt_check_async", new=classify), \
                 mock.patch("core.blocklist.is_blocked", return_value=False), \
                 mock.patch("core.guardrails.asks_to_bypass_filter", return_value=False), \
                 mock.patch("core.asset_filter.media_prompt_blocked", return_value=False), \
@@ -92,6 +103,68 @@ class CharacterAdultHintTests(unittest.TestCase):
         self.assertTrue(S.footer_is_last(prepared.sent_prompt))
         self.assertIn(("asset", "success", "adult-hint"),
                       [(ev, f.get("outcome"), f.get("reason")) for ev, f in audits])
+
+    def test_adult_mode_also_audits_the_hint(self):
+        audits = []
+        adult = AssetMode(enabled=True, adult=True, approval=False, owner_only=False, user_cap=10, guild_cap=40,
+                          video=True, video_user_cap=5, video_guild_cap=15)
+        with mock.patch("core.classifier.asset_prompt_check_async", new=mock.AsyncMock(return_value="")), \
+                mock.patch("core.blocklist.is_blocked", return_value=False), \
+                mock.patch("core.guardrails.asks_to_bypass_filter", return_value=False), \
+                mock.patch("core.asset_filter.media_prompt_blocked", return_value=False), \
+                mock.patch("core.audit.record", side_effect=lambda ev, **f: audits.append((ev, f))):
+            prepared = asyncio.run(S.prepare_generation(self.JET, user_id=5, guild_id=1, channel_id=1, mode=adult))
+        self.assertTrue(prepared.sent_prompt.startswith(S.ADULT_RULE_STRICT))
+        self.assertIn(S.character_adult_hint(self.JET), prepared.sent_prompt)
+        self.assertIn(("asset", "success", "adult-hint"),
+                      [(ev, f.get("outcome"), f.get("reason")) for ev, f in audits])
+
+
+class NoLlamaGuardOnAssetPromptsTests(unittest.TestCase):
+    """Asset prompts: model child check only; Llama Guard never runs."""
+
+    def _run(self, child):
+        lg = mock.AsyncMock(side_effect=AssertionError("Llama Guard must not run on asset prompts"))
+        with mock.patch.object(C, "tests_are_allowing", return_value=False), \
+                mock.patch.object(C, "_classify_messages", lg), \
+                mock.patch.object(C, "_classify_images_async", lg), \
+                mock.patch.object(C, "_child_check_async", child):
+            out = asyncio.run(C.asset_prompt_check_async("adderall jaso"))
+        lg.assert_not_called()
+        return out
+
+    def test_harmless_prompt_passes_without_llama_guard(self):
+        child = mock.AsyncMock(return_value="")
+        self.assertEqual(self._run(child), "")
+        child.assert_awaited_once_with("adderall jaso")
+
+    def test_child_check_still_blocks_and_fails_closed(self):
+        self.assertEqual(self._run(mock.AsyncMock(return_value="child-check-unsafe")), "child-check-unsafe")
+        self.assertEqual(self._run(mock.AsyncMock(return_value="child-check-error")), "child-check-error")
+
+    def test_prepare_generation_uses_the_child_check_not_classify_async(self):
+        notes, audits = [], []
+        with mock.patch("core.classifier.classify_async", new=mock.AsyncMock(side_effect=AssertionError("LG"))), \
+                mock.patch("core.classifier.asset_prompt_check_async", new=mock.AsyncMock(return_value="child-check-unsafe")), \
+                mock.patch("core.blocklist.is_blocked", return_value=False), \
+                mock.patch("core.blocklist.note", side_effect=notes.append), \
+                mock.patch("core.guardrails.asks_to_bypass_filter", return_value=False), \
+                mock.patch("core.asset_filter.media_prompt_blocked", return_value=False), \
+                mock.patch("core.audit.record", side_effect=lambda ev, **f: audits.append((ev, f))):
+            with self.assertRaises(ImagineError) as err:
+                asyncio.run(S.prepare_generation("a prompt", user_id=5, guild_id=1, channel_id=1, mode=SFW))
+        self.assertEqual(IM.error_status(err.exception), "safety_block")
+        self.assertIn("asset-input-child-check-unsafe", notes)
+        self.assertIn(("asset", "refusal", "child-check-unsafe"),
+                      [(ev, f.get("outcome"), f.get("category")) for ev, f in audits])
+
+    def test_checker_exception_blocks(self):
+        with mock.patch("core.classifier.asset_prompt_check_async", new=mock.AsyncMock(side_effect=RuntimeError("down"))), \
+                mock.patch("core.blocklist.is_blocked", return_value=False), \
+                mock.patch("core.guardrails.asks_to_bypass_filter", return_value=False), \
+                mock.patch("core.asset_filter.media_prompt_blocked", return_value=False):
+            with self.assertRaises(ImagineError):
+                asyncio.run(S.prepare_generation("a prompt", user_id=5, guild_id=1, channel_id=1, mode=SFW))
 
     def test_hinted_output_is_still_age_checked_and_blocked_fail_closed(self):
         with mock.patch("core.classifier.classify_media_async", new=mock.AsyncMock(return_value="")), \
@@ -157,7 +230,7 @@ class ParseAgeReplyTests(unittest.TestCase):
 
 
 class _Sink:
-    """Mock classify_async that reports Llama Guard categories like the real one."""
+    """Mock asset prompt check that can also report signal categories."""
 
     def __init__(self, verdict, categories=()):
         self.verdict = verdict
@@ -182,7 +255,7 @@ class NoStrikeSystemTests(unittest.TestCase):
     def _prepare(self, raw, prompt, *, verdict="", categories=(), blocked=False, bypass=False, media=False):
         notes = []
         with mock.patch("core.secrets._user_root", return_value=raw), \
-                mock.patch("core.classifier.classify_async", new=_Sink(verdict, categories)), \
+                mock.patch("core.classifier.asset_prompt_check_async", new=_Sink(verdict, categories)), \
                 mock.patch("core.blocklist.is_blocked", return_value=blocked), \
                 mock.patch("core.blocklist.note", side_effect=notes.append), \
                 mock.patch("core.guardrails.asks_to_bypass_filter", return_value=bypass), \
@@ -195,7 +268,7 @@ class NoStrikeSystemTests(unittest.TestCase):
     def test_prompt_blocks_still_refuse_and_write_no_lock(self):
         with tempfile.TemporaryDirectory() as raw:
             cases = (
-                dict(verdict="classifier-unsafe", categories=("S4",)),
+                dict(verdict="child-check-error"),
                 dict(verdict="child-check-unsafe"),
                 dict(blocked=True),
                 dict(bypass=True),

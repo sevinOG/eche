@@ -4,13 +4,15 @@
 # Every generation prompt is handled here, in order:
 #   1. the full minors matcher (including bare boy/girl/kids)
 #   2. a media-only size/age/family/stylization filter (~20 languages)
-#   3. the Llama Guard classifier, plus the R12-23 child-resemblance check
-#   4. the hardcoded safety footer, appended last as explicit rules
-#   5. an adult-only rewrite
+#   3. the model child check (R12-23 child resemblance). Llama Guard does
+#      not run on asset prompts (removed 2026-11-14, owner decision).
+#   4. the adult rule first, then the user prompt, then the adult-age hint
+#      for anything that could show a person or character
+#   5. the hardcoded safety footer, appended last as explicit rules
 #
-# Generated images, every video frame sampled at 4 fps (plus the last
-# frame), and every frame of an animated GIF or WebP, go through Llama
-# Guard vision and a fail-closed under-21 appearance check. Unsure and
+# Generated images, every sampled video frame (plus the last frame), and
+# every frame of an animated GIF or WebP, go through the image content
+# check and a fail-closed age check (Grok vision, local backup). Unsure and
 # errors block. A blocked prompt is never retried. A blocked asset is
 # never posted or written to memory. The only backend is Grok Imagine
 # (xAI); there is no fallback generator.
@@ -36,27 +38,55 @@ ADULT_RULE_STRICT = (
     "Do not depict children, minors, anyone who looks under 21, stylized, "
     "illustrated, anime, cartoon, or identifiable people."
 )
-# Normal channels: character prompts (anthropomorphic objects, mascots,
-# personified things) get an explicit adult-age hint for the generator.
+# Generator-side adult hint for any prompt that could show a person or
+# character, in normal AND 18+ channels (18+ also keeps ADULT_RULE_STRICT).
 # 2026-11-14 00:43 ET: "a female f35 fighter jet but anthropomorphized and
 # dancing around" came back with a figure the age check read as an
 # apparent minor (frame 16/49). The hint does not force photoreal and does
 # not loosen any check: every frame is still age-checked, fail closed.
-_CHARACTER_RE = re.compile(
-    r"\b(?:anthropomorph\w*|personif\w*|humani[sz]\w*|humanoid\w*|gijinka|mascots?|"
-    r"characters?|(?:as|into) an? (?:woman|girl|lady|man|guy|boy|person|human))\b",
+_PEOPLE_WORDS = (
+    r"anthropomorph\w*|personif\w*|humani[sz]\w*|humanoid\w*|gijinka|mascots?|"
+    r"characters?|figures?|persons?|people|humans?|someone|somebody|anyone|everyone|"
+    r"individuals?|crowds?|couples?|famil(?:y|ies)|friends?|"
+    r"wom[ae]n|m[ae]n|girls?|boys?|guys?|lad(?:y|ies)|gals?|dudes?|females?|males?|"
+    r"wives?|wife|husbands?|mothers?|moms?|fathers?|dads?|brides?|grooms?|"
+    r"he|she|him|her|his|hers|they|them|"
+    r"portraits?|selfies?|faces?|bod(?:y|ies)|"
+    r"models?|dancers?|singers?|actors?|actress(?:es)?|celebrit(?:y|ies)|"
+    r"pilots?|soldiers?|warriors?|knights?|heroes|hero|heroines?|villains?|"
+    r"princes(?:ses)?|princes?|queens?|kings?|witch(?:es)?|wizards?|elves|elf|"
+    r"fair(?:y|ies)|angels?|mermaids?|vampires?|zombies?|cowboys?|cowgirls?|"
+    r"ninjas?|pirates?|robots?|androids?|cyborgs?|aliens?|monsters?|"
+    r"chefs?|doctors?|nurses?|teachers?|students?|workers?|athletes?|players?|"
+    r"waifus?|husbandos?|furr(?:y|ies)|anthros?|catgirls?|catboys?|idols?|"
+    r"cosplay\w*|avatars?|oc|ocs|"
+    r"danc\w*|smil\w*|wink\w*|pos(?:e|es|ing)|wearing|outfits?|dress(?:es|ed)?|"
+    r"bikinis?|lingerie|hair|eyes|cute|kawaii|sexy|"
+    r"(?:as|into) an? \w+"
+)
+_CHARACTER_RE = re.compile(rf"\b(?:{_PEOPLE_WORDS})\b", re.IGNORECASE)
+_FEMALE_RE = re.compile(
+    r"\b(?:female|woman|women|girls?|lad(?:y|ies)|gals?|she|her|hers|feminine|wife|wives|"
+    r"mothers?|moms?|brides?|actress(?:es)?|princess(?:es)?|queens?|heroines?|witch(?:es)?|"
+    r"mermaids?|cowgirls?|catgirls?|waifus?)\b",
     re.IGNORECASE,
 )
-_FEMALE_RE = re.compile(r"\b(?:female|woman|women|girls?|lady|ladies|she|her|feminine)\b", re.IGNORECASE)
-_MALE_RE = re.compile(r"\b(?:male|man|men|guys?|boys?|he|him|his|masculine)\b", re.IGNORECASE)
+_MALE_RE = re.compile(
+    r"\b(?:male|man|men|guys?|boys?|dudes?|he|him|his|masculine|husbands?|fathers?|dads?|"
+    r"grooms?|princes?|kings?|wizards?|cowboys?|catboys?|husbandos?)\b",
+    re.IGNORECASE,
+)
 _ADULT_HINT = (
-    "Depict every character as a clearly mature adult {who} in {their} 30s, "
-    "with an adult face and adult body proportions."
+    "Every person or character shown must be unmistakably and unambiguously an "
+    "adult, with no possible question about it: a mature adult {who} in {their} "
+    "30s or older, with a fully adult face, adult body proportions, adult "
+    "stature, and clearly adult features, and with no youthful, childlike, or "
+    "teen-like traits of any kind. Keep the requested art style."
 )
 
 
 def character_adult_hint(prompt: str) -> str:
-    """Adult-age hint for character prompts, or "" when the prompt has none."""
+    """Adult-age hint for prompts that could show a person or character, else ""."""
     text = prompt or ""
     if not _CHARACTER_RE.search(text):
         return ""
@@ -492,7 +522,7 @@ def build_sent_prompt(user_prompt: str, *, adult: bool = False) -> tuple[str, st
     if len(body) > 2000:
         body = body[:2000].rstrip()
     rule = ADULT_RULE_STRICT if adult else ADULT_RULE
-    hint = "" if adult else character_adult_hint(body)
+    hint = character_adult_hint(body)
     if hint:
         body = f"{body}\n\n{hint}"
     sent = f"{rule}\n\n{body}\n\n{SAFETY_FOOTER}"
@@ -554,10 +584,13 @@ async def prepare_generation(
     channel_id=None,
     mode: AssetMode | None = None,
 ) -> PreparedPrompt:
-    """Matcher, media filter, classifier (incl. child check), footer-last. Fail closed."""
+    """Bypass, matcher, media filter, model child check, footer-last. Fail closed.
+
+    No Llama Guard on asset prompts; see classifier.asset_prompt_check_async.
+    """
     from core.asset_filter import media_prompt_blocked
     from core.blocklist import REFUSAL, is_blocked, note
-    from core.classifier import classify_async
+    from core.classifier import asset_prompt_check_async
     from core.guardrails import BYPASS_REFUSAL, asks_to_bypass_filter
     from core.imagine import ImagineError
 
@@ -579,9 +612,9 @@ async def prepare_generation(
         raise ImagineError(REFUSAL)
 
     try:
-        verdict = await classify_async(raw)
+        verdict = await asset_prompt_check_async(raw)
     except Exception:
-        verdict = "classifier-error"
+        verdict = "child-check-error"
     if verdict:
         note(f"asset-input-{verdict}")
         _audit("refusal", category=verdict, mode=snap, **ids)
@@ -591,7 +624,7 @@ async def prepare_generation(
     if not footer_is_last(sent):
         _audit("error", category="footer-order", footer_hash=digest, mode=snap, **ids)
         raise ImagineError("Safety rules could not be applied, so nothing was generated.")
-    hinted = not snap.adult and bool(character_adult_hint(raw))
+    hinted = bool(character_adult_hint(raw))
     _audit("success", footer_hash=digest, mode=snap, reason="adult-hint" if hinted else "", **ids)
     return PreparedPrompt(
         user_prompt=raw,

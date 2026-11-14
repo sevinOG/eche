@@ -297,7 +297,7 @@ class HardenedAssetTests(unittest.TestCase):
         with mock.patch("core.blocklist.is_blocked", return_value=False), \
              mock.patch("core.guardrails.asks_to_bypass_filter", return_value=False), \
              mock.patch("core.asset_filter.media_prompt_blocked", return_value=False), \
-             mock.patch("core.classifier.classify_async", new=mock.AsyncMock(side_effect=TimeoutError("deadline"))):
+             mock.patch("core.classifier.asset_prompt_check_async", new=mock.AsyncMock(side_effect=TimeoutError("deadline"))):
             with self.assertRaises(ImagineError) as raised:
                 asyncio.run(prepare_generation("a red paper boat"))
             self.assertEqual(raised.exception.text, REFUSAL)
@@ -396,7 +396,7 @@ class HardenedAssetTests(unittest.TestCase):
              mock.patch("core.blocklist.is_blocked", return_value=False), \
              mock.patch("core.guardrails.asks_to_bypass_filter", return_value=False), \
              mock.patch("core.asset_filter.media_prompt_blocked", return_value=False), \
-             mock.patch("core.classifier.classify_async", new=mock.AsyncMock(return_value="")), \
+             mock.patch("core.classifier.asset_prompt_check_async", new=mock.AsyncMock(return_value="")), \
              mock.patch("core.imagine.http_json", side_effect=_http), \
              mock.patch("core.asset_safety.check_generated_media", new=mock.AsyncMock()), \
              mock.patch("core.asset_limits.record_use"):
@@ -415,7 +415,7 @@ class HardenedAssetTests(unittest.TestCase):
         self.assertEqual(calls["http"], 1)
 
         with mock.patch("core.asset_safety.asset_enabled", return_value=True), \
-             mock.patch("core.classifier.classify_async", new=mock.AsyncMock(return_value="")), \
+             mock.patch("core.classifier.asset_prompt_check_async", new=mock.AsyncMock(return_value="")), \
              mock.patch("core.imagine.http_json", side_effect=_http):
             with self.assertRaises(ImagineError):
                 asyncio.run(run_asset(AssetPlan(mode="image", prompt=INCIDENT), "cfg-key"))
@@ -543,7 +543,7 @@ class OfficialImagineHashTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory(prefix="eche-lock-") as raw:
             with mock.patch("core.secrets._user_root", return_value=raw), \
-                 mock.patch("core.classifier.classify_async", new=mock.AsyncMock(side_effect=RuntimeError("down"))), \
+                 mock.patch("core.classifier.asset_prompt_check_async", new=mock.AsyncMock(side_effect=RuntimeError("down"))), \
                  mock.patch("core.blocklist.is_blocked", return_value=False), \
                  mock.patch("core.guardrails.asks_to_bypass_filter", return_value=False), \
                  mock.patch("core.asset_filter.media_prompt_blocked", return_value=False):

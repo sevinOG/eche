@@ -1685,6 +1685,21 @@ async def classify_async(
     return result or image_fail
 
 
+async def asset_prompt_check_async(text: str) -> str:
+    """Asset (image/video) prompt check: the model child check only. '' allows.
+
+    Llama Guard is not run on asset prompts (owner decision, 2026-11-14): it
+    cannot see the finished pixels, and its non-child categories blocked
+    harmless requests (S6 on "adderall jaso", S4 on a text prompt). The
+    child check model, the prompt minors filter, and the every-frame output
+    age check (Grok vision, local backup, fail closed) are unchanged.
+    Fail closed: any error or unreadable verdict refuses.
+    """
+    if tests_are_allowing():
+        return ""
+    return await _with_child_check_async("", text or "", images=None)
+
+
 async def classify_media_async(
     images: list,
     *,
