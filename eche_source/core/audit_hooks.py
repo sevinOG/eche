@@ -18,7 +18,9 @@ LISTENER_SUCCESS_ALLOWLIST: dict[str, str] = {
 # Background / GUI names discovered by AST that are not invoked as a live
 # loop. Each entry must have a reason. Names with a probe in
 # BACKGROUND_PROBES are checked by calling the probe instead.
-BACKGROUND_ALLOWLIST: dict[str, str] = {}
+BACKGROUND_ALLOWLIST: dict[str, str] = {
+    "_watch_asset_mode": "polls read_asset_mode; toggle changes are audited and probed via save_all",
+}
 
 # Qt slots that are UI chrome only. Operator slots must be reviewed and probed
 # instead. Each entry needs a reason.

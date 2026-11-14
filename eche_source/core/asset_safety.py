@@ -121,8 +121,9 @@ def _mode_from_store(store: dict | None, *, pins_ok: bool = True) -> tuple[Asset
     approval, ap_bad = parse_safety_flag(data.get("asset_approval_enabled"), default=True)
     owner, ow_bad = parse_safety_flag(data.get("asset_owner_only"), default=True)
     if adult:
+        # 18+ forces approval on, but is not owner-only. Any member of an
+        # age-restricted channel may use it while the toggle is on.
         approval = True
-        owner = True
     elif not approval:
         adult = False
         owner = True
@@ -311,7 +312,7 @@ def asset_enabled(mode: AssetMode | None = None) -> bool:
 
 
 def asset_adult_enabled(mode: AssetMode | None = None) -> bool:
-    """Owner-only 18+ mode. Blank or missing is OFF."""
+    """18+ mode. Settings-only, default off. Blank or missing is OFF."""
     if mode is not None:
         return mode.adult
     return _live_mode().adult

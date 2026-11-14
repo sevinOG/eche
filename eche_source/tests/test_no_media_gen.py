@@ -66,6 +66,7 @@ _OFFICIAL_IMAGINE = {
     ROOT / "core" / "asset_backend.py",
     ROOT / "core" / "asset_review.py",
     ROOT / "core" / "asset_limits.py",
+    ROOT / "core" / "classifier.py",
     ROOT / "cogs" / "asset.py",
 }
 

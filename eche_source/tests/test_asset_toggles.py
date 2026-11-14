@@ -83,10 +83,11 @@ class CouplingTests(unittest.TestCase):
         mode, _invalid = _mode_from_store({
             "asset_adult_enabled": "1",
             "asset_approval_enabled": "0",
+            "asset_owner_only": "0",
         })
         self.assertTrue(asset_approval_enabled(mode))
         self.assertTrue(video_allowed(mode))
-        self.assertTrue(owner_only_required(mode))
+        self.assertFalse(owner_only_required(mode))
         self.assertEqual(hourly_caps(mode), (10, 30))
         self.assertEqual(adult_output_ignore_lg4(mode), frozenset({"S12"}))
 
@@ -101,7 +102,7 @@ class CouplingTests(unittest.TestCase):
         self.assertEqual(hourly_caps(mode), (APPROVAL_OFF_USER_CAP, APPROVAL_OFF_GUILD_CAP))
         self.assertEqual(hourly_caps(mode), (3, 10))
 
-    def test_save_time_18_plus_forces_approval_and_owner_only(self):
+    def test_save_time_18_plus_forces_approval_but_not_owner_only(self):
         out = couple_asset_toggles({
             "asset_adult_enabled": "1",
             "asset_approval_enabled": "0",
@@ -109,7 +110,7 @@ class CouplingTests(unittest.TestCase):
         })
         self.assertEqual(out["asset_adult_enabled"], "1")
         self.assertEqual(out["asset_approval_enabled"], "1")
-        self.assertEqual(out["asset_owner_only"], "1")
+        self.assertEqual(out["asset_owner_only"], "0")
 
     def test_save_time_approval_off_forbids_18_plus_and_forces_owner_only(self):
         out = couple_asset_toggles({
@@ -147,7 +148,7 @@ class CouplingTests(unittest.TestCase):
             cfg = load_all(raw)
             self.assertEqual(cfg.get("asset_adult_enabled"), "1")
             self.assertEqual(cfg.get("asset_approval_enabled"), "1")
-            self.assertEqual(cfg.get("asset_owner_only"), "1")
+            self.assertEqual(cfg.get("asset_owner_only"), "0")
             self.assertEqual(recorded.get("kind"), "settings-save")
             self.assertEqual(recorded.get("asset_adult_enabled_old"), "0")
             self.assertEqual(recorded.get("asset_adult_enabled_new"), "1")
@@ -183,11 +184,29 @@ class GateTests(unittest.TestCase):
                 refuse_speaker(True, guild_id=1, channel=_Channel(True), asset_mode=mode),
             )
 
-    def test_18_plus_is_owner_only_even_if_audience_is_open(self):
-        mode = AssetMode(enabled=True, adult=True, approval=True, owner_only=True, user_cap=10, guild_cap=30, video=True)
+    def test_18_plus_follows_the_owner_only_toggle(self):
         from core.imagine import speaker_allowed
-        self.assertTrue(speaker_allowed(True, mode))
-        self.assertFalse(speaker_allowed(False, mode))
+        from core.asset_limits import DM_REFUSAL
+        open_mode = AssetMode(enabled=True, adult=True, approval=True, owner_only=False, user_cap=10, guild_cap=30, video=True)
+        self.assertTrue(speaker_allowed(True, open_mode))
+        self.assertTrue(speaker_allowed(False, open_mode))
+        locked = AssetMode(enabled=True, adult=True, approval=True, owner_only=True, user_cap=10, guild_cap=30, video=True)
+        self.assertTrue(speaker_allowed(True, locked))
+        self.assertFalse(speaker_allowed(False, locked))
+        with mock.patch("core.asset_limits.is_locked", return_value=False), \
+             mock.patch("core.asset_limits.rate_refusal", return_value=None), \
+             mock.patch("core.asset_safety._audit"):
+            self.assertIsNone(
+                refuse_speaker(False, guild_id=1, channel_id=2, nsfw=True, asset_mode=open_mode),
+            )
+            self.assertEqual(
+                refuse_speaker(False, guild_id=1, channel_id=2, nsfw=False, asset_mode=open_mode),
+                ADULT_CHANNEL_REFUSAL,
+            )
+            self.assertEqual(
+                refuse_speaker(False, guild_id=None, channel_id=2, nsfw=True, asset_mode=open_mode),
+                DM_REFUSAL,
+            )
 
     def test_approval_off_refuses_video(self):
         with mock.patch("core.asset_safety.video_allowed", return_value=False):

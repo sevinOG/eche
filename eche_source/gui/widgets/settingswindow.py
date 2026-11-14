@@ -637,10 +637,11 @@ class SettingsWindow(QWidget):
         self.asset_adult_box = QCheckBox("18+ (age-restricted channels only)")
         self.asset_adult_box.setObjectName("asset_adult_enabled")
         self.asset_adult_box.setToolTip(
-            "Off by default. Owner-only, and only in Discord age-restricted channels. "
+            "Off by default, settings-only. When it is on, any user in a Discord "
+            "age-restricted channel can use 18+ ?asset, not just the owner. "
             "Turns owner approval on and keeps every minors check. "
             "While 18+ is on, ?asset is refused in every channel that is not "
-            "age-restricted, including ordinary SFW requests."
+            "age-restricted, including ordinary SFW requests, and is refused in DMs."
         )
         self.asset_approval_box = QCheckBox("Require owner approval")
         self.asset_approval_box.setObjectName("asset_approval_enabled")
@@ -664,7 +665,7 @@ class SettingsWindow(QWidget):
         return page
 
     def _sync_asset_toggles(self, *_args) -> None:
-        """18+ forces approval and owner-only on. Approval-off forbids 18+ and forces owner-only."""
+        """18+ forces approval on. Approval-off forbids 18+ and forces owner-only."""
         if not hasattr(self, "asset_adult_box"):
             return
         adult = self.asset_adult_box.isChecked()
@@ -674,7 +675,7 @@ class SettingsWindow(QWidget):
             self.asset_approval_box.setChecked(True)
             self.asset_approval_box.blockSignals(False)
             approval = True
-        if (adult or not approval) and not self.asset_owner_only_box.isChecked():
+        if (not approval) and not self.asset_owner_only_box.isChecked():
             self.asset_owner_only_box.blockSignals(True)
             self.asset_owner_only_box.setChecked(True)
             self.asset_owner_only_box.blockSignals(False)

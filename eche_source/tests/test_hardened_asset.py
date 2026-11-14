@@ -34,6 +34,7 @@ from core.asset_safety import (
     OUTPUT_REFUSAL,
     OUTPUT_UNCHECKED,
     VISION_UNAVAILABLE,
+    AssetMode,
     asset_enabled,
     build_sent_prompt,
     check_generated_media,
@@ -218,7 +219,7 @@ class HardenedAssetTests(unittest.TestCase):
             self.assertEqual(api_key(), "cfg-key")
         with mock.patch("core.asset_safety.asset_enabled", return_value=True):
             with self.assertRaises(ImagineError) as raised:
-                asyncio.run(run_asset(AssetPlan(mode="image", prompt="a red paper boat"), ""))
+                asyncio.run(run_asset(AssetPlan(mode="image", prompt="a red paper boat"), "", asset_mode=AssetMode(enabled=True, adult=False, approval=True, owner_only=True, user_cap=10, guild_cap=30, video=True)))
             self.assertEqual(raised.exception.text, MISSING_KEY)
 
     def test_legacy_xai_key_is_ignored_until_reentered(self):
@@ -270,15 +271,15 @@ class HardenedAssetTests(unittest.TestCase):
              mock.patch("core.imagine.asset_audience", return_value="owner"), \
              mock.patch("core.asset_limits.is_locked", return_value=False), \
              mock.patch("core.asset_limits.rate_refusal", return_value=None):
-            self.assertIsNone(refuse_speaker(True, user_id=1, guild_id=2, channel_id=3))
-            self.assertIsNotNone(refuse_speaker(False, user_id=1, guild_id=2, channel_id=3))
+            self.assertIsNone(refuse_speaker(True, user_id=1, guild_id=2, channel_id=3, asset_mode=AssetMode(enabled=True, adult=False, approval=True, owner_only=True, user_cap=10, guild_cap=30, video=True)))
+            self.assertIsNotNone(refuse_speaker(False, user_id=1, guild_id=2, channel_id=3, asset_mode=AssetMode(enabled=True, adult=False, approval=True, owner_only=True, user_cap=10, guild_cap=30, video=True)))
 
     def test_dms_are_refused(self):
         with mock.patch("core.asset_safety.asset_enabled", return_value=True), \
              mock.patch("core.imagine.asset_audience", return_value="all"):
             self.assertTrue(in_direct_message(None))
             self.assertEqual(
-                refuse_speaker(True, user_id=1, guild_id=None, channel_id=9),
+                refuse_speaker(True, user_id=1, guild_id=None, channel_id=9, asset_mode=AssetMode(enabled=True, adult=False, approval=True, owner_only=True, user_cap=10, guild_cap=30, video=True)),
                 DM_REFUSAL,
             )
 
@@ -407,6 +408,7 @@ class HardenedAssetTests(unittest.TestCase):
                     user_id=11,
                     guild_id=22,
                     channel_id=33,
+                    asset_mode=AssetMode(enabled=True, adult=False, approval=True, owner_only=True, user_cap=10, guild_cap=30, video=True),
                 )
             )
         self.assertIsInstance(result, AssetFile)

@@ -573,14 +573,16 @@ def _asset_flag_raw(store: dict | None, key: str, *, default: bool) -> tuple[boo
 
 
 def couple_asset_toggles(public: dict, *, invalid: list | None = None) -> dict:
-    """18+ forces approval and owner-only on. Approval-off forces owner-only and forbids 18+."""
+    """18+ forces approval on. Approval-off forces owner-only and forbids 18+.
+
+    18+ itself is not owner-only: the audience follows asset_owner_only.
+    """
     data = dict(public or {})
     adult, ad_bad, ad_raw = _asset_flag_raw(data, "asset_adult_enabled", default=False)
     approval, ap_bad, ap_raw = _asset_flag_raw(data, "asset_approval_enabled", default=True)
     owner, ow_bad, ow_raw = _asset_flag_raw(data, "asset_owner_only", default=True)
     if adult:
         approval = True
-        owner = True
     elif not approval:
         adult = False
         owner = True

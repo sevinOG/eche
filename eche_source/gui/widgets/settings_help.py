@@ -73,7 +73,7 @@ FIELD_HELP: dict[str, tuple[str, str]] = {
         "While it is off, the command, the asset tool, and any generation request are refused.\n\n"
         "**Owner only** is a second, optional restriction once generation is on.\n\n"
         "### 18+ mode\n"
-        "Off by default. Owner-only, and only in Discord age-restricted channels, never in DMs. "
+        "Off by default, set only in Settings. When it is on, any user in a Discord age-restricted channel can use 18+ ?asset, not just the owner, and never in DMs. "
         "While 18+ is on, ?asset is refused in every channel that is not age-restricted, "
         "including ordinary SFW requests. "
         "It turns owner approval on. Every minors check stays, including the matcher, media filter, "
@@ -89,7 +89,7 @@ FIELD_HELP: dict[str, tuple[str, str]] = {
     "asset_adult_enabled": (
         "18+",
         "### 18+ mode\n"
-        "Off by default. See the ?asset help for the full rules: owner-only, age-restricted "
+        "Off by default, settings-only. See the ?asset help for the full rules: any user in an age-restricted "
         "channels only (every non-NSFW channel is refused, including SFW requests), "
         "approval forced on, stricter age and style checks, and S12 relaxed "
         "on output only.",
