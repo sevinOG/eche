@@ -115,8 +115,9 @@ PROMPT_TOOLS = (
     ("duckduckgo", "Lookup"),
     ("thread", "Thread"),
     ("context_raw", "Own context"),
-    ("asset", "Asset"),
 )
+# No Asset box: the asset tool follows the Asset switch (asset_enabled), the
+# same switch that decides whether the pictures line tells the model it has it.
 
 
 def tool_prompt_enabled(name: str) -> bool:
@@ -133,7 +134,7 @@ def tool_prompt_enabled(name: str) -> bool:
 def _offered(tool: Tool, *, public_on: bool, speaker_is_owner: bool, admin_enabled: bool) -> bool:
     if tool.access != ACCESS_OWNER and not public_on:
         return False
-    if tool.access != ACCESS_OWNER and not tool_prompt_enabled(tool.name):
+    if tool.name != "asset" and tool.access != ACCESS_OWNER and not tool_prompt_enabled(tool.name):
         return False
     if tool.name == "asset":
         try:

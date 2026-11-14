@@ -5,7 +5,7 @@
 # owned by Administrators, the bot running as a standard account,
 # and the updater running elevated. Signing the manifest with a key
 # kept outside eche_source is the planned real anchor.
-# manifest-sha256: 2bc8bbe92bf6b2252c5a98c56a55ff9885c4079036f936307e01432b9265e14f
+# manifest-sha256: 8d523e6a99c5a1f316d6023edd14c32cb10587fea2653771f8a909a423903614
 7acce365636cdb1819c41da4a7532acb6dc8196e630c20f5815face8ff090403  cogs/asset.py
 a083f8387f6b8e2c4126fc17d84881452f36bcf950872ea913eacd55d9152c88  core/imagine.py
 61a872a3f9278f21dee31ff13b02dc6ab0bbf8c191ecaa8784809c1207f45b5f  core/tools_asset.py
@@ -18,5 +18,5 @@ e76d725e5e05f8c9fbecbe65b1e133994c28fd118fc2ff601ba9f8e9fadad32d  core/asset_rev
 ddd06172cf625f6c4cf81598f4210b84bf1a17d1110f0d4c0267500e2c36193e  core/asset_limits.py
 f852728dfa3b312c0f4a08d45f7ebdef83dba782c7b8607ac164266e16db4e85  core/media_scan.py
 b31f6597efa75450bcff5be0ea0e08f1c6b0947e7f2c3e0adedf63247c6c59b9  core/classifier.py
-504d379eca0ae6782b04d41407033da886cb66906b363b39e73df201f4f30efb  core/secrets.py
-3a8755c9362f7c890b294a91f2853a0d162267bdcf6bacca942d273fe8de5f32  core/tools.py
+f1efb85cf21b3868585d448ce3013f4f2c2e6e13fcf56651b2a80372a753fbf2  core/secrets.py
+e31564f968bf8bfd61f895480cf05ae75565f5632b80b437d7d99f1fd487c988  core/tools.py

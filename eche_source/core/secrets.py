@@ -80,7 +80,6 @@ PUBLIC_KEYS = (
     "asset_owner_only",             # blank or missing stays ON (owner only). "0" opens it to the guild.
     "asset_adult_enabled",          # "1" turns 18+ mode on. Blank or missing stays OFF.
     "asset_approval_enabled",       # "0" turns owner approval off. Blank or missing stays ON.
-    "tool_asset",                   # "0" leaves the asset tool out of the prompt. Blank stays on.
     "xai_key_epoch",                # must match CURRENT_XAI_KEY_EPOCH or the stored xAI key is ignored
     # The image safety checkers have no settings; their models are
     # hardcoded in core/classifier.py. See RETIRED_PUBLIC_KEYS below.
@@ -97,6 +96,10 @@ RETIRED_PUBLIC_KEYS = (
     "image_check_model",
     "age_vision_ollama_model",
     "blocked_words",
+    # Old "In the prompt > Asset" box. A leftover "0" from a pre-removal
+    # install hid the chat asset tool while the pictures line said it existed.
+    # The Asset switch (asset_enabled) alone decides now.
+    "tool_asset",
 )
 
 # Map settings key -> environment variable used by the bot

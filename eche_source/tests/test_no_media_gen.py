@@ -155,7 +155,7 @@ class NoMediaGenerationTests(unittest.TestCase):
         import core.tools_asset  # noqa: F401
 
         self.assertIn("asset", tools.registered_names())
-        self.assertIn("asset", {name for name, _ in tools.PROMPT_TOOLS})
+        self.assertNotIn("asset", {name for name, _ in tools.PROMPT_TOOLS})
         self.assertNotIn("flash", tools.registered_names())
         self.assertNotIn("image_gen", tools.registered_names())
 
@@ -166,7 +166,8 @@ class NoMediaGenerationTests(unittest.TestCase):
         self.assertIn("xai_api_key", secrets.SECRET_KEYS)
         self.assertNotIn("XAI_API_KEY", secrets.ENV_MAP.values())
         self.assertNotIn("xai_api_key", secrets.ENV_MAP)
-        self.assertIn("tool_asset", secrets.PUBLIC_KEYS)
+        self.assertNotIn("tool_asset", secrets.PUBLIC_KEYS)
+        self.assertIn("tool_asset", secrets.RETIRED_PUBLIC_KEYS)
         self.assertIn("asset_owner_only", secrets.PUBLIC_KEYS)
         self.assertIn("asset_enabled", secrets.PUBLIC_KEYS)
         self.assertIn("asset_adult_enabled", secrets.PUBLIC_KEYS)

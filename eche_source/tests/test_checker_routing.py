@@ -130,7 +130,7 @@ class RoutingTests(unittest.TestCase):
             self.assertNotIn(key, PUBLIC_KEYS)
             self.assertNotIn(key, ENV_MAP)
         from core.secrets import RETIRED_PUBLIC_KEYS
-        self.assertEqual(set(RETIRED), set(RETIRED_PUBLIC_KEYS))
+        self.assertEqual(set(RETIRED) | {"tool_asset"}, set(RETIRED_PUBLIC_KEYS))
         self.assertEqual(set(RETIRED), set(C.RETIRED_CHECKER_KEYS))
 
     def test_env_model_vars_are_ignored(self):
