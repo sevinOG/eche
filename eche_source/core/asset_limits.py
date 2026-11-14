@@ -16,6 +16,8 @@ LOCKOUT_SECONDS = 24 * 60 * 60
 WINDOW_SECONDS = 60 * 60
 
 USER_CAP_REFUSAL = "The hourly asset limit for this user has been reached."
+VIDEO_USER_CAP_REFUSAL = "The hourly video limit for this user has been reached."
+VIDEO_GUILD_CAP_REFUSAL = "The hourly video limit for this server has been reached."
 GUILD_CAP_REFUSAL = "The hourly asset limit for this server has been reached."
 LOCKOUT_REFUSAL = "Asset generation is locked for this user for 24 hours."
 DM_REFUSAL = "Asset generation is not available in direct messages."
@@ -179,22 +181,46 @@ def rate_refusal(user_id, guild_id, *, root: str | None = None, caps: tuple[int,
     return None
 
 
-def record_use(user_id, guild_id, *, root: str | None = None) -> None:
+def video_rate_refusal(user_id, guild_id, caps: tuple[int, int], *, root: str | None = None) -> str | None:
+    """A refusal if the user or guild is over the extra hourly video cap."""
+    try:
+        data = _load(root)
+    except LimitsCorrupt:
+        return LIMITS_UNAVAILABLE
+    now = _now()
+    user_cap, guild_cap = caps
+    if user_id is not None:
+        if len(_prune((data.get("video_users") or {}).get(str(user_id), []), now)) >= user_cap:
+            return VIDEO_USER_CAP_REFUSAL
+    if guild_id is not None:
+        if len(_prune((data.get("video_guilds") or {}).get(str(guild_id), []), now)) >= guild_cap:
+            return VIDEO_GUILD_CAP_REFUSAL
+    return None
+
+
+def _buckets(video: bool) -> tuple[tuple[str, str], ...]:
+    if video:
+        return (("users", "guilds"), ("video_users", "video_guilds"))
+    return (("users", "guilds"),)
+
+
+def record_use(user_id, guild_id, *, root: str | None = None, video: bool = False) -> None:
     try:
         data = _load(root)
     except LimitsCorrupt:
         return
     now = _now()
-    if user_id is not None:
-        users = data.setdefault("users", {})
-        users[str(user_id)] = _prune(users.get(str(user_id), []), now) + [now]
-    if guild_id is not None:
-        guilds = data.setdefault("guilds", {})
-        guilds[str(guild_id)] = _prune(guilds.get(str(guild_id), []), now) + [now]
+    for user_bucket, guild_bucket in _buckets(video):
+        if user_id is not None:
+            users = data.setdefault(user_bucket, {})
+            users[str(user_id)] = _prune(users.get(str(user_id), []), now) + [now]
+        if guild_id is not None:
+            guilds = data.setdefault(guild_bucket, {})
+            guilds[str(guild_id)] = _prune(guilds.get(str(guild_id), []), now) + [now]
     _save(data, root)
 
 
-def release_use(user_id, guild_id, *, root: str | None = None) -> None:
+def release_use(user_id, guild_id, *, root: str | None = None, video: bool = False) -> None:
     """Give back the newest cap slot after a blocked, refused, or failed attempt."""
     with _LOCK:
         try:
@@ -203,7 +229,10 @@ def release_use(user_id, guild_id, *, root: str | None = None) -> None:
             return
         now = _now()
         changed = False
-        for bucket, key in (("users", user_id), ("guilds", guild_id)):
+        pairs = []
+        for user_bucket, guild_bucket in _buckets(video):
+            pairs += [(user_bucket, user_id), (guild_bucket, guild_id)]
+        for bucket, key in pairs:
             if key is None:
                 continue
             table = data.setdefault(bucket, {})
@@ -216,8 +245,19 @@ def release_use(user_id, guild_id, *, root: str | None = None) -> None:
             _save(data, root)
 
 
-def reserve_use(user_id, guild_id, *, root: str | None = None, caps: tuple[int, int] | None = None) -> str | None:
-    """Atomically refuse or take a cap slot at the start of an attempt."""
+def reserve_use(
+    user_id,
+    guild_id,
+    *,
+    root: str | None = None,
+    caps: tuple[int, int] | None = None,
+    video_caps: tuple[int, int] | None = None,
+) -> str | None:
+    """Atomically refuse or take a cap slot at the start of an attempt.
+
+    With video_caps, the attempt is a video: it needs a slot under the
+    shared caps and under the video caps, and takes both.
+    """
     with _LOCK:
         try:
             data = _load(root)
@@ -233,7 +273,11 @@ def reserve_use(user_id, guild_id, *, root: str | None = None, caps: tuple[int, 
         refusal = rate_refusal(user_id, guild_id, root=root, caps=caps)
         if refusal:
             return refusal
-        record_use(user_id, guild_id, root=root)
+        if video_caps is not None:
+            refusal = video_rate_refusal(user_id, guild_id, video_caps, root=root)
+            if refusal:
+                return refusal
+        record_use(user_id, guild_id, root=root, video=video_caps is not None)
         return None
 
 

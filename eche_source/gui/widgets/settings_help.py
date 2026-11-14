@@ -74,8 +74,8 @@ FIELD_HELP: dict[str, tuple[str, str]] = {
         "**Owner only** is a second, optional restriction once generation is on.\n\n"
         "### 18+ mode\n"
         "Off by default, set only in Settings. When it is on, any user in a Discord age-restricted channel can use 18+ ?asset, not just the owner, and never in DMs. "
-        "While 18+ is on, ?asset is refused in every channel that is not age-restricted, "
-        "including ordinary SFW requests. "
+        "While 18+ is on, ?asset in a non-NSFW channel runs under the normal SFW rules "
+        "(no 18+ relaxing). "
         "Owner approval is separate and can be on or off. Every minors check stays, including the matcher, media filter, "
         "child check, age vision, incident rule, and the safety footer (the footer text does not change). "
         "The age check is stricter: anything short of clearly adult is blocked, and so are anime, "
@@ -84,21 +84,24 @@ FIELD_HELP: dict[str, tuple[str, str]] = {
         "and S4 and every other category still block.\n\n"
         "### Owner approval\n"
         "On by default. Turning it off lowers the caps to 3 per user and 10 per "
-        "server each hour and disables video. Without 18+ it also makes ?asset owner-only. "
+        "server each hour. Video stays available; a video counts toward those caps "
+        "and also toward its own cap of 1 per user and 3 per server each hour. "
+        "The bot owner has no caps. Without 18+ it also makes ?asset owner-only. "
         "18+ can run with approval off; the minors checks still run on every request.",
     ),
     "asset_adult_enabled": (
         "18+",
         "### 18+ mode\n"
         "Off by default, settings-only. See the ?asset help for the full rules: any user in an age-restricted "
-        "channels only (every non-NSFW channel is refused, including SFW requests), "
+        "channels only (in non-NSFW channels ?asset runs under the normal SFW rules), "
         "owner approval optional, stricter age and style checks, and S12 relaxed "
         "on output only.",
     ),
     "asset_approval_enabled": (
         "Require owner approval",
         "### Owner approval\n"
-        "On by default. Turning it off lowers the caps and disables video. "
+        "On by default. Turning it off lowers the hourly caps (3 per user, 10 per "
+        "server; videos also 1 per user, 3 per server). Video stays available. "
         "Without 18+ it also makes ?asset owner-only. 18+ can run with approval off.",
     ),
     "prompt_tools": (

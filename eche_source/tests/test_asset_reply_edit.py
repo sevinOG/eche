@@ -115,7 +115,7 @@ class PlanAndRequestTests(unittest.TestCase):
     def test_video_reply_goes_to_the_video_edit_endpoint_only_when_video_is_allowed(self):
         src = SRC.AssetSource(data=MP4, mime="video/mp4", kind="video")
         with self.assertRaises(ImagineError):
-            plan_asset("make it night", source=src, asset_mode=SFW)  # approval off: no video
+            plan_asset("make it night", source=src, asset_mode=SFW)  # video switched off in this mode
         plan = plan_asset("make it night", source=src, asset_mode=WITH_VIDEO)
         self.assertEqual(plan.mode, "video_edit")
         path, body = XaiImagineBackend().build_request(plan, self._prepared())

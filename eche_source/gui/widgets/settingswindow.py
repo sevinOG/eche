@@ -562,13 +562,14 @@ class SettingsWindow(QWidget):
             "Off by default, settings-only. When it is on, any user in a Discord "
             "age-restricted channel can use 18+ ?asset, not just the owner. "
             "Owner approval is a separate toggle. Every minors check stays on. "
-            "While 18+ is on, ?asset is refused in every channel that is not "
-            "age-restricted, including ordinary SFW requests, and is refused in DMs."
+            "18+ rules apply only in age-restricted channels; elsewhere ?asset "
+            "runs under the normal SFW rules. ?asset is refused in DMs."
         )
         self.asset_approval_box = QCheckBox("Require owner approval")
         self.asset_approval_box.setObjectName("asset_approval_enabled")
         self.asset_approval_box.setToolTip(
-            "On by default. Turning it off lowers the caps and disables video. "
+            "On by default. Turning it off lowers the hourly caps (3 per user, 10 per "
+            "server; videos also 1 per user, 3 per server). Video stays available. "
             "Without 18+ it also makes ?asset owner-only. 18+ can run with approval off."
         )
         self.asset_adult_box.toggled.connect(self._sync_asset_toggles)

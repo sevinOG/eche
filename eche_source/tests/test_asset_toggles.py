@@ -13,6 +13,8 @@ from unittest import mock
 from core.asset_safety import (
     APPROVAL_OFF_GUILD_CAP,
     APPROVAL_OFF_USER_CAP,
+    APPROVAL_OFF_VIDEO_GUILD_CAP,
+    APPROVAL_OFF_VIDEO_USER_CAP,
     ADULT_OUTPUT_IGNORE_LG4,
     AssetMode,
     adult_output_ignore_lg4,
@@ -27,6 +29,7 @@ from core.asset_safety import (
     read_asset_mode,
     reset_observed_asset_mode,
     video_allowed,
+    video_caps,
     _mode_from_store,
 )
 from core.classifier import (
@@ -93,7 +96,7 @@ class CouplingTests(unittest.TestCase):
 
     def test_runtime_18_plus_can_run_with_approval_off(self):
         # The owner may run 18+ without reviewing outputs. Approval-off keeps
-        # its own limits (3/10 caps, no video); 18+ stays on and is not
+        # its own limits (3/10 caps, video 1/3 on top); 18+ stays on and is not
         # forced owner-only. Every minors check still runs (see GateTests).
         mode, _invalid = _mode_from_store({
             "asset_adult_enabled": "1",
@@ -103,17 +106,20 @@ class CouplingTests(unittest.TestCase):
         self.assertTrue(mode.adult)
         self.assertFalse(asset_approval_enabled(mode))
         self.assertFalse(owner_only_required(mode))
-        self.assertFalse(video_allowed(mode))
+        self.assertTrue(video_allowed(mode))
+        self.assertEqual(video_caps(mode), (1, 3))
         self.assertEqual(hourly_caps(mode), (3, 10))
         self.assertEqual(adult_output_ignore_lg4(mode), frozenset({"S12"}))
 
-    def test_approval_off_lowers_caps_and_disables_video(self):
+    def test_approval_off_lowers_caps_and_keeps_video_with_its_own_cap(self):
         mode, _invalid = _mode_from_store({
             "asset_adult_enabled": "0",
             "asset_approval_enabled": "0",
         })
         self.assertFalse(asset_approval_enabled(mode))
-        self.assertFalse(video_allowed(mode))
+        self.assertTrue(video_allowed(mode))
+        self.assertEqual(video_caps(mode), (APPROVAL_OFF_VIDEO_USER_CAP, APPROVAL_OFF_VIDEO_GUILD_CAP))
+        self.assertEqual(video_caps(mode), (1, 3))
         self.assertTrue(owner_only_required(mode))
         self.assertEqual(hourly_caps(mode), (APPROVAL_OFF_USER_CAP, APPROVAL_OFF_GUILD_CAP))
         self.assertEqual(hourly_caps(mode), (3, 10))
@@ -216,7 +222,7 @@ class GateTests(unittest.TestCase):
                 DM_REFUSAL,
             )
 
-    def test_approval_off_refuses_video(self):
+    def test_video_refused_only_when_video_is_switched_off(self):
         with mock.patch("core.asset_safety.video_allowed", return_value=False):
             from core.imagine import ImagineError
             with self.assertRaises(ImagineError) as err:

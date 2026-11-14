@@ -433,7 +433,7 @@ def _edit_plan(prompt: str, source, asset_mode=None) -> AssetPlan:
         from core.asset_safety import video_allowed
 
         if not video_allowed(asset_mode):
-            raise ImagineError("Video is not available while owner approval is off.")
+            raise ImagineError("Video is not available right now.")
         return AssetPlan(mode="video_edit", prompt=prompt, source=source)
     if kind == "image":
         return AssetPlan(mode="image_edit", prompt=prompt, source=source)
@@ -483,7 +483,7 @@ def plan_asset(text: str, *, kind: str = "", source=None, asset_mode=None) -> As
 
         if not video_allowed(asset_mode):
             raise ImagineError(
-                "Video is not available while owner approval is off."
+                "Video is not available right now."
             )
         mode = "video"
         aspects = _VIDEO_ASPECTS
@@ -911,16 +911,20 @@ async def run_asset(
         # The bot owner is exempt from the caps and uses no slot. Every
         # safety check below still runs unchanged.
         return await _run_asset_reserved(plan, key, snap, ids, get_backend, prepare_generation, check_generated_media)
-    capped = reserve_use(user_id, guild_id, caps=(snap.user_cap, snap.guild_cap))
+    from core.asset_safety import video_caps
+
+    is_video = "video" in (getattr(plan, "mode", "") or "")
+    extra = video_caps(snap) if is_video else None
+    capped = reserve_use(user_id, guild_id, caps=(snap.user_cap, snap.guild_cap), video_caps=extra)
     if capped:
-        _audit("refusal", category="rate-limit", mode=snap, **ids)
+        _audit("refusal", category="video-rate-limit" if "video" in capped else "rate-limit", mode=snap, **ids)
         raise ImagineError(capped)
     # A blocked, refused, or failed attempt gives its cap slot back. Only a
     # finished, checked file keeps it.
     try:
         return await _run_asset_reserved(plan, key, snap, ids, get_backend, prepare_generation, check_generated_media)
     except BaseException:
-        release_use(user_id, guild_id)
+        release_use(user_id, guild_id, video=extra is not None)
         raise
 
 
