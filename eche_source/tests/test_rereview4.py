@@ -19,15 +19,12 @@ def _judge_factory(markers):
     def judge(req, *a, **k):
         try:
             body = json.loads(req.data.decode())
-            if body.get("model") != C.CLASSIFIER_MODEL:
-                v = "NO"
-            else:
-                txt = req.data.decode()
-                hit = "HISTORY:" in txt and any(m in txt for m in markers)
-                v = "unsafe\nS12" if hit else "safe"
+            # No Llama Guard any more: every text request is the child check.
+            txt = json.dumps(body)
+            v = "YES" if any(m in txt for m in markers) else "NO"
         except Exception:
-            v = "safe"
-        return _R(json.dumps({"choices": [{"message": {"content": v}}]}).encode())
+            v = "NO"
+        return _R(json.dumps({"choices": [{"message": {"content": v}}], "message": {"content": v}}).encode())
     return judge
 
 def build(n_hist, flagged, wordlist_at=(), combined_latest=False, assistant_every=0):

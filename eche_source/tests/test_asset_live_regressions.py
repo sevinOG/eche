@@ -48,8 +48,8 @@ class FinishedImageTests(unittest.TestCase):
         boom = mock.AsyncMock(side_effect=AssertionError("text checker must not run on a finished image"))
         with mock.patch.object(C, "_classify_images_async", mock.AsyncMock(return_value="")) as pixels, \
                 mock.patch.object(C, "_child_check_async", boom), \
-                mock.patch.object(C, "_classify_messages", boom), \
-                mock.patch.object(C, "_post", side_effect=AssertionError("no text classify")):
+                mock.patch.object(C, "_child_post_xai", side_effect=AssertionError("no text check")), \
+                mock.patch.object(C, "_child_post_ollama", side_effect=AssertionError("no text check")):
             out = asyncio.run(C.classify_media_async([S._image_part(CAR, "image/jpeg")]))
         self.assertEqual(out, "")
         pixels.assert_awaited_once()
@@ -90,7 +90,7 @@ class ChannelModeTests(unittest.TestCase):
             out = {}
             self.assertIsNone(refuse_speaker(False, guild_id=1, channel=_Channel(False), asset_mode=ADULT_ON, out=out))
             self.assertFalse(out["mode"].adult)
-            self.assertIsNone(S.adult_output_ignore_lg4(out["mode"]))
+            self.assertFalse(S.adult_output_mode(out["mode"]))
             out = {}
             self.assertIsNone(refuse_speaker(False, guild_id=1, channel=_Channel(True), asset_mode=ADULT_ON, out=out))
             self.assertTrue(out["mode"].adult)

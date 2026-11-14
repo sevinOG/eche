@@ -285,8 +285,7 @@ class LocalAgeVisionTests(unittest.TestCase):
 
     def test_image_check_chain(self):
         def image_check(adult=False):
-            ignore = frozenset({"S12"}) if adult else None
-            return lambda: C._classify_images_sync("", IMG, ignore)
+            return lambda: C._classify_images_sync("", IMG, adult=adult)
 
         out, calls = self._chain(xai_reply="NO", fn=image_check())
         self.assertEqual(out, "")

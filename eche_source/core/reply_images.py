@@ -166,7 +166,7 @@ async def _run_image_check(data: bytes, mime: str, *, mode, ids: dict) -> str:
         _audit,
         _image_part,
         _is_animated_image,
-        adult_output_ignore_lg4,
+        adult_output_mode,
         extract_video_frames,
     )
     from core.blocklist import note
@@ -183,7 +183,7 @@ async def _run_image_check(data: bytes, mime: str, *, mode, ids: dict) -> str:
         if part is None:
             return "error"
         try:
-            verdict = await classify_media_async([part], ignore_lg4=adult_output_ignore_lg4(mode))
+            verdict = await classify_media_async([part], adult=adult_output_mode(mode))
         except Exception:
             verdict = "classifier-error"
         if not verdict:

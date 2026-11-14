@@ -583,7 +583,7 @@ class OfficialImagineHashTests(unittest.TestCase):
                 mock.patch.dict("core.classifier._CHECKER_OVERRIDES", {}, clear=True), \
                 mock.patch("core.classifier._checker_setting", return_value="tiny-1m"):
             # Env and old settings cannot pick a checker model; they are hardcoded.
-            self.assertEqual(child_check_model(), "llama-guard3:8b")
+            self.assertEqual(child_check_model(), "qwen3-vl:4b-instruct")
             self.assertEqual(age_vision_model(), "qwen3-vl:4b-instruct")
 
     def test_age_vision_prompt_ignores_image_text_and_asks_after(self):

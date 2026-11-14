@@ -4,8 +4,8 @@
 # Every generation prompt is handled here, in order:
 #   1. the full minors matcher (including bare boy/girl/kids)
 #   2. a media-only size/age/family/stylization filter (~20 languages)
-#   3. the model child check (R12-23 child resemblance). Llama Guard does
-#      not run on asset prompts (removed 2026-11-14, owner decision).
+#   3. the narrow prompt child check (Grok, local qwen3-vl backup, fail
+#      closed). There is no Llama Guard (removed 2026-11-14).
 #   4. the adult rule first, then the user prompt, then the adult-age hint
 #      for anything that could show a person or character
 #   5. the hardcoded safety footer, appended last as explicit rules
@@ -457,7 +457,7 @@ def mode_for_channel(mode: AssetMode, channel=None, *, nsfw: bool | None = None)
     """18+ rules apply only in age-restricted channels.
 
     With the 18+ toggle on, an ordinary (non-age-restricted) channel is not
-    refused: the request runs under the normal SFW rules (no S12 relaxing,
+    refused: the request runs under the normal SFW rules (no 18+ relaxing,
     the normal age check). Audience, approval, caps, and video are unchanged.
     """
     if mode.adult and not channel_is_age_restricted(channel, nsfw=nsfw):
@@ -465,16 +465,12 @@ def mode_for_channel(mode: AssetMode, channel=None, *, nsfw: bool | None = None)
     return mode
 
 
-# Consensual adult sexual content. Never ignore S4 (child sexual exploitation)
-# or any other Llama Guard category.
-ADULT_OUTPUT_IGNORE_LG4 = frozenset({"S12"})
-
-
-def adult_output_ignore_lg4(mode: AssetMode | None = None) -> frozenset[str] | None:
-    """S12 is ignored on generated-media checks only, and only in 18+ mode."""
-    if (mode.adult if mode is not None else asset_adult_enabled()):
-        return ADULT_OUTPUT_IGNORE_LG4
-    return None
+def adult_output_mode(mode: AssetMode | None = None) -> bool:
+    """True only in 18+ mode: the image content check then uses its adults-only
+    prompt (consensual adult content between clearly adult, non-real characters
+    allowed; anything that could be a minor, stylized sexual content, or real
+    people still blocks). Generated-media and reply-image checks only."""
+    return bool(mode.adult if mode is not None else asset_adult_enabled())
 
 
 def require_enabled(mode: AssetMode | None = None, **ids) -> None:
@@ -586,7 +582,7 @@ async def prepare_generation(
 ) -> PreparedPrompt:
     """Bypass, matcher, media filter, model child check, footer-last. Fail closed.
 
-    No Llama Guard on asset prompts; see classifier.asset_prompt_check_async.
+    No Llama Guard; see classifier.asset_prompt_check_async.
     """
     from core.asset_filter import media_prompt_blocked
     from core.blocklist import REFUSAL, is_blocked, note
@@ -841,13 +837,12 @@ async def _classify_image(
     if part is None:
         _audit("refusal", category=f"unreadable-{stage}", **ids)
         raise ImagineError(unchecked, status="error")
-    # Pixels only. The text checkers (Llama Guard 3 is text-only) must not
-    # judge a fixed instruction string: it names minors, so it was flagged
-    # S1/S4 on every finished image, even a car.
+    # Pixels only. Text checkers must not judge a fixed instruction string:
+    # it names minors, so it was flagged on every finished image, even a car.
     try:
         verdict = await classify_media_async(
             [part],
-            ignore_lg4=adult_output_ignore_lg4(snap),
+            adult=adult_output_mode(snap),
         )
     except Exception:
         verdict = "classifier-error"

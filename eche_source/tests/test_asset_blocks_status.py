@@ -126,7 +126,6 @@ class NoLlamaGuardOnAssetPromptsTests(unittest.TestCase):
     def _run(self, child):
         lg = mock.AsyncMock(side_effect=AssertionError("Llama Guard must not run on asset prompts"))
         with mock.patch.object(C, "tests_are_allowing", return_value=False), \
-                mock.patch.object(C, "_classify_messages", lg), \
                 mock.patch.object(C, "_classify_images_async", lg), \
                 mock.patch.object(C, "_child_check_async", child):
             out = asyncio.run(C.asset_prompt_check_async("adderall jaso"))

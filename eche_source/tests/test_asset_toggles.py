@@ -1,5 +1,5 @@
 # 18+ and approval toggle rules. Defaults, coupling, channel, caps, video,
-# S12 output-only ignore, and the extra 18+ style / vision checks.
+# the 18+ adult image-check prompt, and the extra 18+ style / vision checks.
 from __future__ import annotations
 
 import asyncio
@@ -11,9 +11,8 @@ import unittest
 from unittest import mock
 
 from core.asset_safety import (
-    ADULT_OUTPUT_IGNORE_LG4,
     AssetMode,
-    adult_output_ignore_lg4,
+    adult_output_mode,
     asset_adult_enabled,
     asset_approval_enabled,
     asset_approval_stored,
@@ -31,8 +30,6 @@ from core.asset_safety import (
 from core.classifier import (
     AGE_VISION_ADULT_PROMPT,
     AGE_VISION_PROMPT,
-    _verdict_to_check,
-    lg4_categories,
 )
 from core.imagine import ADULT_CHANNEL_REFUSAL, plan_asset, refuse_speaker
 from core.secrets import couple_asset_toggles
@@ -68,13 +65,16 @@ class ToggleDefaultsTests(unittest.TestCase):
             self.assertTrue(video_allowed())
             user_cap, guild_cap = hourly_caps()
             self.assertEqual((user_cap, guild_cap), (10, 40))
-            self.assertIsNone(adult_output_ignore_lg4())
+            self.assertFalse(adult_output_mode())
 
     def test_footer_hash_is_unchanged(self):
         self.assertEqual(footer_sha256(), FOOTER_HASH)
 
-    def test_s12_is_the_only_ignored_output_category(self):
-        self.assertEqual(ADULT_OUTPUT_IGNORE_LG4, frozenset({"S12"}))
+    def test_no_llama_guard_category_ignore_is_left(self):
+        import core.asset_safety as asset_safety
+
+        self.assertFalse(hasattr(asset_safety, "ADULT_OUTPUT_IGNORE_LG4"))
+        self.assertFalse(hasattr(asset_safety, "adult_output_ignore_lg4"))
 
 
 class CouplingTests(unittest.TestCase):
@@ -88,7 +88,7 @@ class CouplingTests(unittest.TestCase):
         self.assertTrue(video_allowed(mode))
         self.assertFalse(owner_only_required(mode))
         self.assertEqual(hourly_caps(mode), (10, 40))
-        self.assertEqual(adult_output_ignore_lg4(mode), frozenset({"S12"}))
+        self.assertTrue(adult_output_mode(mode))
 
     def test_runtime_18_plus_can_run_with_approval_off(self):
         # The owner may run 18+ without reviewing outputs. Approval-off keeps
@@ -105,7 +105,7 @@ class CouplingTests(unittest.TestCase):
         self.assertTrue(video_allowed(mode))
         self.assertEqual(video_caps(mode), (5, 15))
         self.assertEqual(hourly_caps(mode), (10, 40))
-        self.assertEqual(adult_output_ignore_lg4(mode), frozenset({"S12"}))
+        self.assertTrue(adult_output_mode(mode))
 
     def test_caps_are_the_same_with_approval_on_or_off(self):
         from core.asset_limits import STANDARD_CAPS
@@ -304,22 +304,6 @@ class AdultFilterTests(unittest.TestCase):
 
 
 class ClassifierIgnoreTests(unittest.TestCase):
-    def test_s12_only_is_ignored_s4_and_empty_are_not(self):
-        ignore = frozenset({"S12"})
-        with mock.patch("core.audit.record"), mock.patch(
-            "core.asset_safety.read_asset_mode", return_value=_adult_mode()
-        ):
-            self.assertEqual(_verdict_to_check("unsafe\nS12", ignore_categories=ignore), "")
-            self.assertEqual(_verdict_to_check("unsafe\nS4", ignore_categories=ignore), "classifier-unsafe")
-            self.assertEqual(
-                _verdict_to_check("unsafe\nS12 S4", ignore_categories=ignore),
-                "classifier-unsafe",
-            )
-            self.assertEqual(_verdict_to_check("unsafe", ignore_categories=ignore), "classifier-unsafe")
-            self.assertEqual(_verdict_to_check("unsafe\nS12"), "classifier-unsafe")
-            self.assertEqual(_verdict_to_check("safe", ignore_categories=ignore), "")
-        self.assertEqual(lg4_categories("unsafe\nS12, S4"), ["S12", "S4"])
-
     def test_adult_vision_prompt_is_stricter(self):
         self.assertIn("If unsure, answer YES", AGE_VISION_ADULT_PROMPT)
         self.assertIn("clearly an adult", AGE_VISION_ADULT_PROMPT)
@@ -511,35 +495,6 @@ class FileBackedToggleTests(unittest.TestCase):
         self.assertIn("age-restricted: yes", text)
         text = _review_message(age_restricted=False)
         self.assertIn("age-restricted: no", text)
-
-
-class S12IgnoredAuditTests(unittest.TestCase):
-    def test_s12_only_pass_writes_an_audit_line(self):
-        recorded = []
-
-        def fake_record(kind, **fields):
-            recorded.append((kind, fields))
-
-        mode = _adult_mode()
-        with mock.patch("core.audit.record", side_effect=fake_record), \
-             mock.patch("core.asset_safety.read_asset_mode", return_value=mode):
-            self.assertEqual(_verdict_to_check("unsafe\nS12", ignore_categories=frozenset({"S12"})), "")
-        matches = [fields for kind, fields in recorded if fields.get("category") == "s12-ignored"]
-        self.assertTrue(matches)
-        self.assertEqual(matches[0].get("adult"), "1")
-        self.assertEqual(matches[0].get("approval"), "1")
-
-    def test_failed_s12_audit_fails_closed(self):
-        def boom(*_a, **_k):
-            raise OSError("log failed")
-
-        with mock.patch("core.audit.record", side_effect=boom), \
-             mock.patch("core.classifier.tests_are_allowing", return_value=False), \
-             mock.patch("core.asset_safety.read_asset_mode", return_value=_adult_mode()):
-            self.assertEqual(
-                _verdict_to_check("unsafe\nS12", ignore_categories=frozenset({"S12"})),
-                "classifier-error",
-            )
 
 
 class LimitsIsolationTests(unittest.TestCase):

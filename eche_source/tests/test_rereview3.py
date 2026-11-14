@@ -14,19 +14,17 @@ class _R(io.BytesIO):
     def __exit__(s, *a): return False
 
 def _is_lg4(req):
-    try:
-        return json.loads(req.data.decode()).get("model") == C.CLASSIFIER_MODEL
-    except Exception:
-        return False
+    # No Llama Guard any more: every text request is the prompt child check.
+    return True
 
 def _pack(v):
-    return _R(json.dumps({"choices": [{"message": {"content": v}}]}).encode())
+    return _R(json.dumps({"choices": [{"message": {"content": v}}], "message": {"content": v}}).encode())
 
 def _judge(req, *a, **k):
     if not _is_lg4(req):
         return _pack("NO")
     txt = req.data.decode()
-    v = "unsafe\nS1" if ("HISTORY:" in txt and "BADLINE" in txt) else "safe"
+    v = "YES" if "BADLINE" in txt else "NO"
     return _pack(v)
 
 class StaleShift(unittest.TestCase):
@@ -80,7 +78,7 @@ class FooterLastProperty(unittest.TestCase):
             if not _is_lg4(req):
                 return _pack("NO")
             txt = req.data.decode()
-            v = "unsafe\nS1" if ("HISTORY:" in txt and "BADLINE" in txt) else "safe"
+            v = "YES" if "BADLINE" in txt else "NO"
             return _pack(v)
 
         for length in range(1, 16):

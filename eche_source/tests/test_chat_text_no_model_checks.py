@@ -1,4 +1,4 @@
-# Text chat does not run model-based LG or child checks. The footer and
+# Text chat does not run model-based child checks (no Llama Guard at all). The footer and
 # the minors keyword/blocklist stay. Image/asset checks stay always on.
 from __future__ import annotations
 
@@ -71,7 +71,10 @@ class ChatTextHasNoModelChecksTests(unittest.TestCase):
             calls.append(1)
             return "classifier-unsafe"
 
-        with mock.patch.object(C, "classify_response_async", side_effect=fake_classify):
+        # classify_response_async (Llama Guard) no longer exists at all.
+        self.assertFalse(hasattr(C, "classify_response_async"))
+        with mock.patch.object(C, "_child_check_async", side_effect=fake_classify), \
+             mock.patch.object(C, "classify_async", side_effect=fake_classify):
             blocked = asyncio.run(client_mod._output_blocked("Hey there"))
             self.assertFalse(blocked)
             self.assertEqual(calls, [])

@@ -462,16 +462,14 @@ REVIEWED_ENTRYPOINTS = {
     "asset": " ?asset cog command that calls run_asset",
     "Asset.asset": "?asset cog command that calls run_asset",
     "require_owner_review": "owner review of a generated asset",
-    "_post": "Llama Guard 4 HTTP classify call",
-    "_child_post": "second-check instruction-model HTTP call",
+    "_child_post_xai": "prompt child check HTTP call (Grok on the xAI key)",
+    "_child_post_ollama": "prompt child check HTTP call (local qwen3-vl backup)",
     "_age_vision_post": "age-vision HTTP call (Grok vision on the xAI key)",
     "_xai_vision_post": "Grok vision YES/NO HTTP call (age vision and image check)",
     "_xai_vision_models_fetch": "xAI /language-models lookup for the vision model",
     "_ollama_local_models": "local Ollama /api/tags lookup for pulled checker models",
     "_age_vision_post_ollama": "local Ollama age-vision HTTP call",
-    "_post_ollama_chat": "local Llama Guard 3 classify HTTP call",
-    "_post_ollama_child": "local Llama Guard 3 child-check HTTP call",
-    "_post_ollama_generate": "local Llama Guard 3 raw classify HTTP call",
+    "_post_ollama_chat": "local image content-check HTTP call",
     "_post_with_images": "image content-check HTTP call",
 }
 
@@ -2140,6 +2138,7 @@ class AuditCompletenessTests(AuditLogTests):
                     self._payload = {
                         "id": resp_id,
                         "choices": [{"message": {"content": content}}],
+                        "message": {"content": content},
                     }
 
                 def read(self):
@@ -2158,23 +2157,8 @@ class AuditCompletenessTests(AuditLogTests):
                 opener = side if side is not None else (lambda *a, **k: _HttpOk(content))
                 payload = arg if arg is not None else [{"role": "user", "content": secret}]
                 ep = endpoint if endpoint is not None else ("gsk_test_audit_key", C.GROQ_URL)
-                def _probe_setting(key):
-                    if "OLLAMA" in (ep[1] or "").upper() or "11434" in (ep[1] or ""):
-                        if key in ("content_filter_model", "child_check_model"):
-                            return "llama-guard3:8b"
-                        if key in ("content_filter_provider", "child_check_provider"):
-                            return "ollama"
-                    else:
-                        if key == "content_filter_model":
-                            return "meta-llama/llama-guard-4-12b"
-                        if key == "child_check_model":
-                            return "llama-3.1-8b-instant"
-                        if key in ("content_filter_provider", "child_check_provider"):
-                            return "cloud"
-                    return ""
-                with mock.patch.object(C, "_endpoint", return_value=ep), \
-                     mock.patch.object(C, "_child_endpoint", return_value=ep), \
-                     mock.patch.object(C, "_checker_setting", side_effect=_probe_setting), \
+                with mock.patch.object(C, "_xai_vision_endpoint", return_value=ep), \
+                     mock.patch.object(C, "_xai_vision_model", return_value="grok-vision-test"), \
                      mock.patch("urllib.request.urlopen", side_effect=opener):
                     try:
                         fn(payload)
@@ -2188,37 +2172,29 @@ class AuditCompletenessTests(AuditLogTests):
                 blob = " ".join(str(r) for r in _records(self.audit)[before:])
                 return rows, blob
 
-            secret_lg4 = "secret-lg4-prompt-xyz"
-            rows, blob = _probe_classifier_http(C._post, "classifier", "safe", secret_lg4)
-            if not rows:
-                gaps.append("_post")
-            elif "secret-lg4-prompt-xyz" in blob or "gsk_test_audit_key" in blob:
-                gaps.append("_post:prompt-or-key-logged")
-
+            # Prompt child check: Grok (xAI) and the local backup. YES, NO,
+            # transport error, and an unreadable body are all audited; the
+            # prompt and key never are.
             secret_child = "secret-child-prompt-xyz"
-            yes_rows, yes_blob = _probe_classifier_http(C._child_post, "child-check", "YES", secret_child)
-            no_rows, no_blob = _probe_classifier_http(C._child_post, "child-check", "NO", secret_child)
-            err_rows, err_blob = _probe_classifier_http(
-                C._child_post,
-                "child-check",
-                "",
-                secret_child,
-                expect_error=True,
-                side=lambda *a, **k: (_ for _ in ()).throw(TimeoutError("deadline")),
-            )
-            bad_rows, bad_blob = _probe_classifier_http(
-                C._child_post,
-                "child-check",
-                "",
-                secret_child,
-                expect_error=True,
-                side=lambda *a, **k: _HttpOk("", req_id="child-req-bad", raw=b"<html>nope</html>"),
-            )
-            if not yes_rows or not no_rows or not err_rows or not bad_rows:
-                gaps.append("_child_post")
-            leaked = " ".join((yes_blob, no_blob, err_blob, bad_blob))
-            if "secret-child-prompt-xyz" in leaked or "gsk_test_audit_key" in leaked:
-                gaps.append("_child_post:prompt-or-key-logged")
+            for name, fn, ep in (
+                ("_child_post_xai", C._child_post_xai, ("gsk_test_audit_key", "https://api.x.ai/v1/chat/completions")),
+                ("_child_post_ollama", C._child_post_ollama, ("", C.OLLAMA_CHAT_URL)),
+            ):
+                yes_rows, yes_blob = _probe_classifier_http(fn, "child-check", "YES", secret_child, endpoint=ep)
+                no_rows, no_blob = _probe_classifier_http(fn, "child-check", "NO", secret_child, endpoint=ep)
+                err_rows, err_blob = _probe_classifier_http(
+                    fn, "child-check", "", secret_child, expect_error=True, endpoint=ep,
+                    side=lambda *a, **k: (_ for _ in ()).throw(TimeoutError("deadline")),
+                )
+                bad_rows, bad_blob = _probe_classifier_http(
+                    fn, "child-check", "", secret_child, expect_error=True, endpoint=ep,
+                    side=lambda *a, **k: _HttpOk("", req_id="child-req-bad", raw=b"<html>nope</html>"),
+                )
+                if not yes_rows or not no_rows or not err_rows or not bad_rows:
+                    gaps.append(name)
+                leaked = " ".join((yes_blob, no_blob, err_blob, bad_blob))
+                if "secret-child-prompt-xyz" in leaked or "gsk_test_audit_key" in leaked:
+                    gaps.append(name + ":prompt-or-key-logged")
 
             secret_vision = "data:image/png;base64,SECRETFRAME"
             imgs = [{"type": "image_url", "image_url": {"url": secret_vision}}]
@@ -2280,7 +2256,7 @@ class AuditCompletenessTests(AuditLogTests):
             C.reset_ollama_model_cache()
             ok_t, _ = _probe_classifier_http(
                 lambda _arg: tags(), "ollama-tags", "", "x",
-                side=lambda *a, **k: _HttpOk("", raw=json.dumps({"models": [{"name": "llama-guard3:8b"}]}).encode()),
+                side=lambda *a, **k: _HttpOk("", raw=json.dumps({"models": [{"name": "qwen3-vl:4b-instruct"}]}).encode()),
             )
             C.reset_ollama_model_cache()
             err_t, _ = _probe_classifier_http(
@@ -2335,61 +2311,24 @@ class AuditCompletenessTests(AuditLogTests):
                 if "secret-review-prompt-xyz" in blob:
                     gaps.append("require_owner_review:prompt-logged")
 
-            ollama_ep = ("", C.OLLAMA_CHAT_URL)
-            secret_ol = "secret-ollama-prompt-xyz"
-            ol_rows, ol_blob = _probe_classifier_http(
-                C._post, "classifier", "safe", secret_ol, endpoint=ollama_ep,
-            )
-            ol_child, ol_child_blob = _probe_classifier_http(
-                C._child_post, "child-check", "unsafe", secret_ol, endpoint=ollama_ep,
-                arg=[{"role": "user", "content": secret_ol}],
-            )
-            ol_err, ol_err_blob = _probe_classifier_http(
-                C._child_post,
-                "child-check",
-                "",
-                secret_ol,
-                expect_error=True,
-                side=lambda *a, **k: (_ for _ in ()).throw(TimeoutError("deadline")),
-                endpoint=ollama_ep,
-                arg=[{"role": "user", "content": secret_ol}],
-            )
-            if not ol_rows:
-                gaps.append("_post_ollama_chat")
-            if not ol_child or not ol_err:
-                gaps.append("_post_ollama_child")
-            leaked_ol = " ".join((ol_blob, ol_child_blob, ol_err_blob))
-            if "secret-ollama-prompt-xyz" in leaked_ol:
-                gaps.append("_post_ollama:prompt-or-key-logged")
-
-            secret_raw = "secret-ollama-raw-xyz"
-            gen_spec = C.CheckerSpec(
-                "content_filter", provider="ollama", model="llama-guard3:8b",
-                fmt="llama_guard", field="content_filter_model",
-            )
-            gen_rows, gen_blob = _probe_classifier_http(
-                lambda _payload: C._post_ollama_generate(
-                    C._official_llama_guard3_prompt(_payload),
-                    spec=gen_spec, kind="classifier", timeout=C.CLASSIFIER_TIMEOUT,
-                ),
-                "classifier", "safe", secret_raw, endpoint=("", C.OLLAMA_GENERATE_URL),
-            )
-            if not gen_rows:
-                gaps.append("_post_ollama_generate")
-            if "secret-ollama-raw-xyz" in gen_blob:
-                gaps.append("_post_ollama_generate:prompt-or-key-logged")
-
             secret_img = "secret-image-check-xyz"
             img_spec = C.CheckerSpec(
-                "image_check", provider="cloud", model="meta-llama/llama-guard-4-12b",
-                fmt="llama_guard", field="image_check_model",
+                "image_check", provider="ollama", model=C.LOCAL_VISION_MODEL,
+                fmt="yes_no", field="image_check_model",
             )
             img_rows, img_blob = _probe_classifier_http(
                 lambda payload: C._post_with_images(payload, img_spec),
-                "image-check", "safe", secret_img,
+                "image-check", "NO", secret_img, endpoint=("", C.OLLAMA_CHAT_URL),
             )
-            if not img_rows:
+            img_err, img_err_blob = _probe_classifier_http(
+                lambda payload: C._post_with_images(payload, img_spec),
+                "image-check", "", secret_img, expect_error=True, endpoint=("", C.OLLAMA_CHAT_URL),
+                side=lambda *a, **k: (_ for _ in ()).throw(TimeoutError("deadline")),
+            )
+            if not img_rows or not img_err:
                 gaps.append("_post_with_images")
+                gaps.append("_post_ollama_chat")
+            img_blob = img_blob + " " + img_err_blob
             if "secret-image-check-xyz" in img_blob or "gsk_test_audit_key" in img_blob:
                 gaps.append("_post_with_images:prompt-or-key-logged")
 

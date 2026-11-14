@@ -22,7 +22,12 @@ def _resp(text):
         def __exit__(self, *a):
             return False
 
-    return _R(json.dumps({"choices": [{"message": {"content": text}}]}).encode())
+    return _R(json.dumps({"choices": [{"message": {"content": text}}], "message": {"content": text}}).encode())
+
+
+def _is_child(body):
+    """The prompt child check wraps the text in <text>...</text> (Grok or local)."""
+    return any("<text>" in str(m.get("content")) for m in body.get("messages") or [])
 
 
 class Base(unittest.TestCase):
@@ -49,7 +54,7 @@ class Base(unittest.TestCase):
         C.allow_in_tests(True)
         C.clear_cache()
 
-    def _calls(self, text, images=None, lg4="safe", child="NO", vision="NO"):
+    def _calls(self, text, images=None, child="NO", vision="NO"):
         seen = []
 
         def is_image_check(body):
@@ -58,17 +63,14 @@ class Base(unittest.TestCase):
         def fake(req, *a, **k):
             body = json.loads(req.data.decode())
             seen.append(body)
-            model = body.get("model") or ""
-            if model == C.CLASSIFIER_MODEL:
-                return _resp(lg4)
-            if "grok-vision" in model.lower():
-                return _resp("NO" if is_image_check(body) else vision)
-            return _resp(child)
+            if _is_child(body):
+                return _resp(child)
+            return _resp("NO" if is_image_check(body) else vision)
 
         with mock.patch("urllib.request.urlopen", side_effect=fake):
             out = asyncio.run(C.classify_async(text, images=images))
-        child_bodies = [b for b in seen if b.get("model") != C.CLASSIFIER_MODEL and "grok-vision" not in (b.get("model") or "").lower()]
-        vision_bodies = [b for b in seen if "grok-vision" in (b.get("model") or "").lower() and not is_image_check(b)]
+        child_bodies = [b for b in seen if _is_child(b)]
+        vision_bodies = [b for b in seen if not _is_child(b) and not is_image_check(b)]
         return out, child_bodies, vision_bodies
 
 
@@ -148,25 +150,25 @@ class ChildCheckHardeningTests(Base):
         self.assertIn("&lt;/text&gt;", inner)
 
     def test_override_model_is_ignored(self):
-        for value in ["meta-llama/llama-guard-4-12b", "openai/gpt-image-1", "tiny-1m", "openrouter/auto"]:
+        # Env cannot pick the child-check model: Grok on the xAI key, else
+        # the hardcoded local backup.
+        for value in ["meta-llama/llama-guard-4-12b", "openai/gpt-image-1", "tiny-1m", "openrouter/auto", "   "]:
             with mock.patch.dict(os.environ, {"CHILD_CHECK_MODEL": value}):
-                with mock.patch.object(C, "_endpoint", return_value=("k", C.GROQ_URL)):
-                    self.assertEqual(C.child_check_model(), "llama-3.1-8b-instant")
+                self.assertEqual(C.child_check_model(), "grok-vision-test")
+                with mock.patch.object(C, "_xai_key", return_value=""):
+                    self.assertEqual(C.child_check_model(), C.LOCAL_VISION_MODEL)
         with mock.patch.dict(os.environ, {"CHILD_CHECK_MODEL": "meta-llama/llama-guard-4-12b"}):
-            out, _, _ = self._calls("hello", child="safe")
+            out, child, _ = self._calls("hello", child="safe")
         self.assertEqual(out, "child-check-error")
-        with mock.patch.dict(os.environ, {"CHILD_CHECK_MODEL": "   "}):
-            with mock.patch.object(C, "_endpoint", return_value=("k", C.GROQ_URL)):
-                self.assertEqual(C.child_check_model(), C.CHILD_CHECK_DEFAULT_GROQ)
+        self.assertTrue(child)
+        self.assertNotIn("llama-guard", json.dumps(child).lower())
 
     def test_timeout_fails_closed(self):
         def slow(req, *a, **k):
-            body = json.loads(req.data.decode())
-            if body["model"] != C.CLASSIFIER_MODEL:
-                time.sleep(0.5)
-            return _resp("safe" if body["model"] == C.CLASSIFIER_MODEL else "NO")
+            time.sleep(0.5)
+            return _resp("NO")
 
-        with mock.patch.object(C, "CHILD_CHECK_DEADLINE", 0.1), mock.patch(
+        with mock.patch.object(C, "_child_check_deadline", return_value=0.1), mock.patch(
             "urllib.request.urlopen", side_effect=slow
         ):
             self.assertEqual(asyncio.run(C.classify_async("hello")), "child-check-error")

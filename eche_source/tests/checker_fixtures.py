@@ -1,6 +1,6 @@
 # Shared test helpers for checker routing.
-# Legacy-shaped settings keep older injection tests on Llama Guard 4 + 8B YES/NO
-# request shapes. New routing tests should not use this patch.
+# There is no Llama Guard (removed 2026-11-14). The legacy override patch is
+# kept as a harmless pin so older history tests keep their setUp shape.
 
 from __future__ import annotations
 
@@ -45,9 +45,9 @@ def patch_image_path_classifier():
         if kind == "image_check":
             return CheckerSpec(
                 kind="image_check",
-                provider="cloud",
-                model="meta-llama/llama-4-scout-17b-16e-instruct",
-                fmt="llama_guard",
+                provider="ollama",
+                model="qwen3-vl:4b-instruct",
+                fmt="yes_no",
                 field="image_check_model",
                 problem="",
             )

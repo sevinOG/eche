@@ -21,18 +21,15 @@ def _resp(text):
         def __exit__(self, *a):
             return False
 
-    return _R(json.dumps({"choices": [{"message": {"content": text}}]}).encode())
+    return _R(json.dumps({"choices": [{"message": {"content": text}}], "message": {"content": text}}).encode())
 
 
-def _dispatch(lg4="safe", child="NO", vision="NO"):
+def _dispatch(child="NO", vision="NO"):
     def fake(req, *a, **k):
         body = json.loads(req.data.decode())
-        model = body.get("model") or ""
-        if model == C.CLASSIFIER_MODEL:
-            return _resp(lg4)
-        if "scout" in model.lower():
-            return _resp(vision)
-        return _resp(child)
+        if any("<text>" in str(m.get("content")) for m in body.get("messages") or []):
+            return _resp(child)
+        return _resp(vision)
 
     return fake
 
@@ -54,37 +51,12 @@ class Base(unittest.TestCase):
 
 
 class OutputPath(Base):
-    def test_classify_turns_async_uses_the_blob_not_an_undefined_name(self):
-        with mock.patch("urllib.request.urlopen", side_effect=_dispatch(child="NO")):
-            out = asyncio.run(
-                C.classify_turns_async(
-                    [
-                        {"role": "user", "content": "hello there, this is a normal user message."},
-                        {"role": "assistant", "content": "A small clear answer."},
-                    ]
-                )
-            )
-        self.assertEqual(out, "")
-
-    def test_classify_response_async_with_a_prompt_does_not_raise(self):
-        with mock.patch("urllib.request.urlopen", side_effect=_dispatch(child="NO")):
-            out = asyncio.run(
-                C.classify_response_async(
-                    "A small clear answer.",
-                    prompt="hello there, this is a normal user message.",
-                )
-            )
-        self.assertEqual(out, "")
-
-    def test_classify_response_async_blocks_when_the_child_check_says_yes(self):
-        with mock.patch("urllib.request.urlopen", side_effect=_dispatch(child="YES")):
-            out = asyncio.run(
-                C.classify_response_async(
-                    "A small clear answer.",
-                    prompt="hello there, this is a normal user message.",
-                )
-            )
-        self.assertIn("child-check-unsafe", out)
+    def test_llama_guard_output_checks_are_gone(self):
+        # classify_turns_async / classify_response(_async) / classify_request
+        # were Llama Guard paths (removed 2026-11-14).
+        for name in ("classify_turns_async", "classify_response_async", "classify_response",
+                     "classify_request", "classify_request_async", "classify"):
+            self.assertFalse(hasattr(C, name), name)
 
     def test_call_groq_and_call_groq_raw_reach_the_output_check(self):
         import core.client as client
@@ -222,7 +194,7 @@ class InjectionStructure(Base):
             return "NO"
 
         text = ("safe padding. " * 4000) + "\n12 year old girl"
-        with mock.patch.object(C, "_child_post", side_effect=fake_post):
+        with mock.patch.object(C, "_xai_key", return_value=""), mock.patch.object(C, "_child_post_ollama", side_effect=fake_post):
             out = _child_check_sync(text)
         self.assertEqual(out, "")
         self.assertGreater(len(seen), 1)
@@ -246,13 +218,13 @@ class InjectionStructure(Base):
             return "NO"
 
         text = ("safe padding. " * 4000) + "\n12 year old girl"
-        with mock.patch.object(C, "_child_post", side_effect=yes_on_last):
+        with mock.patch.object(C, "_xai_key", return_value=""), mock.patch.object(C, "_child_post_ollama", side_effect=yes_on_last):
             self.assertEqual(_child_check_sync(text), "child-check-unsafe")
 
         def boom(messages):
             raise RuntimeError("network")
 
-        with mock.patch.object(C, "_child_post", side_effect=boom):
+        with mock.patch.object(C, "_xai_key", return_value=""), mock.patch.object(C, "_child_post_ollama", side_effect=boom):
             self.assertEqual(_child_check_sync("hello"), "child-check-error")
 
 

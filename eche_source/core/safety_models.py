@@ -1,7 +1,7 @@
 # core/safety_models.py
 # Historical model names. The live checker models are hardcoded in
-# core/classifier.py (local llama-guard3:8b and qwen3-vl:4b-instruct, Grok
-# vision on the xAI key for finished images). Nothing here is a setting.
+# core/classifier.py (Grok on the xAI key first, local qwen3-vl:4b-instruct
+# as the backup; no Llama Guard). Nothing here is a setting.
 
 from __future__ import annotations
 

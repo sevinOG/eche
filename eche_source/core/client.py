@@ -874,7 +874,7 @@ def _drop_or_rebuild_history(prepared: list, drop_indices: set[int]) -> list:
 def _outgoing_messages(messages: list) -> list:
     """Apply the hardcoded safety footer.
 
-    Text-only chat runs no keyword filter and no model-based LG or child checks. If the
+    Text-only chat runs no keyword filter and no model-based child checks. If the
     request has images, the image-path classifier stays fail-closed:
     sync callers with no loop run it here; a running loop must use
     _outgoing_messages_async rather than skip those checks.
@@ -965,8 +965,8 @@ async def _classify_outgoing(prepared: list) -> list:
         combined = (hard_text + "\n\nHISTORY:\n" + history_text).strip()
 
     # Text-only chat: footer + keyword/blocklist only. Image attachments
-    # always run the prompt filter, LG, child check, and age vision, and
-    # those checks cannot be turned off.
+    # always run the image content check, the narrow prompt child check, and
+    # age vision (no Llama Guard), and those checks cannot be turned off.
     verdict = ""
     if images:
         verdict = await classify_async(combined or hard_text or " ", images=images)
@@ -1037,7 +1037,7 @@ async def _output_blocked(*texts, tool_calls=None) -> bool:
     if is_blocked(*parts) or (combined and match_info(combined, force_context=True)[1]):
         note("llm-output")
         return True
-    # Chat text replies do not run LG or the child check. Generated-image
+    # Chat text replies do not run the model child check. Generated-image
     # and asset outputs are checked on the image path, which stays on.
     return False
 

@@ -80,8 +80,8 @@ FIELD_HELP: dict[str, tuple[str, str]] = {
         "child check, age vision, incident rule, and the safety footer (the footer text does not change). "
         "The age check is stricter: anything short of clearly adult is blocked, and so are anime, "
         "cartoon, chibi, doll, stylized, and real or identifiable people. The only relaxation is "
-        "consensual adult sexual content (Llama Guard S12) on generated output; input still blocks S12, "
-        "and S4 and every other category still block.\n\n"
+        "consensual adult sexual content between clearly adult, non-real characters on generated output; "
+        "anything that could be a minor, stylized sexual content, and real people still block.\n\n"
         "### Owner approval\n"
         "On by default. Turning it off skips owner review of each asset. Video stays "
         "available. The hourly caps are the same either way: each user gets 10 images "
@@ -95,8 +95,8 @@ FIELD_HELP: dict[str, tuple[str, str]] = {
         "### 18+ mode\n"
         "Off by default, settings-only. See the ?asset help for the full rules: any user in an age-restricted "
         "channels only (in non-NSFW channels ?asset runs under the normal SFW rules), "
-        "owner approval optional, stricter age and style checks, and S12 relaxed "
-        "on output only.",
+        "owner approval optional, stricter age and style checks, and consensual adult "
+        "content between clearly adult characters allowed on output only.",
     ),
     "asset_approval_enabled": (
         "Require owner approval",

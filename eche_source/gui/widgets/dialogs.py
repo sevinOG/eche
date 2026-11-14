@@ -255,12 +255,20 @@ _CONFIG_HINTS: list[tuple[str, str, str, str]] = [
         "OpenRouter key for the cloud fallback.",
     ),
     (
+        "Child check model is missing",
+        "Child check model is missing",
+        "The built-in prompt child check could not reach Grok or its local backup "
+        "model, so the request was blocked. The check is hardcoded and is never skipped.",
+        "Run `ollama pull qwen3-vl:4b-instruct` on this PC, or set the xAI key so "
+        "Grok runs the check first.",
+    ),
+    (
         "Safety checker model is missing",
         "Safety checker model is missing",
         "A built-in image safety check could not find its model, so the image was "
         "blocked. The checks are hardcoded and have no settings; they are never skipped.",
-        "Run the `ollama pull` command shown in the log (llama-guard3:8b or "
-        "qwen3-vl:4b-instruct), or add a Groq or OpenRouter key for the cloud fallback.",
+        "Run the `ollama pull` command shown in the log (qwen3-vl:4b-instruct), "
+        "or set the xAI key so Grok runs the checks first.",
     ),
 ]
 
