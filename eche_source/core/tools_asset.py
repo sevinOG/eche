@@ -174,6 +174,42 @@ def _status_result(exc, text: str | None = None) -> ToolResult:
     )
 
 
+def _replied_text(message) -> str:
+    ref = getattr(message, "reference", None)
+    resolved = getattr(ref, "resolved", None) if ref is not None else None
+    return str(getattr(resolved, "content", "") or "")
+
+
+def _strip_added_cues(prompt: str, user_text: str, message) -> str:
+    """Drop school cues and youth-emphasis phrases the chat model added.
+
+    Phrases in the user's message or the replied-to message stay. A prompt the
+    minors matcher or the media filter already blocks is left unchanged, so
+    the strip can never turn a blocked prompt into an allowed one. The strip
+    is audited (removed phrases only).
+    """
+    from core.asset_filter import media_prompt_blocked
+    from core.asset_intent import strip_added_school_and_youth_cues
+    from core.blocklist import match
+
+    try:
+        if match(prompt) or media_prompt_blocked(prompt, adult=False):
+            return prompt
+    except Exception:
+        return prompt
+    said = f"{user_text}\n{_replied_text(message)}"
+    out, removed = strip_added_school_and_youth_cues(prompt, said)
+    if not removed:
+        return prompt
+    try:
+        from core.audit import record
+
+        record("asset-strip", source="chat", removed=",".join(removed)[:300], safety=True, **_ids(message))
+    except Exception:
+        pass
+    return out or prompt
+
+
 async def make_asset(ctx, arguments: dict) -> ToolResult:
     message = getattr(ctx, "message", None)
     user_text = getattr(message, "content", "") or ""
@@ -190,8 +226,10 @@ async def make_asset(ctx, arguments: dict) -> ToolResult:
             # A short excerpt of the declined message, so a decline can be
             # diagnosed from the log (the prompt is already logged on runs).
             excerpt = " ".join(str(user_text or "").split())[:200]
+            # The tool prompt the model wrote, so an over-decline can be
+            # reproduced (prompts are logged on runs too).
             record("asset-request", source="chat", outcome="declined", reason=declined,
-                   message=excerpt, **_ids(message))
+                   message=excerpt, prompt=raw_prompt[:500], **_ids(message))
         except Exception:
             pass
         return ToolResult(text=NO_REQUEST_DECLINED, fence=False, declined=True, outcome="declined")
@@ -208,6 +246,8 @@ async def make_asset(ctx, arguments: dict) -> ToolResult:
     if softened_prompt(prompt, user_text):
         prompt = asset_prompt({}, user_text)
     prompt = strip_added_youthful_styles(prompt, user_text) or asset_prompt({}, user_text)
+    model_prompt = prompt
+    prompt = _strip_added_cues(prompt, user_text, message)
     kind = str((arguments or {}).get("kind") or "").strip().lower()
     if kind not in ("image", "video"):
         kind = ""
@@ -223,6 +263,10 @@ async def make_asset(ctx, arguments: dict) -> ToolResult:
         source = await source_from_reply(message)
         audit_request(prompt=prompt, kind=kind, source="chat", has_media=source is not None, ids=ids)
         plan = plan_asset(prompt, kind="" if source is not None else kind, asset_mode=mode, source=source)
+        # The prompt checks also see the user's own words and the model's
+        # prompt before any cue was stripped.
+        plan.user_text = user_text
+        plan.model_prompt = model_prompt
         result = await run_asset(
             plan, api_key(), asset_mode=mode, is_owner=bool(getattr(ctx, "_asset_owner", False)), **ids
         )

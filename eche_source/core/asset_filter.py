@@ -408,3 +408,92 @@ def media_prompt_blocked(text: str, *, adult: bool | None = None) -> bool:
         if adult and (_ADULT_STYLE_RE.search(inspect) or _ADULT_REAL_PERSON_RE.search(inspect)):
             return True
     return False
+
+
+# School cues combined with sexual or fetish wording (owner-approved
+# 2026-11-14 10:34 ET, after a model-written prompt at 10:01 ET mixed a school
+# jacket and "at school" with a pet-play collar). Blocks in every channel,
+# 18+ included, for user-written and model-written prompts. Either list alone
+# does not block, so "a yellow school bus" or "a sexy vampire" still run.
+_SCHOOL_CUES = {
+    "school": (
+        r"(?<!old\s)(?<!old-)\bschool(?:s|ing|yard|house|work|day|days|bag|bags)?\b"
+        r"(?!\s+of\s+(?:fish|thought))"
+    ),
+    "classroom": (
+        r"\bclass\s*rooms?\b|\bhome\s*room\b|\bhall\s*pass(?:es)?\b|\bclass\s*mates?\b|"
+        r"\bdetention\b|\brecess\b|\bteacher'?s\s+pet\b"
+    ),
+    "student": (
+        r"\bstudents?\b|\bpupils?\b|\bschool\s*(?:girl|boy)s?\b|"
+        r"\bteacher\s*(?:and|&|/|x|-)\s*student\b|\bstudent\s*(?:and|&|/|x|-)\s*teacher\b"
+    ),
+    "grade": (
+        r"\bfreshm[ae]n\b|\bsophomores?\b|\bjunior\s*high\b|\bjr\.?\s*high\b|\bhigh\s*school(?:ers?)?\b|"
+        r"\bmiddle\s*school(?:ers?)?\b|\bgrade\s*school(?:ers?)?\b|\belementary\b|"
+        r"\b\d{1,2}(?:st|nd|rd|th)\s*grade(?:rs?)?\b|"
+        r"\b(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|eleventh|twelfth)\s*grade(?:rs?)?\b|"
+        r"\bgraders?\b"
+    ),
+    "uniform": (
+        r"\bschool\s*(?:uniform|jacket|blazer|skirt|backpack|tie|shirt|sweater|cardigan|hoodie|shoes|socks)s?\b|"
+        r"\b(?:plaid|pleated|tartan)\s+(?:mini\s*)?skirts?\b|\bsailor\s*(?:uniform|fuku|suit)\b"
+    ),
+}
+_SEXUAL_CUES = {
+    "sexual": (
+        r"\bsexy\b|\bsexual\w*|\bsex\b|\bseduc\w*|\berotic\w*|\blewd\w*|\bhorny\b|\bsultry\b|"
+        r"\bprovocative\w*|\bnsfw\b|\b18\s*\+|\bslutt?y\b|\bsluts?\b|\bnaughty\b|\bsteamy\b|"
+        r"\baroused\b|\bporn\w*|\bhentai\b|\bxxx\b|\bonlyfans\b"
+    ),
+    "nudity": (
+        r"\bnude\w*|\bnudity\b|\bnaked\b|\btopless\b|\bbottomless\b|\bundress\w*|"
+        r"\bstrip(?:per|pers|ping|tease)\b"
+    ),
+    "lingerie": (
+        r"\blingerie\b|\bpant(?:y|ies)\b|\bthongs?\b|\bbras?\b|\bunderwear\b|\bbikinis?\b|"
+        r"\bgarters?\b|\bfishnets?\b"
+    ),
+    "fetish": (
+        r"\bfetish\w*|\bkink\w*|\bbdsm\b|\bbondage\b|\bpet\s*-?\s*play\b|\bsubmissive\b|\bdominatrix\b|"
+        r"\bspank\w*|\bleash(?:ed)?\b|"
+        r"\b(?:pet|dog|slave|choker|leather|spiked|bdsm)\s+collars?\b|\bcollar(?:ed)?\s+and\s+leash(?:ed)?\b|"
+        r"\bcollars?\s+with\s+(?:a\s+)?(?:\w+\s+){0,2}(?:tag|leash|bell|ring)\b|\bwearing\s+(?:a\s+)?collar\b"
+    ),
+}
+_SCHOOL_RES = {name: re.compile(f"(?i)(?:{pat})") for name, pat in _SCHOOL_CUES.items()}
+_SEXUAL_RES = {name: re.compile(f"(?i)(?:{pat})") for name, pat in _SEXUAL_CUES.items()}
+
+
+def _cue_forms(text: str) -> list[str]:
+    """Spacing-preserving forms only, so joined words cannot invent a cue."""
+    from core.blocklist import _folded, normalize
+
+    raw = text or ""
+    out = [raw]
+    for fn in (normalize, _folded, lambda s: _folded(s.translate(_LEET_MAP)), lambda s: _dehyphen(_folded(s))):
+        try:
+            item = fn(raw)
+        except Exception:
+            continue
+        if item and item not in out:
+            out.append(item)
+    return out
+
+
+def school_sexual_cues(text: str) -> tuple[list[str], list[str]]:
+    """(school categories, sexual categories) found in the text. Both non-empty blocks."""
+    school: set[str] = set()
+    sexual: set[str] = set()
+    for form in _cue_forms(text):
+        school.update(name for name, rx in _SCHOOL_RES.items() if rx.search(form))
+        sexual.update(name for name, rx in _SEXUAL_RES.items() if rx.search(form))
+    return sorted(school), sorted(sexual)
+
+
+def school_sexual_blocked(text: str) -> tuple[bool, str]:
+    """(blocked, short reason naming the matched cue categories, never the prompt)."""
+    school, sexual = school_sexual_cues(text)
+    if school and sexual:
+        return True, f"school={','.join(school)};sexual={','.join(sexual)}"
+    return False, ""

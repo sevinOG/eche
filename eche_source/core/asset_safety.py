@@ -51,6 +51,12 @@ _PEOPLE_WORDS = (
     r"wom[ae]n|m[ae]n|girls?|boys?|guys?|lad(?:y|ies)|gals?|dudes?|females?|males?|"
     r"wives?|wife|husbands?|mothers?|moms?|fathers?|dads?|brides?|grooms?|"
     r"he|she|him|her|his|hers|they|them|"
+    # Self-portraits and "what I look like" requests show a person too
+    # (live 09:59 ET: "generate what you think I look like eche" got no hint
+    # and the output was read as an apparent minor).
+    r"me|myself|yourself|you|look(?:s|ing)?\s+like|lookalikes?|"
+    # Common misspellings (live 09:31 ET: "anthromorphic heavyset femlale").
+    r"anthr\w*morph\w*|fem\w*|"
     r"portraits?|selfies?|faces?|bod(?:y|ies)|"
     r"models?|dancers?|singers?|actors?|actress(?:es)?|celebrit(?:y|ies)|"
     r"pilots?|soldiers?|warriors?|knights?|heroes|hero|heroines?|villains?|"
@@ -66,7 +72,7 @@ _PEOPLE_WORDS = (
 )
 _CHARACTER_RE = re.compile(rf"\b(?:{_PEOPLE_WORDS})\b", re.IGNORECASE)
 _FEMALE_RE = re.compile(
-    r"\b(?:female|woman|women|girls?|lad(?:y|ies)|gals?|she|her|hers|feminine|wife|wives|"
+    r"\b(?:female|fem\w*|woman|women|girls?|lad(?:y|ies)|gals?|she|her|hers|feminine|wife|wives|"
     r"mothers?|moms?|brides?|actress(?:es)?|princess(?:es)?|queens?|heroines?|witch(?:es)?|"
     r"mermaids?|cowgirls?|catgirls?|waifus?)\b",
     re.IGNORECASE,
@@ -517,7 +523,13 @@ def footer_is_last(sent: str) -> bool:
     return text.endswith(SAFETY_FOOTER) and text.count(SAFETY_FOOTER) == 1
 
 
-def build_sent_prompt(user_prompt: str, *, adult: bool = False) -> tuple[str, str]:
+def edit_adult_hint(prompt: str) -> str:
+    """Every edit gets the adult hint, person words or not (owner-approved
+    2026-11-14 10:34 ET: "add a dickprint" on a picture of a person got none)."""
+    return character_adult_hint(prompt) or _ADULT_HINT.format(who="person", their="their")
+
+
+def build_sent_prompt(user_prompt: str, *, adult: bool = False, edit: bool = False) -> tuple[str, str]:
     """Adult-only rewrite, then the user prompt, then the footer last."""
     from core.safety import SAFETY_FOOTER, footer_sha256
 
@@ -526,7 +538,7 @@ def build_sent_prompt(user_prompt: str, *, adult: bool = False) -> tuple[str, st
     if len(body) > 2000:
         body = body[:2000].rstrip()
     rule = ADULT_RULE_STRICT if adult else ADULT_RULE
-    hint = character_adult_hint(body)
+    hint = edit_adult_hint(body) if edit else character_adult_hint(body)
     if hint:
         body = f"{body}\n\n{hint}"
     sent = f"{rule}\n\n{body}\n\n{SAFETY_FOOTER}"
@@ -587,12 +599,19 @@ async def prepare_generation(
     guild_id=None,
     channel_id=None,
     mode: AssetMode | None = None,
+    user_text: str = "",
+    model_prompt: str = "",
+    edit: bool = False,
 ) -> PreparedPrompt:
-    """Bypass, matcher, media filter, model child check, footer-last. Fail closed.
+    """Bypass, matcher, media filter, school+sexual rule, model child check,
+    footer-last. Fail closed.
 
+    The prompt sent is checked. For the chat tool, the user's own message and
+    the model's prompt before any cue was stripped are checked too (matcher,
+    media filter, school+sexual rule) and go to the child check with it.
     No Llama Guard; see classifier.asset_prompt_check_async.
     """
-    from core.asset_filter import media_prompt_blocked
+    from core.asset_filter import media_prompt_blocked, school_sexual_blocked
     from core.blocklist import REFUSAL, is_blocked, note
     from core.classifier import asset_prompt_check_async
     from core.guardrails import BYPASS_REFUSAL, asks_to_bypass_filter
@@ -614,9 +633,35 @@ async def prepare_generation(
         note("asset prompt media-filter")
         _audit("refusal", category="media-filter", mode=snap, **ids)
         raise ImagineError(REFUSAL)
+    extras = []
+    for label, text in (("user", user_text), ("model", model_prompt)):
+        text = (text or "").strip()
+        if text and text != raw and text not in [t for _l, t in extras]:
+            extras.append((label, text))
+    for label, text in extras:
+        if is_blocked(text, user_id=user_id, channel_id=channel_id):
+            note(f"asset {label} text")
+            _audit("refusal", category="matcher", reason=f"in={label}", mode=snap, **ids)
+            raise ImagineError(REFUSAL)
+        if media_prompt_blocked(text, adult=snap.adult):
+            note(f"asset {label} text media-filter")
+            _audit("refusal", category="media-filter", reason=f"in={label}", mode=snap, **ids)
+            raise ImagineError(REFUSAL)
+    # School cues next to sexual or fetish wording: every channel, 18+ too.
+    for label, text in (("prompt", raw), *extras):
+        hit, why = school_sexual_blocked(text)
+        if hit:
+            note(f"asset {label} school-sexual")
+            _audit("refusal", category="school-sexual", reason=f"in={label};{why}", mode=snap, **ids)
+            raise ImagineError(REFUSAL)
 
+    # The child check sees the prompt plus the user's words and the model's
+    # unstripped prompt, in one call.
+    checked = raw
+    if extras:
+        checked = raw + "".join(f"\n\n{text}" for _label, text in extras)
     try:
-        verdict = await asset_prompt_check_async(raw)
+        verdict = await asset_prompt_check_async(checked)
     except Exception:
         verdict = "child-check-error"
     if verdict:
@@ -624,11 +669,11 @@ async def prepare_generation(
         _audit("refusal", category=verdict, mode=snap, **ids)
         raise ImagineError(REFUSAL)
 
-    sent, digest = build_sent_prompt(raw, adult=snap.adult)
+    sent, digest = build_sent_prompt(raw, adult=snap.adult, edit=edit)
     if not footer_is_last(sent):
         _audit("error", category="footer-order", footer_hash=digest, mode=snap, **ids)
         raise ImagineError("Safety rules could not be applied, so nothing was generated.")
-    hinted = bool(character_adult_hint(raw))
+    hinted = edit or bool(character_adult_hint(raw))
     _audit("success", footer_hash=digest, mode=snap, reason="adult-hint" if hinted else "", **ids)
     return PreparedPrompt(
         user_prompt=raw,
