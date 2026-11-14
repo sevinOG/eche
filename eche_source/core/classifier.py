@@ -1535,6 +1535,10 @@ def _log_child_verdict(checker: str, verdict: str, *, reason: str = "", error_ty
             category=verdict or "child-check",
             chunk=chunk,
             error_type=error_type,
+            # Safety record: a failed write raises (after the fallback file),
+            # so an allow that was not logged blocks in _child_pass. Ordinary
+            # records only alert on a failed write and never raise.
+            safety=True,
         )
     except Exception:
         logged = False
@@ -2340,8 +2344,13 @@ _VERDICT_REASON = {
 
 
 def _log_age_verdict(checker: str, verdict: str, *, adult: bool, reason: str = "", error_type: str = "",
-                     model: str = "") -> None:
-    """One audit line per age-vision decision: checker, verdict, mode, short reason."""
+                     model: str = "") -> bool:
+    """One audit line per age-vision decision: checker, verdict, mode, short reason.
+
+    Written as a safety record, so a failed write raises inside audit and is
+    returned here as False; _age_verdict then blocks an allow that was not
+    logged (no missing logs), like the child and image checks.
+    """
     short = {"": "pass", "age-vision-yes": "yes", "age-vision-unsure": "unsure"}.get(verdict, "error")
     why = reason or _VERDICT_REASON.get(verdict, "")
     if verdict == "age-vision-yes" and not reason:
@@ -2361,9 +2370,18 @@ def _log_age_verdict(checker: str, verdict: str, *, adult: bool, reason: str = "
             frame=CHECK_FRAME.get(),
             stage=CHECK_STAGE.get(),
             error_type=error_type,
+            safety=True,
         )
+        logged = True
     except Exception:
-        pass
+        logged = False
+    if not verdict and not logged:
+        try:
+            from core.gui_bridge import log
+            log("Safety check blocked (age-check): the audit log could not be written, so the image was blocked.",
+                channel="chat")
+        except Exception:
+            pass
     if verdict:
         _log_check_block(
             "age-vision",
@@ -2371,6 +2389,15 @@ def _log_age_verdict(checker: str, verdict: str, *, adult: bool, reason: str = "
             category=f"{verdict} via {checker} mode={mode} reason={why}",
             error_type=error_type,
         )
+    return logged
+
+
+def _age_verdict(checker: str, verdict: str, *, adult: bool, reason: str = "", model: str = "") -> str:
+    """Log the age verdict and return it; an allow that could not be audited blocks."""
+    logged = _log_age_verdict(checker, verdict, adult=adult, reason=reason, model=model)
+    if not verdict and not logged:
+        return "age-vision-error"
+    return verdict
 
 
 def _age_vision_sync(images: list, *, adult: bool = False) -> str:
@@ -2390,7 +2417,8 @@ def _age_vision_sync(images: list, *, adult: bool = False) -> str:
         else:
             if verdict != "age-vision-error":
                 # Verdict and reason come from the same reply.
-                _log_age_verdict("grok-vision", verdict, adult=adult, reason=label, model=_xai_vision_model_cached())
+                verdict = _age_verdict("grok-vision", verdict, adult=adult, reason=label,
+                                       model=_xai_vision_model_cached())
                 _note_signal("age-label", label)
                 return verdict
             grok_error = f"unclear reply ({label})"
@@ -2414,7 +2442,7 @@ def _age_vision_sync(images: list, *, adult: bool = False) -> str:
             detail += f"; grok {grok_error}"
         _log_age_verdict("local-vision", verdict, adult=adult, reason=detail, model=age_vision_ollama_model())
     else:
-        _log_age_verdict("local-vision", verdict, adult=adult, reason=label, model=age_vision_ollama_model())
+        verdict = _age_verdict("local-vision", verdict, adult=adult, reason=label, model=age_vision_ollama_model())
         _note_signal("age-label", label)
     return verdict
 
