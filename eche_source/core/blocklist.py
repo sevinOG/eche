@@ -1613,12 +1613,56 @@ def _alice_texts(candidate: str, *, allow_ok: bool) -> list[str]:
     return out
 
 
+# Discord attachment / media URLs carry machine-made parts: channel and
+# message snowflakes in the path and signing params (ex, is, hm, ...) in the
+# query. Random hex such as hm=...8f... used to read as "8 female" and
+# falsely trip the under-age rule. Those parts are not words anyone typed,
+# so they are dropped before scanning. The filename's real words are kept
+# and scanned like any other text; typed text is never touched.
+_DISCORD_MEDIA_URL_RE = re.compile(
+    r"(?:https?://)?(?:cdn\.discordapp\.com|media\.discordapp\.net)"
+    r"(?:/[^\s?#<>\"')\]]*)?(?:\?[^\s#<>\"')\]]*)?(?:#[^\s<>\"')\]]*)?",
+    re.IGNORECASE,
+)
+_FILENAME_TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
+_HEXISH_RE = re.compile(r"^(?=[0-9a-f]*[0-9])(?=[0-9a-f]*[a-f])[0-9a-f]{8,}$", re.IGNORECASE)
+
+
+def _filename_words(url: str) -> str:
+    path = url.split("?", 1)[0].split("#", 1)[0].rstrip("/")
+    lowered = path.lower()
+    if "/external/" in lowered:
+        # An embed proxy URL wraps another site's address; every word of
+        # that address is kept and scanned, only Discord's hash is dropped.
+        name = path[lowered.index("/external/") + len("/external/"):]
+    else:
+        name = path.rsplit("/", 1)[-1] if "/" in path else ""
+        if "." in name:
+            name = name.rsplit(".", 1)[0]
+    words = []
+    for token in _FILENAME_TOKEN_RE.findall(name):
+        # Snowflakes / long digit runs and hex hashes are machine-made.
+        if (token.isdigit() and len(token) >= 6) or _HEXISH_RE.match(token):
+            continue
+        words.append(token)
+    return " ".join(words)
+
+
+def scrub_discord_media_urls(text: str) -> str:
+    """Replace each Discord CDN/media URL with only its filename's words."""
+    raw = str(text or "")
+    if "discordapp" not in raw.lower():
+        return raw
+    return _DISCORD_MEDIA_URL_RE.sub(lambda m: " " + _filename_words(m.group(0)) + " ", raw)
+
+
 def match_info(text: str, *, force_context: bool = False) -> tuple[str, str]:
     """(term, check) for the first hit, or ("", "") when the text is fine.
 
     check is one of: always, age, context, extra.
     An adult age never overrides an under-18 signal in the same text.
     """
+    text = scrub_discord_media_urls(text)
     raw = normalize(text)
     if not raw.strip():
         return "", ""
@@ -2038,8 +2082,8 @@ def is_blocked(*texts, user_id=None, channel_id=None) -> bool:
     """True when any text hits the minors list, or is a close rewrite of one."""
     found = False
     for text in texts:
-        raw = str(text or "")
-        if not raw:
+        raw = scrub_discord_media_urls(str(text or ""))
+        if not raw.strip():
             continue
         if match(raw):
             remember_block(user_id, channel_id, raw)

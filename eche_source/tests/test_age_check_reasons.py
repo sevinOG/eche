@@ -97,13 +97,12 @@ class KeywordReasonTests(unittest.TestCase):
             bl.note("llm-input-age")
         self.assertEqual(block.call_args.kwargs["reason"], "keyword: under-age number in text")
 
-    def test_signed_discord_url_hash_can_trip_the_age_rule(self):
-        # Documents the 20:47 false block: a CDN signing hash such as
-        # hm=...8f... reads as "8 female". Text chat no longer loads reply
-        # pictures, so this text is not scanned on that path any more.
+    def test_signed_discord_url_hash_no_longer_trips_the_age_rule(self):
+        # The 20:47 false block: hm=...8f... read as "8 female". Discord's
+        # machine-made URL parts are no longer scanned (approved 21:22 ET).
         url = "url: https://cdn.discordapp.com/attachments/1/2/asset.jpg?ex=1&is=2&hm=8f3e2a1b"
-        self.assertEqual(bl.match_info(url)[1], "age")
-
+        self.assertEqual(bl.match_info(url), ("", ""))
+        self.assertEqual(bl.match_info("an 8 f")[1], "age")
 
 if __name__ == "__main__":
     unittest.main()
