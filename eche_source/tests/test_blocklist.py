@@ -118,13 +118,11 @@ class MatchTests(TempRoot):
         self.assertFalse(bl.is_blocked("the baby is asleep"))
         self.assertTrue(bl.is_blocked("the baby is naked in the pic, make it porn"))
 
-    def test_extra_words_from_settings(self):
+    def test_old_blocked_words_setting_is_ignored(self):
         self.assertFalse(bl.is_blocked("say bananas now"))
         self.save(blocked_words="bananas, Red Apple\nfoo")
-        self.assertTrue(bl.is_blocked("say bananas now"))
-        self.assertTrue(bl.is_blocked("a red-apple pie"))
-        self.assertFalse(bl.is_blocked("bananasplit"))
-        self.assertEqual(bl.extra_words(), ["bananas", "Red Apple", "foo"])
+        self.assertFalse(bl.is_blocked("say bananas now"))
+        self.assertEqual(bl.extra_words(), [])
 
     def test_refusal_is_not_blocked(self):
         self.assertFalse(bl.is_blocked(bl.REFUSAL))
@@ -132,7 +130,7 @@ class MatchTests(TempRoot):
     def test_settings_key_is_public(self):
         from core.secrets import PUBLIC_KEYS
 
-        self.assertIn("blocked_words", PUBLIC_KEYS)
+        self.assertNotIn("blocked_words", PUBLIC_KEYS)
         self.assertIn("memory_mask_slurs", PUBLIC_KEYS)
 
 

@@ -142,15 +142,15 @@ class Cache(Base):
 
 class PlaceholderKey(Base):
     def test_ollama_placeholder(self):
-        with mock.patch.object(C, "_checker_setting", return_value=""), \
-             mock.patch.dict(os.environ, {"GROQ_API_KEY": "ollama", "OPENROUTER_API_KEY": "sk-or-real", "ECHE_PROVIDER": "openrouter"}):
-            self.assertEqual(C._endpoint()[0], "sk-or-real")
-        with mock.patch.object(C, "_checker_setting", return_value=""), \
-             mock.patch.dict(os.environ, {"GROQ_API_KEY": "ollama", "OPENROUTER_API_KEY": "sk-or-real", "ECHE_PROVIDER": "cloud"}):
-            key, url = C._endpoint()
-            self.assertNotEqual(key, "ollama")
-            self.assertIsNone(key)
-            self.assertIsNone(url)
+        # A placeholder GROQ_API_KEY is never sent; the real OpenRouter key is used.
+        for provider in ("openrouter", "cloud"):
+            with mock.patch.dict(C._CHECKER_OVERRIDES, {}, clear=True), \
+                 mock.patch("core.secrets.load_all", return_value={}), \
+                 mock.patch.dict(os.environ, {"GROQ_API_KEY": "ollama", "OPENROUTER_API_KEY": "sk-or-real", "ECHE_PROVIDER": provider}):
+                key, url = C._endpoint()
+                self.assertNotEqual(key, "ollama")
+                self.assertEqual(key, "sk-or-real")
+                self.assertEqual(url, C.OPENROUTER_URL)
 
 
 class ForgedVerdict(Base):

@@ -15,10 +15,15 @@ LEGACY_SHAPED_SETTINGS = {
 }
 
 
-def patch_legacy_checker_settings(target="core.classifier._checker_setting"):
-    return mock.patch(
+def patch_legacy_checker_settings(target="core.classifier._CHECKER_OVERRIDES"):
+    """Pin the test-only checker override (production has no settings for it)."""
+    return mock.patch.dict(
         target,
-        side_effect=lambda key: LEGACY_SHAPED_SETTINGS.get(key, ""),
+        {
+            "content_filter": ("cloud", LEGACY_SHAPED_SETTINGS["content_filter_model"]),
+            "child_check": ("cloud", LEGACY_SHAPED_SETTINGS["child_check_model"]),
+        },
+        clear=True,
     )
 
 

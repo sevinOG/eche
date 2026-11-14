@@ -355,7 +355,7 @@ def main() -> int:
     parser.add_argument(
         "--ollama",
         action="store_true",
-        help="Run only against local Ollama. Uses child_check_model or the chat model. Skips image cases.",
+        help="Run only against local Ollama. Uses the hardcoded local llama-guard3:8b. Skips image cases.",
     )
     parser.add_argument(
         "--skip-images",

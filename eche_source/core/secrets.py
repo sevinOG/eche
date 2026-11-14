@@ -75,7 +75,6 @@ PUBLIC_KEYS = (
     "thread_posted_chars",          # earlier posts each thread post sees; blank/0 = all
     "thread_topic_scan",            # messages searched for a thread subject; blank uses 8
     "local_history_turns",          # desktop chat turns sent; blank uses 20
-    "blocked_words",                # extra hard-blocked words, one per line or comma (core/blocklist.py)
     "memory_mask_slurs",            # "0" stops masking slurs in memory pins. Blank stays on.
     "asset_enabled",                # "1" turns ?asset on. Blank or missing stays OFF.
     "asset_owner_only",             # blank or missing stays ON (owner only). "0" opens it to the guild.
@@ -83,14 +82,21 @@ PUBLIC_KEYS = (
     "asset_approval_enabled",       # "0" turns owner approval off. Blank or missing stays ON.
     "tool_asset",                   # "0" leaves the asset tool out of the prompt. Blank stays on.
     "xai_key_epoch",                # must match CURRENT_XAI_KEY_EPOCH or the stored xAI key is ignored
-    # Safety checkers. Settings-only (not in ENV_MAP). Blank = current chat provider/model.
-    "content_filter_provider",      # cloud | openrouter | ollama. Blank uses the chat provider.
-    "content_filter_model",         # Model id. Blank uses the chat model.
+    # The image safety checkers have no settings; their models are
+    # hardcoded in core/classifier.py. See RETIRED_PUBLIC_KEYS below.
+)
+
+# Keys older versions saved. Ignored on read (public_value returns '') and
+# dropped from settings.json on the next save. Nothing else reads them.
+RETIRED_PUBLIC_KEYS = (
+    "content_filter_provider",
+    "content_filter_model",
     "child_check_provider",
     "child_check_model",
-    "image_check_provider",         # settings-only vision content check. Blank is off/fail-closed.
-    "image_check_model",            # Must be vision-capable. Does not follow content_filter_model.
-    "age_vision_ollama_model",      # local Ollama vision model for age vision when no cloud key; blank = qwen3-vl:4b-instruct
+    "image_check_provider",
+    "image_check_model",
+    "age_vision_ollama_model",
+    "blocked_words",
 )
 
 # Map settings key -> environment variable used by the bot
@@ -375,6 +381,8 @@ def _save_public(root: str, public: dict[str, str]) -> None:
     for key in SECRET_KEYS:
         data.pop(key, None)
     data.pop("thoughts_thread_id", None)
+    for key in RETIRED_PUBLIC_KEYS:
+        data.pop(key, None)
     for key in PUBLIC_KEYS:
         data[key] = str(public.get(key) or "").strip()
     data["secrets_backend"] = "dpapi"
@@ -704,19 +712,6 @@ def save_all(data: dict[str, Any], root: str | None = None) -> None:
     try:
         from core.audit import record, safe_activity
         fields = {}
-        for key in (
-            "content_filter_provider",
-            "content_filter_model",
-            "child_check_provider",
-            "child_check_model",
-            "image_check_provider",
-            "image_check_model",
-        ):
-            old_val = str(existing_public.get(key) or "").strip()
-            new_val = str(public.get(key) or "").strip()
-            if old_val != new_val:
-                fields[f"{key}_old"] = old_val
-                fields[f"{key}_new"] = new_val
         for key, raw in invalid:
             record("settings-invalid", outcome="error", key=key, value=raw, safety=True)
         safe_activity("settings-save", outcome="success", **fields)

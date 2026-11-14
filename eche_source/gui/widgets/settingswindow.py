@@ -31,7 +31,6 @@ from PyQt6.QtWidgets import (
     QButtonGroup,
     QSpinBox,
     QSlider,
-    QPlainTextEdit,
 )
 
 from gui.theme import APP_NAME, APP_VERSION
@@ -76,12 +75,6 @@ except Exception:
 def load_settings():
     from core.secrets import load_all
     return load_all(PROJECT_ROOT)
-
-
-def _split_blocked(raw: str) -> list[str]:
-    from core.blocklist import parse_extra
-
-    return parse_extra(raw)
 
 
 def save_settings(data: dict):
@@ -509,85 +502,6 @@ class SettingsWindow(QWidget):
             "How long a reply can run. Save applies on the next message.",
             token_body,
         ))
-        checker_body = QVBoxLayout()
-        checker_body.setSpacing(12)
-        checker_hint = QLabel(
-            "These checkers run on the image and asset path only and cannot be "
-            "turned off. Text-only chat uses only the safety footer. Blank uses the chat provider and model "
-            "selected above. Llama Guard models use the Guard prompt; other "
-            "models use a YES/NO prompt. A missing or retired model fails "
-            "closed and never falls back to another model. The image content "
-            "check is separate: it must be set to a vision-capable model and "
-            "does not follow the content filter. Age vision uses pinned Scout "
-            "with a cloud key, else the local Ollama model below."
-        )
-        checker_hint.setObjectName("FieldHint")
-        checker_hint.setWordWrap(True)
-        checker_body.addWidget(checker_hint)
-        for title, p_attr, p_key, m_key, help_key in (
-            (
-                "Content filter",
-                "content_filter_provider_combo",
-                "content_filter_provider",
-                "content_filter_model",
-                "content_filter_model",
-            ),
-            (
-                "Child check",
-                "child_check_provider_combo",
-                "child_check_provider",
-                "child_check_model",
-                "child_check_model",
-            ),
-            (
-                "Image content check",
-                "image_check_provider_combo",
-                "image_check_provider",
-                "image_check_model",
-                "image_check_model",
-            ),
-        ):
-            row = QVBoxLayout()
-            row.setSpacing(8)
-            lab = QLabel(title)
-            lab.setObjectName("FieldLabel")
-            row.addWidget(lab)
-            combo = QComboBox()
-            combo.setMinimumHeight(34)
-            combo.addItem("Same as chat", "")
-            combo.addItem("Cloud — Groq", "cloud")
-            combo.addItem("OpenRouter", "openrouter")
-            combo.addItem("Local — Ollama", "ollama")
-            setattr(self, p_attr, combo)
-            row.addWidget(combo)
-            blank = (
-                "Must be set to a vision-capable model. Blank fails closed. "
-                "Does not follow the content filter model."
-                if m_key == "image_check_model"
-                else "Blank uses the chat model."
-            )
-            row.addLayout(self._field_block(
-                f"{title} model",
-                blank,
-                secret=False,
-                key=m_key,
-                help_key=help_key,
-            ))
-            checker_body.addLayout(row)
-        checker_body.addLayout(self._field_block(
-            "Age vision local model",
-            "Ollama vision model for the under-21 / adult-only image check when there is no "
-            "Groq or OpenRouter key. Blank uses qwen3-vl:4b-instruct. Missing, slow, or "
-            "unclear answers block the image.",
-            secret=False,
-            key="age_vision_ollama_model",
-            help_key="age_vision_ollama_model",
-        ))
-        layout.addWidget(self._card(
-            "Safety checkers",
-            "Image and asset path only. Always on and fail closed. Each can use a different provider and model.",
-            checker_body,
-        ))
         layout.addStretch(1)
         return page
 
@@ -843,21 +757,11 @@ class SettingsWindow(QWidget):
 
         body = QVBoxLayout()
         body.setSpacing(10)
-        head = QHBoxLayout()
-        label = QLabel("Blocked words")
-        label.setObjectName("FieldLabel")
-        head.addWidget(label)
-        head.addStretch()
-        head.addWidget(self._info_button("blocked_words"))
-        body.addLayout(head)
-        self.blocked_words_edit = QPlainTextEdit()
-        self.blocked_words_edit.setPlaceholderText("One word or phrase per line, or separated by commas")
-        self.blocked_words_edit.setPlainText(
-            "\n".join(_split_blocked(self.data.get("blocked_words") or ""))
+        built_in = QLabel(
+            "Pictures and videos: always blocked (built in, not editable): "
+            + ", ".join(BLOCKED_WORDS)
+            + ", ages under 18, and baby in a sexual message."
         )
-        self.blocked_words_edit.setFixedHeight(96)
-        body.addWidget(self.blocked_words_edit)
-        built_in = QLabel("Always blocked: " + ", ".join(BLOCKED_WORDS) + ", ages under 18, and baby in a sexual message.")
         built_in.setObjectName("CardHint")
         built_in.setWordWrap(True)
         body.addWidget(built_in)
@@ -871,8 +775,9 @@ class SettingsWindow(QWidget):
         body.addLayout(row)
         return self._card(
             "Content",
-            "Anything involving minors is refused in chat, threads, and pictures or "
-            "videos, before the model or API is called. Add more words here.",
+            "Image and video requests involving minors are refused before any model or "
+            "API is called. The image and asset safety checks are built in, have no "
+            "settings, and cannot be turned off.",
             body,
         )
 
@@ -1703,23 +1608,6 @@ class SettingsWindow(QWidget):
             self.provider_combo.setCurrentIndex(idx if idx >= 0 else 0)
             self.provider_combo.blockSignals(False)
 
-        for attr, key in (
-            ("content_filter_provider_combo", "content_filter_provider"),
-            ("child_check_provider_combo", "child_check_provider"),
-            ("image_check_provider_combo", "image_check_provider"),
-        ):
-            combo = getattr(self, attr, None)
-            if combo is None:
-                continue
-            value = (self.data.get(key) or "").strip().lower()
-            if value == "groq":
-                value = "cloud"
-            if value not in ("", "cloud", "ollama", "openrouter"):
-                value = ""
-            idx = combo.findData(value)
-            combo.blockSignals(True)
-            combo.setCurrentIndex(idx if idx >= 0 else 0)
-            combo.blockSignals(False)
 
         from core.ollama_thinking import parse_model_modes
         self._reasoning_models = parse_model_modes(self.data.get("reasoning_models"))
@@ -1936,14 +1824,6 @@ class SettingsWindow(QWidget):
         if hasattr(self, "provider_combo"):
             backend = self.provider_combo.currentData() or "cloud"
         payload["provider_backend"] = backend
-        for attr, key in (
-            ("content_filter_provider_combo", "content_filter_provider"),
-            ("child_check_provider_combo", "child_check_provider"),
-            ("image_check_provider_combo", "image_check_provider"),
-        ):
-            combo = getattr(self, attr, None)
-            if combo is not None:
-                payload[key] = combo.currentData() or ""
 
         cloud_m = ""
         if "cloud_model" in self._public_edits:
@@ -2008,12 +1888,6 @@ class SettingsWindow(QWidget):
             payload["update_branch"] = clean_branch(self.update_branch_edit.text())
         else:
             payload["update_branch"] = str(self.data.get("update_branch") or "").strip()
-        if hasattr(self, "blocked_words_edit"):
-            payload["blocked_words"] = "\n".join(
-                _split_blocked(self.blocked_words_edit.toPlainText())
-            )
-        else:
-            payload["blocked_words"] = str(self.data.get("blocked_words") or "").strip()
         if hasattr(self, "mask_slurs_box"):
             payload["memory_mask_slurs"] = "1" if self.mask_slurs_box.isChecked() else "0"
         else:

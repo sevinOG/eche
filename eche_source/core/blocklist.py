@@ -1062,23 +1062,16 @@ def _extra_re() -> re.Pattern | None:
         return None
     if _extra_cache[0] == path and _extra_cache[1] == mtime:
         return _extra_cache[2]
-    try:
-        from core.secrets import public_value
-
-        pattern = _words_re(parse_extra(public_value("blocked_words")))
-    except Exception:
-        pattern = None
+    # The user-editable blocked_words list was retired: the minors word
+    # list is hardcoded and has no settings. Old saved values are ignored.
+    pattern = None
     _extra_cache = (path, mtime, pattern)
     return pattern
 
 
 def extra_words() -> list[str]:
-    try:
-        from core.secrets import public_value
-
-        return parse_extra(public_value("blocked_words"))
-    except Exception:
-        return []
+    """Retired (no user-editable blocked words). Always empty."""
+    return []
 
 
 # ------------------------------------------------------------------ checks

@@ -1,7 +1,8 @@
 # tests/test_age_vision_local.py
-# Age vision without a cloud key uses a local Ollama vision model. It must
-# fail closed on a missing model, timeout, or anything but YES/NO, and keep
-# the strict 18+ rules. No real images: only placeholder base64 bytes.
+# Finished-image vision checks: Grok vision on the xAI key first, then the
+# hardcoded local Ollama vision model, then block. No settings. Must fail
+# closed on a missing model, timeout, or anything but YES/NO, and keep the
+# strict 18+ rules. No real images: only placeholder base64 bytes.
 from __future__ import annotations
 
 import asyncio
@@ -77,11 +78,11 @@ class LocalAgeVisionTests(unittest.TestCase):
         self.assertTrue(C.model_is_vision_capable("qwen3-vl:4b-instruct"))
         self.assertTrue(C.model_is_vision_capable("qwen2.5vl:3b"))
 
-    def test_setting_overrides_model(self):
+    def test_old_setting_is_ignored(self):
         with mock.patch("core.secrets.public_value", return_value="qwen2.5vl:3b"):
-            self.assertEqual(C.age_vision_model(), "qwen2.5vl:3b")
+            self.assertEqual(C.age_vision_model(), "qwen3-vl:4b-instruct")
             self._run(_ollama("NO"))
-        self.assertEqual(self.sent[0][1]["model"], "qwen2.5vl:3b")
+        self.assertEqual(self.sent[0][1]["model"], "qwen3-vl:4b-instruct")
 
     def test_request_shape(self):
         self.assertEqual(self._run(_ollama("NO")), "")
@@ -111,15 +112,15 @@ class LocalAgeVisionTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.errors.clear()
                 self.assertTrue(self._run(_ollama(text)))
-        self.assertTrue(any("age_vision_ollama_model" in e for e in self.errors))
+        self.assertTrue(any("ollama pull qwen3-vl:4b-instruct" in e for e in self.errors))
 
     def test_missing_model_blocks_and_names_the_field(self):
         err = urllib.error.HTTPError(C.OLLAMA_CHAT_URL, 404, "not found", {}, None)
         with mock.patch.object(C, "_http_error_payload", return_value=(404, 'model "qwen3-vl:4b-instruct" not found')):
             self.assertEqual(self._run(side=err), "age-vision-error")
         self.assertTrue(self.errors)
-        self.assertIn("age_vision_ollama_model", self.errors[-1])
-        self.assertIn("ollama pull", self.errors[-1])
+        self.assertIn("ollama pull qwen3-vl:4b-instruct", self.errors[-1])
+        self.assertNotIn("Settings", self.errors[-1])
 
     def test_timeout_blocks(self):
         self.assertEqual(self._run(side=TimeoutError("timed out")), "age-vision-error")
@@ -161,13 +162,146 @@ class LocalAgeVisionTests(unittest.TestCase):
 
         self.assertEqual(asyncio.run(go()), "age-vision-error")
 
-    def test_cloud_key_keeps_the_scout_pin(self):
-        with mock.patch.object(C, "vision_backend_available", return_value=True), \
-                mock.patch.object(C, "_age_vision_post", return_value="NO") as cloud, \
-                mock.patch.object(C, "_age_vision_post_ollama") as local:
-            self.assertEqual(C._age_vision_sync(IMG), "")
-        cloud.assert_called_once()
-        local.assert_not_called()
+    # ---- Grok vision first, local backup ---------------------------------
+
+    def _xai(self, model="grok-vision-test"):
+        return [
+            mock.patch.object(C, "_xai_key", return_value="xai-test-key"),
+            mock.patch.object(C, "_xai_vision_model", return_value=model),
+        ]
+
+    def _chain(self, xai_reply=None, xai_side=None, local_reply=None, local_side=None, adult=False, fn=None):
+        calls = []
+
+        def opener(req, timeout=None):
+            body = json.loads(req.data.decode())
+            calls.append((req.full_url, body, dict(req.headers)))
+            if req.full_url.endswith("/chat/completions"):
+                if xai_side is not None:
+                    raise xai_side
+                return _Resp({"choices": [{"message": {"content": xai_reply}}]})
+            if local_side is not None:
+                raise local_side
+            return _ollama(local_reply)
+
+        patches = self._xai()
+        for p in patches:
+            p.start()
+        try:
+            with mock.patch("urllib.request.urlopen", side_effect=opener):
+                out = fn() if fn else C._age_vision_sync(IMG, adult=adult)
+        finally:
+            for p in patches:
+                p.stop()
+        return out, calls
+
+    def test_xai_is_primary(self):
+        out, calls = self._chain(xai_reply="NO")
+        self.assertEqual(out, "")
+        self.assertEqual(len(calls), 1)
+        url, body, headers = calls[0]
+        self.assertTrue(url.startswith(C._xai_api_base()))
+        self.assertEqual(body["model"], "grok-vision-test")
+        self.assertEqual(body["temperature"], 0)
+        content = body["messages"][0]["content"]
+        self.assertEqual(content[0]["image_url"]["url"], "data:image/png;base64,AAAA")
+        self.assertEqual(content[-1]["text"], C.AGE_VISION_PROMPT)
+        self.assertEqual(headers.get("Authorization"), "Bearer xai-test-key")
+        self.assertEqual(C.age_vision_backend(), "ollama")  # outside the patch: no key
+
+    def test_xai_yes_blocks_without_asking_local(self):
+        out, calls = self._chain(xai_reply="YES", local_reply="NO")
+        self.assertEqual(out, "age-vision-yes")
+        self.assertEqual(len(calls), 1)
+
+    def test_xai_adult_mode_uses_the_strict_prompt(self):
+        out, calls = self._chain(xai_reply="NO", adult=True)
+        self.assertEqual(calls[0][1]["messages"][0]["content"][-1]["text"], C.AGE_VISION_ADULT_PROMPT)
+
+    def test_xai_failure_falls_back_to_local(self):
+        out, calls = self._chain(xai_side=TimeoutError("slow"), local_reply="NO")
+        self.assertEqual(out, "")
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[1][0], C.OLLAMA_CHAT_URL)
+        out, calls = self._chain(xai_side=TimeoutError("slow"), local_reply="YES")
+        self.assertEqual(out, "age-vision-yes")
+
+    def test_xai_unclear_reply_falls_back_to_local(self):
+        out, calls = self._chain(xai_reply="I cannot say", local_reply="NO")
+        self.assertEqual(out, "")
+        self.assertEqual(len(calls), 2)
+
+    def test_both_failing_blocks(self):
+        out, _ = self._chain(xai_side=OSError("down"), local_side=OSError("down"))
+        self.assertEqual(out, "age-vision-error")
+        out, _ = self._chain(xai_reply="maybe", local_reply="maybe")
+        self.assertTrue(out)
+
+    def test_no_xai_model_falls_back_to_local(self):
+        patches = [mock.patch.object(C, "_xai_key", return_value="xai-test-key"),
+                   mock.patch.object(C, "_xai_vision_model", return_value="")]
+        for p in patches:
+            p.start()
+        try:
+            out = self._run(_ollama("NO"))
+        finally:
+            for p in patches:
+                p.stop()
+        self.assertEqual(out, "")
+        self.assertEqual(self.sent[0][0], C.OLLAMA_CHAT_URL)
+
+    def test_model_picker_uses_image_input_text_output_and_skips_imagine(self):
+        models = [
+            {"id": "grok-imagine-image-2.0", "input_modalities": ["text", "image"], "output_modalities": ["image"]},
+            {"id": "grok-imagine-x", "input_modalities": ["text", "image"], "output_modalities": ["text"]},
+            {"id": "grok-text-only", "input_modalities": ["text"], "output_modalities": ["text"], "created": 99},
+            {"id": "grok-4.7", "input_modalities": ["text", "image"], "output_modalities": ["text"], "created": 5},
+            {"id": "grok-4.7-fast-non-reasoning", "input_modalities": ["text", "image"], "output_modalities": ["text"], "created": 4},
+        ]
+        self.assertEqual(C._pick_xai_vision_model(models), "grok-4.7-fast-non-reasoning")
+        self.assertEqual(C._pick_xai_vision_model(models[:3]), "")
+        self.assertEqual(C._pick_xai_vision_model([]), "")
+
+    def test_model_list_is_queried_and_cached(self):
+        C.reset_xai_vision_model_cache()
+        payload = {"models": [{"id": "grok-vision-a", "input_modalities": ["text", "image"], "output_modalities": ["text"]}]}
+        seen = []
+
+        def opener(req, timeout=None):
+            seen.append((req.full_url, req.get_method(), dict(req.headers)))
+            return _Resp(payload)
+
+        with mock.patch.object(C, "_xai_key", return_value="xai-test-key"), \
+                mock.patch("urllib.request.urlopen", side_effect=opener):
+            self.assertEqual(C._xai_vision_model(), "grok-vision-a")
+            self.assertEqual(C._xai_vision_model(), "grok-vision-a")
+        C.reset_xai_vision_model_cache()
+        self.assertEqual(len(seen), 1)
+        self.assertTrue(seen[0][0].endswith("/language-models"))
+        self.assertEqual(seen[0][1], "GET")
+
+    def test_image_check_chain(self):
+        def image_check(adult=False):
+            ignore = frozenset({"S12"}) if adult else None
+            return lambda: C._classify_images_sync("", IMG, ignore)
+
+        out, calls = self._chain(xai_reply="NO", fn=image_check())
+        self.assertEqual(out, "")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][1]["messages"][0]["content"][-1]["text"], C.IMAGE_CHECK_PROMPT)
+        out, calls = self._chain(xai_reply="YES", fn=image_check())
+        self.assertEqual(out, "classifier-unsafe")
+        out, calls = self._chain(xai_reply="NO", fn=image_check(adult=True))
+        self.assertEqual(calls[0][1]["messages"][0]["content"][-1]["text"], C.IMAGE_CHECK_ADULT_PROMPT)
+        out, calls = self._chain(xai_side=OSError("down"), local_reply="NO", fn=image_check())
+        self.assertEqual(out, "")
+        self.assertEqual(calls[1][0], C.OLLAMA_CHAT_URL)
+        local = calls[1][1]
+        self.assertEqual(local["model"], "qwen3-vl:4b-instruct")
+        self.assertEqual(local["messages"][0]["images"], ["AAAA"])
+        self.assertEqual(local["messages"][0]["content"], C.IMAGE_CHECK_PROMPT)
+        out, _ = self._chain(xai_side=OSError("down"), local_side=OSError("down"), fn=image_check())
+        self.assertEqual(out, "classifier-error")
 
 
 if __name__ == "__main__":

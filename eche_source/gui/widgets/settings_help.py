@@ -543,19 +543,6 @@ def _cap_help() -> dict[str, tuple[str, str]]:
         "**Reset to defaults** puts every slider back to the value Eche used "
         "before these were settings.",
     )
-    out["blocked_words"] = (
-        "Blocked words",
-        "### What it does\n"
-        "Image requests (?asset and chat messages with pictures) are refused when "
-        "they match this list, before any model is called. Text-only chat is not "
-        "word-filtered; the built-in safety footer still goes with every request. "
-        "The built-in list is in core/blocklist.py.\n\n"
-        "### Adding words\n"
-        "One word or phrase per line, or commas between them. Whole words only, "
-        "any case, so `kid` does not block `kidney`. Saved as `blocked_words`.\n\n"
-        "### When it changes\n"
-        "Save Settings. The next message uses the new list.",
-    )
     out["memory_mask_slurs"] = (
         "Mask slurs in memory",
         "### On (default)\n"
@@ -601,63 +588,3 @@ def _cap_help() -> dict[str, tuple[str, str]]:
 
 
 FIELD_HELP.update(_cap_help())
-
-
-FIELD_HELP["content_filter_model"] = (
-    "Content filter model",
-    "### What it does\n"
-    "The content filter checks every request and reply against the safety footer "
-    "categories. Leave the provider and model blank to use the same backend and "
-    "model as chat. Set them to point this check at a different provider or model.\n\n"
-    "### Format\n"
-    "The prompt is chosen from the model name. `llama-guard3` and `llama-guard-4` "
-    "ids use the Llama Guard prompt and a safe/unsafe parse. Prompt Guard models "
-    "only detect jailbreaks, so they are refused and the check fails closed. "
-    "Every other model gets the hardened YES/NO prompt (thinking stripped, "
-    "temperature 0).\n\n"
-    "### Missing or retired models\n"
-    "Groq and OpenRouter retire models, and an Ollama tag may not have been pulled. "
-    "If the configured model is missing, the check fails closed. There is no silent "
-    "fallback. Update this field, or the chat model if it is blank.",
-)
-FIELD_HELP["child_check_model"] = (
-    "Child check model",
-    "### What it does\n"
-    "A second, minors-only check that runs after the content filter. Leave the "
-    "provider and model blank to use the same backend and model as chat.\n\n"
-    "### Format\n"
-    "Llama Guard models use a single custom minors category and an exact "
-    "safe/unsafe parse. Prompt Guard is refused. Every other model gets the "
-    "hardened YES/NO minors prompt (thinking stripped, temperature 0).\n\n"
-    "### Missing or retired models\n"
-    "If the configured model is missing or retired, the check fails closed. "
-    "There is no silent fallback. Update this field, or the chat model if it is blank.",
-)
-
-FIELD_HELP["image_check_model"] = (
-    "Image content check model",
-    "### What it does\n"
-    "When a message or generated file includes an image, this checker looks at "
-    "the pixels. It is settings-only and independent of the text content filter. "
-    "It must be set to a vision-capable model (for example hosted Llama Guard 4). "
-    "If the provider or model is blank, or the model cannot see images, the "
-    "image check fails closed. It never follows content_filter_model.\n\n"
-    "### Age vision\n"
-    "Age vision is separate: pinned Scout with a cloud key, else the local "
-    "model in age_vision_ollama_model.",
-)
-
-FIELD_HELP["age_vision_ollama_model"] = (
-    "Age vision local model",
-    "### What it does\n"
-    "Every image on the asset path (and chat pictures) gets an age check. With a Groq "
-    "or OpenRouter key it uses the pinned Llama 4 Scout. Without one it uses this local "
-    "Ollama vision model. Blank uses qwen3-vl:4b-instruct.\n\n"
-    "### Rules\n"
-    "Normal mode blocks anything that could read as under 21. 18+ mode blocks anything "
-    "not clearly adult, anime, cartoon, chibi, doll, or stylized images, and real or "
-    "identifiable people. It cannot be turned off.\n\n"
-    "### Failing closed\n"
-    "A missing model, a timeout, or any answer other than YES or NO blocks the image and "
-    "shows an error naming this field. Pull the model with `ollama pull <name>`.",
-)

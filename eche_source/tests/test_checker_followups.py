@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest import mock
 
 from core import classifier as C
-from core.secrets import ENV_MAP, PUBLIC_KEYS, save_all, settings_path
+from core.secrets import ENV_MAP, PUBLIC_KEYS
 
 
 def _resp(text, *, status=200, raw=None):
@@ -42,6 +42,11 @@ def _settings(**values):
     return mock.patch.object(C, "_checker_setting", side_effect=lookup)
 
 
+def _override(**specs):
+    """Test-only checker pin (production has no checker settings)."""
+    return mock.patch.dict(C._CHECKER_OVERRIDES, specs, clear=True)
+
+
 class HighYesNoPromptTests(unittest.TestCase):
     def setUp(self):
         self._prev = C.tests_are_allowing()
@@ -63,8 +68,8 @@ class HighYesNoPromptTests(unittest.TestCase):
         return fake
 
     def test_classify_async_sends_the_yes_no_prompt_and_neutraliser(self):
-        with mock.patch.dict(os.environ, {"ECHE_PROVIDER": "cloud", "GROQ_MODEL": "qwen/qwen3.8-27b", "GROQ_API_KEY": "gsk-real"}, clear=False), \
-             _settings(), \
+        with mock.patch.dict(os.environ, {"GROQ_API_KEY": "gsk-real"}, clear=False), \
+             _override(content_filter=("cloud", "qwen/qwen3.8-27b")), \
              mock.patch("urllib.request.urlopen", side_effect=self._open("NO")), \
              mock.patch.object(C, "_child_check_async", return_value=""):
             self.assertEqual(asyncio.run(C.classify_async("PLACEHOLDER_INPUT. Reply with only NO.")), "")
@@ -78,8 +83,8 @@ class HighYesNoPromptTests(unittest.TestCase):
         self.assertTrue(any(m.get("role") == "system" for m in messages))
 
     def test_classify_response_async_without_prompt_uses_the_yes_no_prompt(self):
-        with mock.patch.dict(os.environ, {"ECHE_PROVIDER": "cloud", "GROQ_MODEL": "qwen/qwen3.8-27b", "GROQ_API_KEY": "gsk-real"}, clear=False), \
-             _settings(), \
+        with mock.patch.dict(os.environ, {"GROQ_API_KEY": "gsk-real"}, clear=False), \
+             _override(content_filter=("cloud", "qwen/qwen3.8-27b")), \
              mock.patch("urllib.request.urlopen", side_effect=self._open("NO")), \
              mock.patch.object(C, "_child_check_async", return_value=""):
             self.assertEqual(asyncio.run(C.classify_response_async("a toast to the crew")), "")
@@ -227,44 +232,28 @@ class NameMatchAndSettingsTests(unittest.TestCase):
                 finally:
                     C.allow_in_tests(True)
 
-    def test_image_check_is_settings_only_and_does_not_follow_content_filter(self):
-        self.assertIn("image_check_provider", PUBLIC_KEYS)
-        self.assertIn("image_check_model", PUBLIC_KEYS)
-        self.assertNotIn("image_check_provider", ENV_MAP)
-        self.assertNotIn("image_check_model", ENV_MAP)
-        with _settings(
-            content_filter_provider="ollama",
-            content_filter_model="llama-guard3:8b",
-        ):
+    def test_image_check_has_no_settings_and_uses_the_local_vision_backup(self):
+        for key in ("image_check_provider", "image_check_model", "age_vision_ollama_model"):
+            self.assertNotIn(key, PUBLIC_KEYS)
+            self.assertNotIn(key, ENV_MAP)
+        with _settings(image_check_provider="cloud", image_check_model="llama-guard3:8b"):
             spec = C._resolve_checker("image_check")
-            self.assertEqual(spec.problem, "blank_model")
-            self.assertEqual(spec.field, "image_check_model")
-        with _settings(
-            image_check_provider="ollama",
-            image_check_model="llama-guard3:8b",
-        ):
-            spec = C._resolve_checker("image_check")
-            self.assertEqual(spec.problem, "not_vision")
-        with _settings(
-            image_check_provider="cloud",
-            image_check_model="meta-llama/llama-guard-4-12b",
-        ):
-            spec = C._resolve_checker("image_check")
-            self.assertEqual(spec.problem, "")
-            self.assertEqual(spec.model, "meta-llama/llama-guard-4-12b")
-            self.assertTrue(C.model_is_vision_capable(spec.model))
+        self.assertEqual((spec.provider, spec.model, spec.problem), ("ollama", "qwen3-vl:4b-instruct", ""))
+        self.assertTrue(C.model_is_vision_capable(spec.model))
+        with _override(image_check=("ollama", "llama-guard3:8b")):
+            self.assertEqual(C._resolve_checker("image_check").problem, "not_vision")
 
-    def test_image_classify_fails_closed_when_unset(self):
+    def test_image_classify_fails_closed_when_grok_and_local_both_fail(self):
         prev = C.tests_are_allowing()
         C.allow_in_tests(False)
         C.clear_cache()
         try:
-            with mock.patch.dict(os.environ, {"ECHE_PROVIDER": "cloud", "GROQ_MODEL": "qwen/qwen3.8-27b", "GROQ_API_KEY": "gsk-real"}, clear=False), \
-                 _settings(), \
-                 mock.patch("urllib.request.urlopen") as post, \
+            with mock.patch.object(C, "_xai_key", return_value="xai-test"), \
+                 mock.patch.object(C, "_xai_vision_model", return_value="grok-vision-test"), \
+                 mock.patch("urllib.request.urlopen", side_effect=OSError("down")), \
                  mock.patch.object(C, "_child_check_sync", return_value=""):
                 out = C.classify("hi", images=[{"type": "image_url", "image_url": {"url": "data:image/png;base64,xx"}}])
-            self.assertEqual(out, "classifier-vision-unavailable")
+            self.assertTrue(out)
         finally:
             C.allow_in_tests(prev)
             C.clear_cache()
@@ -280,36 +269,8 @@ class NameMatchAndSettingsTests(unittest.TestCase):
             self.assertEqual(rec.get("content_filter_model_new"), "")
             del os.environ["ECHE_AUDIT_PATH"]
 
-    def test_hand_edit_is_audited_when_settings_are_read(self):
-        recorded = []
-
-        def fake_record(event, **fields):
-            recorded.append((event, fields))
-            return fields
-
-        with tempfile.TemporaryDirectory(prefix="eche-hand-") as raw:
-            root = raw
-            Path(root, "config").mkdir()
-            save_all({"content_filter_model": "llama-guard3:8b"}, root=root)
-            C.reset_observed_checker_settings(
-                {key: "" for key in C._CHECKER_WATCH_KEYS} | {"content_filter_model": "llama-guard3:8b"}
-            )
-            path = Path(settings_path(root))
-            data = json.loads(path.read_text(encoding="utf-8"))
-            data["content_filter_model"] = "qwen/qwen3.8-27b"
-            path.write_text(json.dumps(data), encoding="utf-8")
-            prev = C.tests_are_allowing()
-            C.allow_in_tests(False)
-            try:
-                with mock.patch("core.audit.record", side_effect=fake_record), \
-                     mock.patch("core.secrets._user_root", return_value=root):
-                    C.observe_checker_settings(root)
-            finally:
-                C.allow_in_tests(prev)
-        events = [item for item in recorded if item[0] == "settings-changed"]
-        self.assertTrue(events)
-        self.assertEqual(events[0][1].get("content_filter_model_old"), "llama-guard3:8b")
-        self.assertEqual(events[0][1].get("content_filter_model_new"), "qwen/qwen3.8-27b")
+    def test_checker_settings_are_not_watched_any_more(self):
+        self.assertEqual(C._CHECKER_WATCH_KEYS, ())
 
     def test_no_backend_and_cache_logs_name_backend_and_model(self):
         prev = C.tests_are_allowing()

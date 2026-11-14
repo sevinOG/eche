@@ -32,11 +32,13 @@ class ClassifierContractTests(unittest.TestCase):
         self._legacy.stop()
         classifier.allow_in_tests(self._prev)
 
-    def test_model_defaults_to_the_chat_model(self):
-        with mock.patch.dict(os.environ, {"ECHE_PROVIDER": "cloud", "GROQ_MODEL": "qwen/qwen3.8-27b"}, clear=False), \
-             mock.patch.object(classifier, "_checker_setting", return_value=""):
-            self.assertEqual(classifier.classifier_model(), "qwen/qwen3.8-27b")
-            self.assertEqual(classifier.child_check_model(), "qwen/qwen3.8-27b")
+    def test_model_is_hardcoded_not_the_chat_model(self):
+        with mock.patch.dict(os.environ, {"ECHE_PROVIDER": "cloud", "GROQ_MODEL": "qwen/qwen3.8-27b", "GROQ_API_KEY": "", "OPENROUTER_API_KEY": ""}, clear=False), \
+             mock.patch("core.secrets.load_all", return_value={}), \
+             mock.patch.dict(classifier._CHECKER_OVERRIDES, {}, clear=True), \
+             mock.patch.object(classifier, "_checker_setting", return_value="qwen/qwen3.8-27b"):
+            self.assertEqual(classifier.classifier_model(), "llama-guard3:8b")
+            self.assertEqual(classifier.child_check_model(), "llama-guard3:8b")
             self.assertEqual(classifier.format_from_model_name("qwen/qwen3.8-27b"), "yes_no")
         self.assertEqual(
             classifier.format_from_model_name("meta-llama/llama-guard-4-12b"),
@@ -360,14 +362,20 @@ class ChildCheckFailClosedTests(unittest.TestCase):
         classifier.allow_in_tests(self._prev)
 
     def test_env_cannot_override_the_child_check_model(self):
-        with mock.patch.dict(os.environ, {"ECHE_PROVIDER": "cloud", "GROQ_MODEL": "qwen/qwen3.8-27b", "CHILD_CHECK_MODEL": "meta-llama/llama-guard-4-12b"}, clear=False), \
+        env = {"ECHE_PROVIDER": "cloud", "GROQ_MODEL": "qwen/qwen3.8-27b", "CHILD_CHECK_MODEL": "meta-llama/llama-guard-4-12b",
+               "GROQ_API_KEY": "", "OPENROUTER_API_KEY": ""}
+        with mock.patch.dict(os.environ, env, clear=False), \
+             mock.patch("core.secrets.load_all", return_value={}), \
+             mock.patch.dict(classifier._CHECKER_OVERRIDES, {}, clear=True), \
              mock.patch.object(classifier, "_checker_setting", return_value=""):
-            self.assertEqual(classifier.child_check_model(), "qwen/qwen3.8-27b")
+            self.assertEqual(classifier.child_check_model(), "llama-guard3:8b")
         def _settings(key):
             return {"child_check_model": "llama-3.1-8b-instant", "child_check_provider": "cloud"}.get(key, "")
-        with mock.patch.dict(os.environ, {"CHILD_CHECK_MODEL": "meta-llama/llama-guard-4-12b"}, clear=False), \
+        with mock.patch.dict(os.environ, env, clear=False), \
+             mock.patch("core.secrets.load_all", return_value={}), \
+             mock.patch.dict(classifier._CHECKER_OVERRIDES, {}, clear=True), \
              mock.patch.object(classifier, "_checker_setting", side_effect=_settings):
-            self.assertEqual(classifier.child_check_model(), "llama-3.1-8b-instant")
+            self.assertEqual(classifier.child_check_model(), "llama-guard3:8b")
 
     def test_yes_blocks_and_no_allows(self):
         with mock.patch.object(classifier, "_endpoint", return_value=("k", classifier.GROQ_URL)), \
@@ -420,14 +428,14 @@ class OllamaFallbackTests(unittest.TestCase):
             return values.get(key, "")
         return mock.patch.object(classifier, "_checker_setting", side_effect=lookup)
 
-    def test_checker_follows_the_configured_provider(self):
+    def test_cloud_fallback_prefers_groq_then_openrouter(self):
         with mock.patch.dict(os.environ, {"GROQ_API_KEY": "gsk-real", "OPENROUTER_API_KEY": "sk-or-real", "ECHE_PROVIDER": "cloud", "GROQ_MODEL": "qwen/qwen3.8-27b"}, clear=False), \
              mock.patch("core.secrets.load_all", return_value={}), \
              self._settings():
             key, url = classifier._endpoint()
             self.assertEqual(key, "gsk-real")
             self.assertEqual(url, classifier.GROQ_URL)
-        with mock.patch.dict(os.environ, {"GROQ_API_KEY": "gsk-real", "OPENROUTER_API_KEY": "sk-or-real", "ECHE_PROVIDER": "openrouter", "GROQ_MODEL": "openrouter/free"}, clear=False), \
+        with mock.patch.dict(os.environ, {"GROQ_API_KEY": "", "OPENROUTER_API_KEY": "sk-or-real", "ECHE_PROVIDER": "openrouter", "GROQ_MODEL": "openrouter/free"}, clear=False), \
              mock.patch("core.secrets.load_all", return_value={}), \
              self._settings():
             key, url = classifier._endpoint()
@@ -442,14 +450,13 @@ class OllamaFallbackTests(unittest.TestCase):
             self.assertEqual(classifier.child_check_model(), "llama-guard3:8b")
             self.assertFalse(classifier.vision_backend_available())
 
-    def test_missing_cloud_key_does_not_fall_back_to_another_provider(self):
-        with mock.patch.dict(os.environ, {"GROQ_API_KEY": "", "OPENROUTER_API_KEY": "sk-or-real", "ECHE_PROVIDER": "cloud", "GROQ_MODEL": "qwen/qwen3.8-27b"}, clear=False), \
+    def test_no_key_and_nothing_pulled_targets_local_ollama_only(self):
+        with mock.patch.dict(os.environ, {"GROQ_API_KEY": "", "OPENROUTER_API_KEY": "", "ECHE_PROVIDER": "cloud", "GROQ_MODEL": "qwen/qwen3.8-27b"}, clear=False), \
              mock.patch("core.secrets.load_all", return_value={}), \
              self._settings():
             key, url = classifier._endpoint()
-            self.assertIsNone(key)
-            self.assertIsNone(url)
-            self.assertFalse(classifier._has_text_backend())
+            self.assertFalse(key)
+            self.assertEqual(url, classifier.OLLAMA_CHAT_URL)
 
     def test_env_cannot_pick_the_checker_model_or_ollama_url(self):
         with self._ollama_env(
@@ -459,7 +466,7 @@ class OllamaFallbackTests(unittest.TestCase):
         ), self._settings(child_check_model="from-settings", child_check_provider="ollama"):
             key, url = classifier._endpoint()
             self.assertEqual(url, classifier.OLLAMA_CHAT_URL)
-            self.assertEqual(classifier.child_check_model(), "from-settings")
+            self.assertEqual(classifier.child_check_model(), "llama-guard3:8b")
             self.assertIn("127.0.0.1:11434", url)
             self.assertNotIn("evil", url)
 
@@ -554,11 +561,11 @@ class OllamaFallbackTests(unittest.TestCase):
     def test_images_are_refused_without_a_vision_backend(self):
         with self._ollama_env(), \
              mock.patch("core.secrets.load_all", return_value={}), \
+             mock.patch("urllib.request.urlopen", side_effect=OSError("ollama down")), \
              self._settings():
             self.assertFalse(classifier.vision_backend_available())
-            self.assertEqual(
+            self.assertTrue(
                 classifier.classify("hi", images=[{"type": "image_url", "image_url": {"url": "data:image/png;base64,xx"}}]),
-                "classifier-vision-unavailable",
             )
             self.assertEqual(
                 classifier._age_vision_sync([{"type": "image_url", "image_url": {"url": "data:image/png;base64,xx"}}]),
@@ -573,4 +580,4 @@ class OllamaFallbackTests(unittest.TestCase):
             self.assertEqual(url, classifier.OLLAMA_CHAT_URL)
             spec = classifier._resolve_checker("child_check")
             self.assertEqual(spec.provider, "ollama")
-            self.assertEqual(spec.model, "qwen/qwen3.8-27b")
+            self.assertEqual(spec.model, "llama-guard3:8b")

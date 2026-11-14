@@ -237,38 +237,30 @@ _CONFIG_HINTS: list[tuple[str, str, str, str]] = [
         "Create a venv in the source folder and install dependencies first.",
     ),
     (
-        "content_filter_model",
-        "Content filter model is missing",
-        "The content filter could not find the model named in Settings → Provider & model "
-        "under content_filter_model (or the chat model, if that field is blank). "
-        "Providers retire models. Set a current model in that field. The check does not "
-        "fall back to another model and is not skipped.",
-        "Update content_filter_model, or the chat model if the field is blank, then save.",
+        "Age-vision model is missing",
+        "Age-vision model problem",
+        "The built-in age check for images could not run (model missing, timed out, "
+        "or gave an unclear answer), so the image was blocked. The model is built in "
+        "and has no setting.",
+        "Run `ollama pull qwen3-vl:4b-instruct` on this PC, or add a Groq or "
+        "OpenRouter key for the cloud fallback.",
     ),
     (
-        "child_check_model",
-        "Child check model is missing",
-        "The child check could not find the model named in Settings → Provider & model "
-        "under child_check_model (or the chat model, if that field is blank). "
-        "Providers retire models. Set a current model in that field. The check does not "
-        "fall back to another model and is not skipped.",
-        "Update child_check_model, or the chat model if the field is blank, then save.",
-    ),
-    (
-        "image_check_model",
-        "Image content check model is missing",
-        "The image content check could not find the vision model named in Settings "
-        "under image_check_model. This check does not follow the text content filter "
-        "or the chat model. The check does not fall back to another model and is not skipped.",
-        "Set image_check_provider and a vision-capable image_check_model, then save.",
+        "; the image was blocked",
+        "Age-vision model problem",
+        "The built-in age check for images could not run (model missing, timed out, "
+        "or gave an unclear answer), so the image was blocked. The model is built in "
+        "and has no setting.",
+        "Run `ollama pull qwen3-vl:4b-instruct` on this PC, or add a Groq or "
+        "OpenRouter key for the cloud fallback.",
     ),
     (
         "Safety checker model is missing",
         "Safety checker model is missing",
-        "The content filter or child check could not find its model. "
-        "Update content_filter_model or child_check_model in Settings, or the chat model "
-        "if those fields are blank. The check does not fall back to another model and is not skipped.",
-        "Set a current model, then save Settings.",
+        "A built-in image safety check could not find its model, so the image was "
+        "blocked. The checks are hardcoded and have no settings; they are never skipped.",
+        "Run the `ollama pull` command shown in the log (llama-guard3:8b or "
+        "qwen3-vl:4b-instruct), or add a Groq or OpenRouter key for the cloud fallback.",
     ),
 ]
 

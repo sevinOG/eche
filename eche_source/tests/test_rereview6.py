@@ -33,8 +33,17 @@ class Base(unittest.TestCase):
         self.env.start()
         self._legacy = patch_legacy_checker_settings()
         self._legacy.start()
+        # Finished-image vision runs on Grok vision (xAI key) first.
+        self._xai = [
+            mock.patch.object(C, "_xai_key", return_value="xai-test"),
+            mock.patch.object(C, "_xai_vision_model", return_value="grok-vision-test"),
+        ]
+        for patch in self._xai:
+            patch.start()
 
     def tearDown(self):
+        for patch in reversed(self._xai):
+            patch.stop()
         self._legacy.stop()
         self.env.stop()
         C.allow_in_tests(True)
@@ -43,20 +52,23 @@ class Base(unittest.TestCase):
     def _calls(self, text, images=None, lg4="safe", child="NO", vision="NO"):
         seen = []
 
+        def is_image_check(body):
+            return "image safety checker" in json.dumps(body)
+
         def fake(req, *a, **k):
             body = json.loads(req.data.decode())
             seen.append(body)
             model = body.get("model") or ""
             if model == C.CLASSIFIER_MODEL:
                 return _resp(lg4)
-            if "scout" in model.lower():
-                return _resp(vision)
+            if "grok-vision" in model.lower():
+                return _resp("NO" if is_image_check(body) else vision)
             return _resp(child)
 
         with mock.patch("urllib.request.urlopen", side_effect=fake):
             out = asyncio.run(C.classify_async(text, images=images))
-        child_bodies = [b for b in seen if b.get("model") != C.CLASSIFIER_MODEL and "scout" not in (b.get("model") or "").lower()]
-        vision_bodies = [b for b in seen if "scout" in (b.get("model") or "").lower()]
+        child_bodies = [b for b in seen if b.get("model") != C.CLASSIFIER_MODEL and "grok-vision" not in (b.get("model") or "").lower()]
+        vision_bodies = [b for b in seen if "grok-vision" in (b.get("model") or "").lower() and not is_image_check(b)]
         return out, child_bodies, vision_bodies
 
 

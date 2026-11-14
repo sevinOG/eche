@@ -579,18 +579,19 @@ class OfficialImagineHashTests(unittest.TestCase):
 
     def test_safety_models_ignore_env_overrides(self):
         from core.classifier import age_vision_model, child_check_model
-        from core.safety_models import AGE_VISION_DEFAULT_GROQ
         with mock.patch.dict(os.environ, {
             "AGE_VISION_MODEL": "tiny-1m",
             "CHILD_CHECK_MODEL": "tiny-1m",
             "ECHE_PROVIDER": "cloud",
             "GROQ_MODEL": "qwen/qwen3.8-27b",
-            "GROQ_API_KEY": "gsk-real",
-        }), mock.patch("core.classifier._checker_setting", return_value=""):
-            with mock.patch("core.classifier._endpoint", return_value=("k", "https://api.groq.com/openai/v1/chat/completions")):
-                # Env cannot pick the child-check model; blank settings use the chat model.
-                self.assertEqual(child_check_model(), "qwen/qwen3.8-27b")
-                self.assertEqual(age_vision_model(), AGE_VISION_DEFAULT_GROQ)
+            "GROQ_API_KEY": "",
+            "OPENROUTER_API_KEY": "",
+        }), mock.patch("core.secrets.load_all", return_value={}), \
+                mock.patch.dict("core.classifier._CHECKER_OVERRIDES", {}, clear=True), \
+                mock.patch("core.classifier._checker_setting", return_value="tiny-1m"):
+            # Env and old settings cannot pick a checker model; they are hardcoded.
+            self.assertEqual(child_check_model(), "llama-guard3:8b")
+            self.assertEqual(age_vision_model(), "qwen3-vl:4b-instruct")
 
     def test_age_vision_prompt_ignores_image_text_and_asks_after(self):
         from core.classifier import AGE_VISION_PROMPT
@@ -675,16 +676,18 @@ class OfficialImagineHashTests(unittest.TestCase):
 
     def test_dead_model_keys_are_not_in_public_keys(self):
         from core.secrets import ENV_MAP, PUBLIC_KEYS
-        # Age-vision stays pinned and is not a settings key.
         self.assertNotIn("age_vision_model", PUBLIC_KEYS)
-        # Checker models are settings-only; env cannot pick them.
+        # Checker models are hardcoded: neither settings nor env can pick them.
         for key in (
             "content_filter_provider",
             "content_filter_model",
             "child_check_provider",
             "child_check_model",
+            "image_check_provider",
+            "image_check_model",
+            "age_vision_ollama_model",
         ):
-            self.assertIn(key, PUBLIC_KEYS)
+            self.assertNotIn(key, PUBLIC_KEYS)
             self.assertNotIn(key, ENV_MAP)
 
 

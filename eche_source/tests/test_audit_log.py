@@ -463,7 +463,10 @@ REVIEWED_ENTRYPOINTS = {
     "require_owner_review": "owner review of a generated asset",
     "_post": "Llama Guard 4 HTTP classify call",
     "_child_post": "second-check instruction-model HTTP call",
-    "_age_vision_post": "age-vision HTTP call",
+    "_age_vision_post": "age-vision HTTP call (Grok vision on the xAI key)",
+    "_xai_vision_post": "Grok vision YES/NO HTTP call (age vision and image check)",
+    "_xai_vision_models_fetch": "xAI /language-models lookup for the vision model",
+    "_ollama_local_models": "local Ollama /api/tags lookup for pulled checker models",
     "_age_vision_post_ollama": "local Ollama age-vision HTTP call",
     "_post_ollama_chat": "local Llama Guard 3 classify HTTP call",
     "_post_ollama_child": "local Llama Guard 3 child-check HTTP call",
@@ -2218,6 +2221,13 @@ class AuditCompletenessTests(AuditLogTests):
 
             secret_vision = "data:image/png;base64,SECRETFRAME"
             imgs = [{"type": "image_url", "image_url": {"url": secret_vision}}]
+            _xai_patches = [
+                mock.patch.object(C, "_xai_key", return_value="gsk_test_audit_key"),
+                mock.patch.object(C, "_xai_vision_model", return_value="grok-vision-test"),
+            ]
+            for _p in _xai_patches:
+                _p.start()
+            self.addCleanup(lambda: [p.stop() for p in reversed(_xai_patches)])
             yes_v, yes_vb = _probe_classifier_http(C._age_vision_post, "age-vision", "YES", secret_vision, arg=imgs)
             no_v, no_vb = _probe_classifier_http(C._age_vision_post, "age-vision", "NO", secret_vision, arg=imgs)
             err_v, err_vb = _probe_classifier_http(
@@ -2243,6 +2253,42 @@ class AuditCompletenessTests(AuditLogTests):
             leaked_v = " ".join((yes_vb, no_vb, err_vb, bad_vb))
             if "SECRETFRAME" in leaked_v or "gsk_test_audit_key" in leaked_v:
                 gaps.append("_age_vision_post:prompt-or-key-logged")
+            for _p in reversed(_xai_patches):
+                _p.stop()
+            _xai_patches.clear()
+
+            # xAI model lookup: success and error both audited, key never logged.
+            C.reset_xai_vision_model_cache()
+            models_payload = {"models": [{"id": "grok-vision-a", "input_modalities": ["text", "image"], "output_modalities": ["text"]}]}
+            with mock.patch.object(C, "_xai_key", return_value="gsk_test_audit_key"):
+                ok_m, ok_mb = _probe_classifier_http(
+                    lambda _arg: C._xai_vision_models_fetch(), "vision-models", "", "x",
+                    side=lambda *a, **k: _HttpOk("", raw=json.dumps(models_payload).encode()),
+                )
+                err_m, err_mb = _probe_classifier_http(
+                    lambda _arg: C._xai_vision_models_fetch(), "vision-models", "", "x", expect_error=True,
+                    side=lambda *a, **k: (_ for _ in ()).throw(TimeoutError("deadline")),
+                )
+            if not ok_m or not err_m:
+                gaps.append("_xai_vision_models_fetch")
+            if "gsk_test_audit_key" in " ".join((ok_mb, err_mb)):
+                gaps.append("_xai_vision_models_fetch:key-logged")
+
+            # Ollama tag lookup: success and error both audited.
+            tags = C._ollama_local_models_real if hasattr(C, "_ollama_local_models_real") else C._ollama_local_models
+            C.reset_ollama_model_cache()
+            ok_t, _ = _probe_classifier_http(
+                lambda _arg: tags(), "ollama-tags", "", "x",
+                side=lambda *a, **k: _HttpOk("", raw=json.dumps({"models": [{"name": "llama-guard3:8b"}]}).encode()),
+            )
+            C.reset_ollama_model_cache()
+            err_t, _ = _probe_classifier_http(
+                lambda _arg: tags(), "ollama-tags", "", "x", expect_error=True,
+                side=lambda *a, **k: (_ for _ in ()).throw(OSError("refused")),
+            )
+            C.reset_ollama_model_cache()
+            if not ok_t or not err_t:
+                gaps.append("_ollama_local_models")
 
             ollama_ep = ("", C.OLLAMA_CHAT_URL)
             ok_o, ok_ob = _probe_classifier_http(

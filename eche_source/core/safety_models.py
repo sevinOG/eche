@@ -1,7 +1,7 @@
 # core/safety_models.py
-# Age-vision models stay pinned (Scout). The text content filter and
-# child check are chosen from Settings or the chat model in classifier.py;
-# the child-check names below are historical and are not used as pins.
+# Historical model names. The live checker models are hardcoded in
+# core/classifier.py (local llama-guard3:8b and qwen3-vl:4b-instruct, Grok
+# vision on the xAI key for finished images). Nothing here is a setting.
 
 from __future__ import annotations
 
