@@ -44,7 +44,7 @@ class FooterTests(unittest.TestCase):
         self.assertEqual(sf.SAFETY_FOOTER, sf.render_safety_footer(sf.SAFETY_CATEGORIES))
         self.assertIn("Absolute ban: no children", sf.SAFETY_FOOTER)
         self.assertIn("non-consent", sf.SAFETY_FOOTER)
-        self.assertIn("real people", sf.SAFETY_FOOTER)
+        self.assertIn("real person", sf.SAFETY_FOOTER)
         self.assertIn("self-harm", sf.SAFETY_FOOTER)
         self.assertIn("weapons", sf.SAFETY_FOOTER)
         self.assertIn("hate", sf.SAFETY_FOOTER)
@@ -60,9 +60,10 @@ class FooterTests(unittest.TestCase):
                 "minors",
                 "nonconsent",
                 "real-person-sexual",
+                "public-figures",
                 "self-harm",
                 "violence-weapons-drugs-malware",
-                "hate-harassment",
+                "hate-threats",
                 "doxxing",
                 "illegal",
                 "jailbreak",
@@ -170,7 +171,7 @@ class PathFooterTests(unittest.TestCase):
             self.assertIn(name, source)
 
 
-FOOTER_SHA = "66e2062573080eb6f55015acabf38fc33848fbfa8d450a2821918196b464d7f1"
+FOOTER_SHA = "dbb7d6ac3c29129fde736329e121f46d64827bf842f544c8c8fed7f60c669ec5"
 _IMG = [{"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}]
 
 

@@ -26,8 +26,17 @@ SAFETY_CATEGORIES = (
     ),
     (
         "real-person-sexual",
-        "No sexual content involving real people, and no sexual impersonation "
-        "of a real person.",
+        "No sexual content about any real person other than the user you are "
+        "talking to, and no sexual impersonation of a real person. Flirting or "
+        "sexual content aimed at the user who is asking is allowed. Hitting on, "
+        "sexualizing, or describing sex with any other real person, including "
+        "another server member, is not allowed, whoever asks.",
+    ),
+    (
+        "public-figures",
+        "Politicians, celebrities, and other public figures: no sexual content "
+        "about them and no impersonating them. Ordinary non-sexual criticism of "
+        "them is fine.",
     ),
     (
         "self-harm",
@@ -38,8 +47,12 @@ SAFETY_CATEGORIES = (
         "No instructions for violence, weapons, drugs, or malware.",
     ),
     (
-        "hate-harassment",
-        "No hate or harassment.",
+        "hate-threats",
+        "No hate against people for race, ethnicity, religion, gender, "
+        "sexuality, disability, or similar traits. When a user asks, crude "
+        "roasts, insults, and tirades aimed at real server members are "
+        "allowed. Threats, intimidation, and encouraging real-world harm "
+        "against anyone are not.",
     ),
     (
         "doxxing",

@@ -1778,6 +1778,28 @@ def match(text: str) -> str:
     return term
 
 
+# Short reasons for keyword-rule blocks. The matched text is never logged.
+_NOTE_REASONS = (
+    ("-age-vision-yes", "vision: flagged"),
+    ("-age-vision-unsure", "vision: uncertain"),
+    ("-age-vision-error", "vision: checker error"),
+    ("-classifier-error", "checker error"),
+    ("-age", "keyword: under-age number in text"),
+    ("-always", "keyword: child term in text"),
+    ("-context", "keyword: young cue in sexual text"),
+    ("-extra", "keyword: extra blocked word"),
+)
+
+
+def note_reason(where: str) -> str:
+    """A short reason for a block name such as llm-input-age. Empty if unknown."""
+    name = str(where or "")
+    for suffix, reason in _NOTE_REASONS:
+        if name.endswith(suffix):
+            return reason
+    return ""
+
+
 def note(where: str) -> None:
     """One log line. The blocked text itself is not logged. Includes the footer hash."""
     digest = ""
@@ -1788,11 +1810,16 @@ def note(where: str) -> None:
     except Exception:
         digest = ""
     extra = f", footer sha256={digest}" if digest else ""
-    line = f"Blocked ({where}){extra}."
+    reason = note_reason(where)
+    why = f", reason={reason}" if reason else ""
+    line = f"Blocked ({where}){why}{extra}."
     try:
         from core.audit import block as audit_block
 
-        audit_block(where, footer_hash=digest)
+        if reason:
+            audit_block(where, footer_hash=digest, reason=reason)
+        else:
+            audit_block(where, footer_hash=digest)
         return
     except Exception:
         pass

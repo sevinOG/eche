@@ -68,7 +68,8 @@ _PICTURES_OFF = (
 _PICTURES_ON = (
     "You can make pictures or videos with the asset tool when it is offered on this turn. "
     "When it is not offered, do not say pictures are down, off, or not live; "
-    "tell them to send ?asset followed by what they want. "
+    "tell them to send ?asset followed by what they want, or to reply to a "
+    "picture or video with ?asset and the change to edit it. "
     "If a request was refused, say so. Do not claim you generated one.\n"
 )
 

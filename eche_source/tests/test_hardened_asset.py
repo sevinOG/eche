@@ -64,7 +64,7 @@ INCIDENT = (
     "horribly as match girl watches in horror at her boyfriend burning"
 )
 INCIDENT_COMMAND = "?asset " + INCIDENT
-FOOTER_HASH = "66e2062573080eb6f55015acabf38fc33848fbfa8d450a2821918196b464d7f1"
+FOOTER_HASH = "dbb7d6ac3c29129fde736329e121f46d64827bf842f544c8c8fed7f60c669ec5"
 HAS_FFMPEG = bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))
 
 
@@ -158,11 +158,13 @@ class HardenedAssetTests(unittest.TestCase):
         with self.assertRaises(ImagineError):
             request_for(plan, PreparedPrompt(user_prompt="x", sent_prompt="", footer_hash=FOOTER_HASH))
 
-    def test_plan_asset_refuses_source_edits(self):
+    def test_plan_asset_refuses_sources_that_are_not_checked_media(self):
+        # Edits need a real AssetSource (image or video) from a reply; any
+        # other object is refused before planning goes further.
         source = type("Src", (), {"data": b"\xff\xd8\xff" + b"\x00" * 8, "mime": "image/jpeg"})()
         with self.assertRaises(ImagineError) as raised:
             plan_asset("make her dance", source=source)
-        self.assertIn("not available", raised.exception.text)
+        self.assertIn("can be edited", raised.exception.text)
 
     def test_http_json_does_not_matcher_scan_the_sent_body(self):
         sent, _ = build_sent_prompt("a red paper boat")

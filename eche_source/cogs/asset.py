@@ -20,7 +20,7 @@ class Asset(commands.Cog):
 
     @commands.command(name="asset")
     async def asset(self, ctx, *, prompt: str = ""):
-        """Make a picture or a video."""
+        """Make a picture or a video, or reply to one to edit it."""
         is_owner = False
         try:
             from core.admin_tools import author_is_owner
@@ -42,7 +42,12 @@ class Asset(commands.Cog):
             return
         mode = gate["mode"]
         try:
-            plan = plan_asset(prompt, asset_mode=mode)
+            # Replying to a picture or video edits it; the command text is
+            # the instruction. A reply without media makes a new asset.
+            from core.asset_source import source_from_reply
+
+            source = await source_from_reply(getattr(ctx, "message", None))
+            plan = plan_asset(prompt, asset_mode=mode, source=source)
             result = await run_asset(plan, api_key(), asset_mode=mode, is_owner=bool(gate.get("owner")), **ids)
             result = await require_owner_review(
                 result,

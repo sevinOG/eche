@@ -39,7 +39,7 @@ from core.imagine import ADULT_CHANNEL_REFUSAL, plan_asset, refuse_speaker
 from core.secrets import couple_asset_toggles
 from core.safety import footer_sha256
 
-FOOTER_HASH = "66e2062573080eb6f55015acabf38fc33848fbfa8d450a2821918196b464d7f1"
+FOOTER_HASH = "dbb7d6ac3c29129fde736329e121f46d64827bf842f544c8c8fed7f60c669ec5"
 
 
 class _Channel:

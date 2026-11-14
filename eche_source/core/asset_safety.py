@@ -60,6 +60,8 @@ MISSING_KEY = (
 OUTPUT_REFUSAL = "That one was blocked and was not posted."
 OUTPUT_UNCHECKED = "I could not check that file, so it was not posted."
 VISION_UNAVAILABLE = "Image checks are unavailable, so the file was not posted."
+SOURCE_REFUSAL = "The picture or video you replied to did not pass the safety check, so it was not edited."
+SOURCE_UNCHECKED = "I could not check the file you replied to, so nothing was edited."
 MEDIA_FILTER_REFUSAL = OUTPUT_REFUSAL
 
 FRAME_FPS = 8
@@ -756,6 +758,7 @@ async def _classify_image(
     request_id: str = "",
     response_id: str = "",
     mode: AssetMode | None = None,
+    stage: str = "output",
 ) -> None:
     from core.blocklist import note
     from core.classifier import age_vision_async, classify_media_async
@@ -771,10 +774,14 @@ async def _classify_image(
         response_id=response_id,
         mode=snap,
     )
+    source = stage == "source"
+    refused = SOURCE_REFUSAL if source else OUTPUT_REFUSAL
+    unchecked = SOURCE_UNCHECKED if source else OUTPUT_UNCHECKED
+    tag = "source-" if source else ""
     part = _image_part(data, mime)
     if part is None:
-        _audit("refusal", category="unreadable-output", **ids)
-        raise ImagineError(OUTPUT_UNCHECKED)
+        _audit("refusal", category=f"unreadable-{stage}", **ids)
+        raise ImagineError(unchecked)
     # Pixels only. The text checkers (Llama Guard 3 is text-only) must not
     # judge a fixed instruction string: it names minors, so it was flagged
     # S1/S4 on every finished image, even a car.
@@ -786,21 +793,21 @@ async def _classify_image(
     except Exception:
         verdict = "classifier-error"
     if verdict == "classifier-image-unsupported":
-        note("asset-output-vision")
-        _audit("refusal", category=verdict, **ids)
+        note(f"asset-{stage}-vision")
+        _audit("refusal", category=tag + verdict, **ids)
         raise ImagineError(VISION_UNAVAILABLE)
     if verdict:
-        note(f"asset-output-{verdict}")
-        _audit("refusal", category=verdict, **ids)
-        raise ImagineError(OUTPUT_REFUSAL)
+        note(f"asset-{stage}-{verdict}")
+        _audit("refusal", category=tag + verdict, **ids)
+        raise ImagineError(refused)
     try:
         age = await age_vision_async([part], adult=snap.adult)
     except Exception:
         age = "age-vision-error"
     if age:
-        note(f"asset-output-{age}")
-        _audit("refusal", category=age, **ids)
-        raise ImagineError(OUTPUT_REFUSAL)
+        note(f"asset-{stage}-{age}")
+        _audit("refusal", category=tag + age, **ids)
+        raise ImagineError(refused)
 
 
 async def check_generated_media(
@@ -814,6 +821,7 @@ async def check_generated_media(
     request_id: str = "",
     response_id: str = "",
     mode: AssetMode | None = None,
+    stage: str = "output",
 ) -> None:
     """Classify one image, or every required frame. Fail closed. No retries."""
     from core.imagine import ImagineError
@@ -833,8 +841,8 @@ async def check_generated_media(
     if needs_frames:
         frames = extract_video_frames(data, mime)
         if not frames:
-            _audit("refusal", category="frame-extract", **ids)
-            raise ImagineError(OUTPUT_UNCHECKED)
+            _audit("refusal", category="frame-extract" if stage == "output" else f"{stage}-frame-extract", **ids)
+            raise ImagineError(SOURCE_UNCHECKED if stage == "source" else OUTPUT_UNCHECKED)
         for frame in frames:
             await _classify_image(
                 frame,
@@ -846,6 +854,7 @@ async def check_generated_media(
                 request_id=request_id,
                 response_id=response_id,
                 mode=snap,
+                stage=stage,
             )
         return
     await _classify_image(
@@ -858,4 +867,33 @@ async def check_generated_media(
         request_id=request_id,
         response_id=response_id,
         mode=snap,
+        stage=stage,
+    )
+
+
+async def check_source_media(
+    data: bytes,
+    mime: str,
+    *,
+    footer_hash: str,
+    user_id=None,
+    guild_id=None,
+    channel_id=None,
+    mode: AssetMode | None = None,
+) -> None:
+    """The same hardcoded checks as a finished file, on an edit source.
+
+    Runs before the source is sent anywhere. Every frame of a video is
+    checked. Fails closed. A source block does not lock the requester:
+    they may have replied to someone else's post.
+    """
+    await check_generated_media(
+        data,
+        mime,
+        footer_hash=footer_hash,
+        user_id=user_id,
+        guild_id=guild_id,
+        channel_id=channel_id,
+        mode=mode,
+        stage="source",
     )

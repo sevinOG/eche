@@ -12,7 +12,7 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 API = "https://api.x.ai/v1"
 IMAGE_MODEL = "grok-imagine-image-2.0"
@@ -96,6 +96,8 @@ class AssetPlan:
     prompt: str
     seconds: int = DEFAULT_SECONDS
     aspect: str = ""
+    # Edit source from a replied-to message (core.asset_source.AssetSource).
+    source: object = field(default=None, repr=False)
 
 
 @dataclass
@@ -424,6 +426,20 @@ def _needs_source(text: str) -> bool:
     return bool(_SOURCE_MARK.search(text or ""))
 
 
+def _edit_plan(prompt: str, source, asset_mode=None) -> AssetPlan:
+    """An edit of the replied-to file. Same video rule as new videos."""
+    kind = getattr(source, "kind", "")
+    if kind == "video":
+        from core.asset_safety import video_allowed
+
+        if not video_allowed(asset_mode):
+            raise ImagineError("Video is not available while owner approval is off.")
+        return AssetPlan(mode="video_edit", prompt=prompt, source=source)
+    if kind == "image":
+        return AssetPlan(mode="image_edit", prompt=prompt, source=source)
+    raise ImagineError("Only pictures and videos can be edited.")
+
+
 def plan_asset(text: str, *, kind: str = "", source=None, asset_mode=None) -> AssetPlan:
     """Decide image, video, edit, or image-to-video. Raises ImagineError when the ask is not one of those."""
     raw = _words(text)
@@ -443,19 +459,17 @@ def plan_asset(text: str, *, kind: str = "", source=None, asset_mode=None) -> As
         lead, rest = _leading_kind(raw)
         if lead == explicit:
             prompt = _words(rest)
-    if source is not None:
-        raise ImagineError(
-            "Editing, image-to-video and video-edit are not available. "
-            "Describe a new picture or video instead."
-        )
     if not prompt:
+        if source is not None:
+            raise ImagineError("Say what to change. Reply to it with `?asset make the sky purple`")
         raise ImagineError("Say what to make. `?asset a red paper boat`")
     if len(prompt) > MAX_PROMPT:
         prompt = prompt[:MAX_PROMPT].rstrip()
+    if source is not None:
+        return _edit_plan(prompt, source, asset_mode)
     if _needs_source(raw):
         raise ImagineError(
-            "Editing, image-to-video and video-edit are not available. "
-            "Describe a new picture or video instead."
+            "To edit a picture or video, reply to it with `?asset` and the change."
         )
     visual = asked in ("image", "video") or _has_word(prompt, _VIDEO_WORDS + _IMAGE_WORDS)
     if source is None and not visual and _has_word(prompt, _AUDIO_WORDS):
@@ -923,9 +937,30 @@ async def _run_asset_reserved(plan, key, snap, ids, get_backend, prepare_generat
         channel_id=channel_id,
         mode=snap,
     )
+    source = getattr(plan, "source", None)
+    if source is not None:
+        # The replied-to file goes through the same hardcoded child checks
+        # as a finished file (Grok vision, local backup, fail closed)
+        # BEFORE anything is sent to the provider.
+        from core.asset_safety import check_source_media
+
+        require_enabled(snap, user_id=user_id, guild_id=guild_id, channel_id=channel_id)
+        await check_source_media(
+            source.data,
+            source.mime,
+            footer_hash=prepared.footer_hash,
+            user_id=user_id,
+            guild_id=guild_id,
+            channel_id=channel_id,
+            mode=snap,
+        )
+        require_enabled(snap, user_id=user_id, guild_id=guild_id, channel_id=channel_id)
+    elif plan.mode in ("image_edit", "video_edit"):
+        raise ImagineError("Reply to a picture or video with `?asset` to edit it.")
     backend = get_backend()
     path, body = request_for(plan, prepared)
-    timeout = 180 if plan.mode == "video" else 120
+    is_video = "video" in plan.mode
+    timeout = 180 if is_video else 120
     job_ids: dict[str, str] = {}
 
     def _post():
@@ -936,7 +971,7 @@ async def _run_asset_reserved(plan, key, snap, ids, get_backend, prepare_generat
         _status, payload = posted
         job_ids = posted.ids() if hasattr(posted, "ids") else {}
         require_enabled(snap, user_id=user_id, guild_id=guild_id, channel_id=channel_id)
-        if plan.mode == "image":
+        if not is_video:
             url = backend.image_url(payload)
         else:
             request_id = backend.video_start_id(payload)

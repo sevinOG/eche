@@ -80,7 +80,7 @@ class ChatTextHasNoModelChecksTests(unittest.TestCase):
         from core.safety import SAFETY_FOOTER, footer_sha256, prepare_llm_messages
         self.assertEqual(
             footer_sha256(),
-            "66e2062573080eb6f55015acabf38fc33848fbfa8d450a2821918196b464d7f1",
+            "dbb7d6ac3c29129fde736329e121f46d64827bf842f544c8c8fed7f60c669ec5",
         )
         messages = prepare_llm_messages([{"role": "user", "content": "Hey"}])
         blob = "\n".join(

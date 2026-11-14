@@ -7,11 +7,26 @@ from __future__ import annotations
 
 from typing import Protocol
 
-# Official xAI Imagine models. Edit / image-to-video / video-edit are not
-# offered (source media is never sent to the provider).
+# Official xAI Imagine models. Edits use a source file from a replied-to
+# message, sent inline as a data URI only after it passed the child checks
+# in core.imagine. Image-to-video is not offered.
 API = "https://api.x.ai/v1"
 IMAGE_MODEL = "grok-imagine-image-2.0"
 VIDEO_MODEL = "grok-imagine-video-1.5-lite"
+# Video editing is only documented on this model (source <= 8.7 s, MP4).
+VIDEO_EDIT_MODEL = "grok-imagine-video"
+
+
+def _data_uri(source) -> str:
+    import base64
+
+    mime = getattr(source, "mime", "") or ""
+    data = getattr(source, "data", b"") or b""
+    if not data or not mime:
+        from core.imagine import ImagineError
+
+        raise ImagineError("I couldn't read the file you replied to, so nothing was edited.")
+    return f"data:{mime};base64," + base64.b64encode(data).decode("ascii")
 
 
 class AssetBackend(Protocol):
@@ -50,11 +65,27 @@ class XaiImagineBackend:
         if not prompt.strip():
             raise ImagineError("Safety rules could not be applied, so nothing was generated.")
         mode = getattr(plan, "mode", "") or "image"
-        if mode in {"image_edit", "image_video", "video_edit"} or getattr(plan, "source", None) is not None:
-            raise ImagineError(
-                "Editing, image-to-video and video-edit are not available. "
-                "Describe a new picture or video instead."
-            )
+        source = getattr(plan, "source", None)
+        if mode == "image_video":
+            raise ImagineError("Image-to-video is not available. Describe a new video instead.")
+        if mode in {"image_edit", "video_edit"}:
+            kind = getattr(source, "kind", "")
+            if source is None or kind != mode.split("_", 1)[0]:
+                raise ImagineError("Reply to a picture or video with `?asset` to edit it.")
+            if mode == "image_edit":
+                return "/images/edits", {
+                    "model": IMAGE_MODEL,
+                    "prompt": prompt,
+                    "image": {"url": _data_uri(source), "type": "image_url"},
+                }
+            # Duration, aspect and resolution follow the source.
+            return "/videos/edits", {
+                "model": VIDEO_EDIT_MODEL,
+                "prompt": prompt,
+                "video": {"url": _data_uri(source)},
+            }
+        if source is not None:
+            raise ImagineError("Reply to a picture or video with `?asset` to edit it.")
         if mode == "image":
             body: dict = {"model": IMAGE_MODEL, "prompt": prompt}
             if getattr(plan, "aspect", ""):

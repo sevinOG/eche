@@ -9,7 +9,7 @@ from core import classifier as C, client
 from tests.checker_fixtures import patch_legacy_checker_settings, start_image_path_classifier, stop_image_path_classifier
 from core.safety import SAFETY_FOOTER, USER_GUARD, MinorsBlocked
 
-SHA = "66e2062573080eb6f55015acabf38fc33848fbfa8d450a2821918196b464d7f1"
+SHA = "dbb7d6ac3c29129fde736329e121f46d64827bf842f544c8c8fed7f60c669ec5"
 
 class _R(io.BytesIO):
     def __enter__(s): return s
