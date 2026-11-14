@@ -371,7 +371,7 @@ async def _fetch_image(url: str, seen: set[str]) -> dict | None:
     return {"data": data, "mime": mime}
 
 
-async def _consume(source, label: str, blocks: list[str], images: list, labels: list[str], seen: set[str], saw_image: list, *, include_text: bool, include_embeds: bool = True) -> None:
+async def _consume(source, label: str, blocks: list[str], images: list, labels: list[str], seen: set[str], saw_image: list, *, include_text: bool, include_embeds: bool = True, load_images: bool = True) -> None:
     pieces: list[str] = []
     if include_text:
         content = _clip(str(getattr(source, "content", "") or ""), 400)
@@ -386,7 +386,7 @@ async def _consume(source, label: str, blocks: list[str], images: list, labels: 
         labels.append(_filename(item))
         if _is_image_name(_filename(item), _content_type(item)):
             saw_image.append(True)
-        if len(images) < _MAX_IMAGES:
+        if load_images and len(images) < _MAX_IMAGES:
             part = await _read_image(item, seen)
             if part is not None:
                 images.append(part)
@@ -400,7 +400,7 @@ async def _consume(source, label: str, blocks: list[str], images: list, labels: 
             labels.append(title)
             if embed_image_url(embed):
                 saw_image.append(True)
-            if len(images) < _MAX_IMAGES:
+            if load_images and len(images) < _MAX_IMAGES:
                 part = await _fetch_image(embed_image_url(embed), seen)
                 if part is not None:
                     images.append(part)
@@ -429,6 +429,9 @@ async def collect_discord_media(message) -> DiscordMedia:
     reply_blocks: list[str] = []
     replied = await _referenced(refreshed)
     if replied is not None and getattr(replied, "id", None) != getattr(refreshed, "id", None):
+        # The replied-to message's pictures are not loaded. A text reply to
+        # a picture (Eche's own asset post included) stays text chat, which
+        # has no filters; only the file names are noted.
         await _consume(
             replied,
             "Replied-to message",
@@ -439,6 +442,7 @@ async def collect_discord_media(message) -> DiscordMedia:
             saw_image,
             include_text=True,
             include_embeds=False,
+            load_images=False,
         )
     for snap in list(getattr(refreshed, "message_snapshots", None) or []):
         await _consume(

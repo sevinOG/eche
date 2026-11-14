@@ -112,6 +112,30 @@ def _flat_arguments(arguments) -> str:
     return str(arguments) if isinstance(arguments, str) else ""
 
 
+
+COMMAND_PREFIXES = ("?",)
+
+
+def is_prefix_command(bot, message) -> bool:
+    """True when the message invokes a registered prefix command.
+
+    Matches command names and aliases, including subcommand parents, after
+    the bot's ``?`` prefix. Unknown words after ``?`` are left to chat.
+    """
+    content = getattr(message, "content", None) or ""
+    for prefix in COMMAND_PREFIXES:
+        if not content.startswith(prefix):
+            continue
+        rest = content[len(prefix):]
+        if not rest or rest[0].isspace():
+            return False
+        name = rest.split(None, 1)[0]
+        try:
+            return bot.get_command(name) is not None
+        except Exception:
+            return False
+    return False
+
 class OnMessage(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -310,6 +334,12 @@ class OnMessage(commands.Cog):
 
         # Ignore bang commands. discord.py dispatches those itself.
         if message.content.startswith("!"):
+            return
+
+        # A prefix command (?asset and every other registered command) is
+        # handled by its command only. It never also starts a chat turn,
+        # even when it is a reply to Eche or mentions it.
+        if is_prefix_command(self.bot, message):
             return
 
         # ⭐ BOO LOGIC — runs for ALL messages, even without mention ⭐

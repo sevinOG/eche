@@ -66,8 +66,10 @@ _PICTURES_OFF = (
     "Do not claim you generated one.\n"
 )
 _PICTURES_ON = (
-    "You can make pictures or videos with the asset tool when it is offered. "
-    "If generation is off or refused, say so. Do not claim you generated one.\n"
+    "You can make pictures or videos with the asset tool when it is offered on this turn. "
+    "When it is not offered, do not say pictures are down, off, or not live; "
+    "tell them to send ?asset followed by what they want. "
+    "If a request was refused, say so. Do not claim you generated one.\n"
 )
 
 
