@@ -24,10 +24,14 @@ from core.tools import ACCESS_ANYONE, Tool, ToolResult, announcement, register
 
 
 _DESCRIPTION = (
-    "Make a picture or a video with Grok Imagine when they ask for one. "
+    "Make a picture or a video with Grok Imagine, or edit one. "
+    "When their message replies to a picture or video and asks for a change to it "
+    "(\"make her hair red\", \"give him a hat\", \"make it night\"), call this: the replied-to "
+    "file is used as the source automatically, and prompt is the change. "
+    "When they only ask about the replied-to file, answer in chat instead. "
     "prompt is their wording, copied through — do not soften, sanitize, or rewrite for filters. "
-    "kind is image or video when they named one. Leave kind empty to decide from the prompt. "
-    "Editing an attached or replied-to file is not available. A thread of those files is the thread tool."
+    "kind is image or video when they named one for a new file. Leave kind empty to decide from the prompt. "
+    "A thread of files is the thread tool."
 )
 
 
@@ -123,7 +127,13 @@ async def make_asset(ctx, arguments: dict) -> ToolResult:
     channel = getattr(message, "channel", None)
     mode = getattr(ctx, "_asset_mode", None)
     try:
-        plan = plan_asset(prompt, kind=kind, asset_mode=mode)
+        # A reply to a picture or video edits it, exactly like ?asset sent
+        # as a reply: same source checks (Eche's own recorded outputs are
+        # not rechecked), output checks, caps, refunds, and approval.
+        from core.asset_source import source_from_reply
+
+        source = await source_from_reply(message)
+        plan = plan_asset(prompt, kind="" if source is not None else kind, asset_mode=mode, source=source)
         result = await run_asset(
             plan, api_key(), asset_mode=mode, is_owner=bool(getattr(ctx, "_asset_owner", False)), **ids
         )

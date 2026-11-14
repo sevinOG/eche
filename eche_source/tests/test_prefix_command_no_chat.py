@@ -124,4 +124,8 @@ class PromptTests(unittest.TestCase):
     def test_pictures_on_line_points_to_asset_command_not_outage(self):
         line = prompt_text._PICTURES_ON
         self.assertIn("?asset", line)
-        self.assertIn("do not say pictures are down, off, or not live", line)
+        # 22:16 ET: the model said the tool "isn't live this turn". The line
+        # must never suggest that; it tells the model to call the tool.
+        for bad in ("not live", "isn't live", "not offered", "this turn", "down, off"):
+            self.assertNotIn(bad, line.casefold())
+        self.assertIn("call the asset tool", line)

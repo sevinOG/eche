@@ -49,6 +49,9 @@ class AssetSource:
     mime: str
     kind: str  # "image" or "video"
     name: str = ""
+    # Discord attachment ID, when the file came from one. Lets the edit path
+    # recognise Eche's own recorded asset outputs (core/reply_images).
+    attachment_id: object = None
 
 
 @dataclass
@@ -221,4 +224,10 @@ async def source_from_reply(message) -> AssetSource | None:
             raise _error(UNREADABLE)
         if seconds > MAX_VIDEO_SOURCE_SECONDS:
             raise _error(TOO_LONG)
-    return AssetSource(data=data, mime=sniffed, kind=kind, name=pick.name)
+    return AssetSource(
+        data=data,
+        mime=sniffed,
+        kind=kind,
+        name=pick.name,
+        attachment_id=getattr(pick.attachment, "id", None) if pick.attachment is not None else None,
+    )

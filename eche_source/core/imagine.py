@@ -953,21 +953,28 @@ async def _run_asset_reserved(plan, key, snap, ids, get_backend, prepare_generat
         # The replied-to file goes through the same hardcoded child checks
         # as a finished file (Grok vision, local backup, fail closed)
         # BEFORE anything is sent to the provider.
+        # Eche's own recorded asset outputs already passed those checks when
+        # they were made, so they are not checked again. The edited result
+        # still gets every output check below.
         from core.asset_safety import check_source_media
+        from core.reply_images import is_eche_post, sha256_hex
 
         require_enabled(snap, user_id=user_id, guild_id=guild_id, channel_id=channel_id)
-        await check_source_media(
-            source.data,
-            source.mime,
-            footer_hash=prepared.footer_hash,
-            user_id=user_id,
-            guild_id=guild_id,
-            channel_id=channel_id,
-            mode=snap,
-        )
+        if is_eche_post(sha256_hex(source.data), getattr(source, "attachment_id", None)):
+            _audit("source-check", category="eche-post-skip", mode=snap, user_id=user_id, guild_id=guild_id, channel_id=channel_id)
+        else:
+            await check_source_media(
+                source.data,
+                source.mime,
+                footer_hash=prepared.footer_hash,
+                user_id=user_id,
+                guild_id=guild_id,
+                channel_id=channel_id,
+                mode=snap,
+            )
         require_enabled(snap, user_id=user_id, guild_id=guild_id, channel_id=channel_id)
     elif plan.mode in ("image_edit", "video_edit"):
-        raise ImagineError("Reply to a picture or video with `?asset` to edit it.")
+        raise ImagineError("Reply to a picture or video to edit it.")
     backend = get_backend()
     path, body = request_for(plan, prepared)
     is_video = "video" in plan.mode

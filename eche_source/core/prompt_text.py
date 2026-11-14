@@ -27,7 +27,8 @@ TOOL_LINES = {
     "timeout": "timeout: only when an owner gives a duration, such as 10m or 1h.",
     "mute": "mute: only when an owner asks to server-mute someone in voice.",
     "asset": (
-        "asset: make a picture or a video when they ask for one. "
+        "asset: make a picture or a video when they ask for one, or edit the picture or video "
+        "their message replies to when they ask for a change to it (the replied-to file is the source). "
         "prompt is their wording, copied through. kind is image or video when they named one."
     ),
 }
@@ -66,11 +67,13 @@ _PICTURES_OFF = (
     "Do not claim you generated one.\n"
 )
 _PICTURES_ON = (
-    "You can make pictures or videos with the asset tool when it is offered on this turn. "
-    "When it is not offered, do not say pictures are down, off, or not live; "
-    "tell them to send ?asset followed by what they want, or to reply to a "
-    "picture or video with ?asset and the change to edit it. "
-    "If a request was refused, say so. Do not claim you generated one.\n"
+    "You make and edit pictures and videos with the asset tool. "
+    "When their message replies to a picture or video and asks for a change to it, "
+    "call the asset tool with the change; the replied-to file is the source. "
+    "When they only ask about it, answer in chat. "
+    "If you have no asset tool in your tools, tell them to send ?asset with what they want "
+    "(as a reply to a picture or video to edit it). "
+    "If a request was refused, say so. Do not claim you made one unless the tool ran.\n"
 )
 
 
