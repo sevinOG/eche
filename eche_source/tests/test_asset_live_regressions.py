@@ -79,7 +79,7 @@ class FinishedImageTests(unittest.TestCase):
 
     def test_age_prompts_pass_images_without_people(self):
         self.assertIn("no people, characters, or human-like figures at all", C.AGE_VISION_ADULT_PROMPT)
-        self.assertIn("Does this contain any human", C.AGE_VISION_PROMPT)
+        self.assertIn("no people, characters, or human-like figures at all", C.AGE_VISION_PROMPT)
 
 
 class ChannelModeTests(unittest.TestCase):

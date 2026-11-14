@@ -185,7 +185,7 @@ class EditPathTests(unittest.TestCase):
             L.record_use(7, 9, root=self.tmp)
         with self.assertRaises(ImagineError) as e:
             asyncio.run(run_asset(self._plan(), "key", user_id=7, guild_id=9, asset_mode=SFW))
-        self.assertEqual(e.exception.text, L.USER_CAP_REFUSAL)
+        self.assertTrue(e.exception.text.startswith(L.USER_CAP_REFUSAL), e.exception.text)
 
     def test_owner_edit_uses_no_slot(self):
         check = mock.AsyncMock()

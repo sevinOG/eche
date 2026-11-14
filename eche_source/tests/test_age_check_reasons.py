@@ -35,26 +35,42 @@ class AgeReasonTests(unittest.TestCase):
 
     def _run(self, *, grok=None, grok_exc=None, local=None, local_exc=None, adult=False):
         with mock.patch.object(C, "age_vision_backend", return_value="xai"), \
-                mock.patch.object(C, "_age_vision_post", side_effect=grok_exc, return_value=grok), \
+                mock.patch.object(C, "_age_vision_post", side_effect=grok_exc, return_value=grok) as grok_call, \
                 mock.patch.object(C, "_age_vision_post_ollama", side_effect=local_exc, return_value=local), \
-                mock.patch.object(C, "_start_age_reason_lookup") as lookup, \
                 mock.patch.object(C, "_report_age_vision_problem"), \
                 mock.patch.object(C, "_log_vision_fallback"):
             verdict = C._age_vision_sync([PART], adult=adult)
-        return verdict, self._verdict_rows()[-1], lookup
+        return verdict, self._verdict_rows()[-1], grok_call
 
-    def test_grok_pass_and_yes(self):
-        verdict, row, lookup = self._run(grok="NO")
-        self.assertEqual((verdict, row["checker"], row["verdict"], row["reason"]), ("", "grok-vision", "pass", "clear"))
-        lookup.assert_not_called()
-        verdict, row, lookup = self._run(grok="YES", adult=True)
-        self.assertEqual((verdict, row["verdict"], row["mode"]), ("age-vision-yes", "yes", "18+"))
-        self.assertIn("reason lookup follows", row["reason"])
-        lookup.assert_called_once()
+    def test_grok_pass_and_yes_reason_from_the_same_call(self):
+        verdict, row, call = self._run(grok="NO\nadult")
+        self.assertEqual((verdict, row["checker"], row["verdict"], row["reason"]), ("", "grok-vision", "pass", "adult"))
+        verdict, row, call = self._run(grok="YES\nanime or chibi style", adult=True)
+        self.assertEqual((verdict, row["verdict"], row["mode"], row["reason"]), ("age-vision-yes", "yes", "18+", "anime or chibi style"))
+        # One call per image: there is no separate reason lookup.
+        self.assertEqual(call.call_count, 1)
+        self.assertFalse(hasattr(C, "_age_reason_lookup"))
+        self.assertFalse([r for r, _ in self.rows if r in ("age-check-reason", "age-vision-reason")])
+
+    def test_bare_yes_or_no_still_decides(self):
+        verdict, row, _ = self._run(grok="NO")
+        self.assertEqual((verdict, row["reason"]), ("", "clear"))
+        verdict, row, _ = self._run(grok="YES")
+        self.assertEqual((verdict, row["reason"]), ("age-vision-yes", "no label"))
 
     def test_uncertain_is_its_own_reason_and_still_blocks(self):
         verdict, row, _ = self._run(grok="unsure")
         self.assertEqual((verdict, row["verdict"], row["reason"]), ("age-vision-unsure", "unsure", "uncertain"))
+
+    def test_unparseable_replies_block(self):
+        for reply in ("", "NO\nadult\nextra line", "NO\nprobably fine", "NO\napparent minor", "Sure!", "YES\nhmm"):
+            verdict, row, _ = self._run(grok=reply, local_exc=ConnectionError("down"))
+            self.assertTrue(verdict, reply)
+            self.assertEqual(row["verdict"], "error", reply)
+
+    def test_contradictory_no_falls_back_and_local_decides(self):
+        verdict, row, _ = self._run(grok="NO\napparent minor", local="YES\nuncertain age")
+        self.assertEqual((verdict, row["checker"], row["reason"]), ("age-vision-yes", "local-vision", "uncertain age"))
 
     def test_checker_errors_are_named_and_still_block(self):
         verdict, row, _ = self._run(grok_exc=TimeoutError("x"), local_exc=ConnectionError("y"))
@@ -68,15 +84,8 @@ class AgeReasonTests(unittest.TestCase):
         verdict, row, _ = self._run(grok_exc=TimeoutError("x"), local="NO")
         self.assertEqual((verdict, row["checker"], row["reason"]), ("", "local-vision", "clear"))
 
-    def test_reason_lookup_logs_only_a_fixed_label(self):
-        with mock.patch.object(C, "_xai_vision_post", return_value="Cartoon style.\nThe figure is drawn"):
-            self.assertEqual(C._age_reason_lookup([PART], adult=True), "cartoon style")
-        with mock.patch.object(C, "_xai_vision_post", return_value="something long and free-form"):
-            self.assertEqual(C._age_reason_lookup([PART], adult=True), "unparsed")
-        with mock.patch.object(C, "_xai_vision_post", side_effect=RuntimeError("down")):
-            self.assertEqual(C._age_reason_lookup([PART], adult=False), "lookup failed")
-        reasons = [kw["reason"] for service, kw in self.rows if service == "age-check-reason"]
-        self.assertEqual(reasons, ["cartoon style", "unparsed", "lookup failed"])
+    def test_rows_never_carry_image_data(self):
+        self._run(grok="YES\napparent minor")
         for _service, kw in self.rows:
             self.assertNotIn("data", kw)
             for value in kw.values():
@@ -85,6 +94,8 @@ class AgeReasonTests(unittest.TestCase):
     def test_label_parser(self):
         self.assertEqual(C.age_reason_label("apparent minor"), "apparent minor")
         self.assertEqual(C.age_reason_label("Uncertain age."), "uncertain age")
+        self.assertEqual(C.age_reason_label("Label: no people"), "no people")
+        self.assertEqual(C.age_reason_label("cartoon style"), "unparsed")
         self.assertEqual(C.age_reason_label(""), "unparsed")
 
 

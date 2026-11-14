@@ -202,6 +202,7 @@ class OnMessage(commands.Cog):
         actions: list[str] = []
         seen: set[str] = set()
         lookup_quota = False
+        declined = False
         for call in calls[:3]:
             if not isinstance(call, dict):
                 continue
@@ -237,6 +238,8 @@ class OnMessage(commands.Cog):
                 break
             result = await execute(name, arguments, ctx)
             if not result.ran:
+                if getattr(result, "declined", False):
+                    declined = True
                 continue
             tools_used.append(name)
             spoken = result.text
@@ -283,6 +286,7 @@ class OnMessage(commands.Cog):
                         name,
                         (call or {}).get("arguments") or {},
                         posted=(result.text or "") if result.quiet else "",
+                        status=getattr(result, "status", "") or "",
                     )
                 )
             except Exception as exc:
@@ -313,7 +317,7 @@ class OnMessage(commands.Cog):
                     today_day(),
                 )
             )
-        return ran_any, acts, tools_used, said, lookup_quota, actions
+        return ran_any, acts, tools_used, said, lookup_quota, actions, declined
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -528,6 +532,7 @@ class OnMessage(commands.Cog):
         tools_used: list[str] = []
         tool_said: list[str] = []
         tool_actions: list[str] = []
+        tool_declined = False
         if calls:
             try:
                 (
@@ -537,6 +542,7 @@ class OnMessage(commands.Cog):
                     tool_said,
                     lookup_quota,
                     tool_actions,
+                    tool_declined,
                 ) = await self._deliver_tool_calls(
                     message, calls, prompt
                 )
@@ -545,6 +551,25 @@ class OnMessage(commands.Cog):
             except Exception as e:
                 dprint(f"[on_message] tool delivery failed: {e}")
                 ran_tools = False
+        if tool_declined and not ran_tools and not reply.strip() and not quota_reply:
+            # The asset tool was called on a message that asks for nothing.
+            # Answer in chat instead, without offering the asset tool.
+            try:
+                retry_turn = await call_groq_turn(
+                    prompt,
+                    user_id=message.author.id,
+                    max_completion_tokens=completion_tokens,
+                    tools=[
+                        spec for spec in (offered or [])
+                        if str(((spec or {}).get("function") or {}).get("name") or "").casefold() != "asset"
+                    ] or None,
+                    extra_system=admin_injection(enabled=admin_visible),
+                    images=all_images or None,
+                )
+                if not list(retry_turn.tool_calls or []):
+                    reply = retry_turn.reply or ""
+            except Exception as e:
+                dprint(f"[on_message] declined-tool reply failed: {type(e).__name__}")
 
         if has_images and not ran_tools and reply.strip() and is_blocked(
             reply, user_id=user_id, channel_id=channel_id

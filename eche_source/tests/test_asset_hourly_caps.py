@@ -102,14 +102,14 @@ class CapRunTests(unittest.TestCase):
             self.assertEqual(self._run("video" if i % 2 else "video_edit"), "file")
         with self.assertRaises(ImagineError) as err:
             self._run("video")
-        self.assertEqual(err.exception.text, L.VIDEO_USER_CAP_REFUSAL)
+        self.assertTrue(err.exception.text.startswith(L.VIDEO_USER_CAP_REFUSAL), err.exception.text)
         self.assertTrue(any(k.get("category") == "video-rate-limit" for _a, k in self.audits))
         self.assertEqual(self._counts("users", 1), 0)
         for _ in range(10):
             self.assertEqual(self._run("image"), "file")
         with self.assertRaises(ImagineError) as err:
             self._run("image_edit")
-        self.assertEqual(err.exception.text, L.USER_CAP_REFUSAL)
+        self.assertTrue(err.exception.text.startswith(L.USER_CAP_REFUSAL), err.exception.text)
 
     def test_full_images_do_not_block_videos(self):
         for _ in range(10):
@@ -122,7 +122,7 @@ class CapRunTests(unittest.TestCase):
             self._run("video", mode=on)
         with self.assertRaises(ImagineError) as err:
             self._run("video", mode=on)
-        self.assertEqual(err.exception.text, L.VIDEO_USER_CAP_REFUSAL)
+        self.assertTrue(err.exception.text.startswith(L.VIDEO_USER_CAP_REFUSAL), err.exception.text)
 
     def test_server_caps_40_images_15_videos(self):
         for user in range(100, 104):  # 4 users x 10 images
@@ -130,13 +130,13 @@ class CapRunTests(unittest.TestCase):
                 self._run("image", user=user)
         with self.assertRaises(ImagineError) as err:
             self._run("image", user=200)
-        self.assertEqual(err.exception.text, L.GUILD_CAP_REFUSAL)
+        self.assertTrue(err.exception.text.startswith(L.GUILD_CAP_REFUSAL), err.exception.text)
         for user, n in ((300, 5), (301, 5), (302, 5)):
             for _ in range(n):
                 self._run("video", user=user)
         with self.assertRaises(ImagineError) as err:
             self._run("video", user=303)
-        self.assertEqual(err.exception.text, L.VIDEO_GUILD_CAP_REFUSAL)
+        self.assertTrue(err.exception.text.startswith(L.VIDEO_GUILD_CAP_REFUSAL), err.exception.text)
 
     def test_server_caps_do_not_bind_before_two_users_hit_theirs(self):
         for user in (1, 2):
@@ -170,10 +170,9 @@ class CapRunTests(unittest.TestCase):
         self.assertIsNone(refuse_speaker(False, user_id=1, guild_id=2, channel_id=3, asset_mode=self.mode))
         for _ in range(5):
             self._run("video")
-        self.assertEqual(
-            refuse_speaker(False, user_id=1, guild_id=2, channel_id=3, asset_mode=self.mode),
-            L.USER_CAP_REFUSAL,
-        )
+        refused = refuse_speaker(False, user_id=1, guild_id=2, channel_id=3, asset_mode=self.mode)
+        self.assertTrue(refused.startswith(L.USER_CAP_REFUSAL), refused)
+        self.assertRegex(refused, r"It resets in \d+ min\.$")
 
 
 if __name__ == "__main__":

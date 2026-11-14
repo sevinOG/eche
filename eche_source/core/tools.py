@@ -57,6 +57,14 @@ class ToolResult:
     for_model: bool = False
     # When set, the channel gets nothing. The tool already posted, including its announcement.
     quiet: bool = False
+    # Audit outcome for the tool event (success, refusal, error). Empty means success.
+    outcome: str = ""
+    # A short machine status for the chat model's memory (asset: safety_block,
+    # provider_filtered, capped, locked, not_allowed, error). Empty means it worked.
+    status: str = ""
+    # The tool declined before doing anything (no request in the message).
+    # It counts as not run, so the model's own chat reply is used instead.
+    declined: bool = False
 
 
 @dataclass
@@ -251,8 +259,13 @@ async def execute(name: str, arguments: dict | None, ctx: ToolContext) -> ToolRe
     if result is None:
         result = ToolResult(text="")
     result.name = tool.name
+    extra = {"status": result.status} if result.status else {}
+    if result.declined:
+        _audit_tool(tool.name, "declined", ctx, **extra)
+        result.ran = False
+        return result
     result.ran = True
-    _audit_tool(tool.name, "success", ctx)
+    _audit_tool(tool.name, result.outcome or "success", ctx, **extra)
     return result
 
 

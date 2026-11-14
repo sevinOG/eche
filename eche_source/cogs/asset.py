@@ -11,7 +11,7 @@ from core.asset_review import require_owner_review
 from core.asset_safety import KILL_SWITCH_OFF, confirm_asset_delivery, require_enabled
 from core.debuglog import dprint
 from core.imagine import AssetFile, ImagineError, api_key, plan_asset, refuse_speaker, run_asset
-from core.tools_asset import asset_text
+from core.tools_asset import asset_text, audit_request
 
 
 class Asset(commands.Cog):
@@ -47,6 +47,7 @@ class Asset(commands.Cog):
             from core.asset_source import source_from_reply
 
             source = await source_from_reply(getattr(ctx, "message", None))
+            audit_request(prompt=prompt, kind="", source="?asset", has_media=source is not None, ids=ids)
             plan = plan_asset(prompt, asset_mode=mode, source=source)
             result = await run_asset(plan, api_key(), asset_mode=mode, is_owner=bool(gate.get("owner")), **ids)
             result = await require_owner_review(

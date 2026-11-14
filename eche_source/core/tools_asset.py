@@ -25,6 +25,11 @@ from core.tools import ACCESS_ANYONE, Tool, ToolResult, announcement, register
 
 _DESCRIPTION = (
     "Make a picture or a video with Grok Imagine, or edit one. "
+    "Only call this when THIS message itself asks for a picture, a video, or a change to one. "
+    "Never call it for reactions, complaints, jokes, or follow-ups such as \"what the heck\", "
+    "\"lol\", or \"stop\"; answer those in chat. "
+    "After a blocked, filtered, capped, or failed try, never call it again unless they explicitly "
+    "ask again in a new message (\"try again\", \"redo\", or a new request). "
     "When their message replies to a picture or video and asks for a change to it "
     "(\"make her hair red\", \"give him a hat\", \"make it night\"), call this: the replied-to "
     "file is used as the source automatically, and prompt is the change. "
@@ -36,6 +41,37 @@ _DESCRIPTION = (
 
 
 COMMAND_MESSAGE_SKIPPED = "That message is a ? command; the command handles it."
+NO_REQUEST_DECLINED = "That message does not ask for a picture or video, so nothing was made."
+
+_OUTCOME_FOR_STATUS = {
+    "safety_block": "refusal",
+    "provider_filtered": "refusal",
+    "capped": "refusal",
+    "locked": "refusal",
+    "not_allowed": "refusal",
+    "error": "error",
+}
+
+
+def audit_request(*, prompt: str, kind: str, source: str, has_media: bool, ids: dict) -> None:
+    """One audit line per asset request: the prompt, kind, and where it came from.
+
+    source is "chat" (the model's tool call) or "?asset" (the command).
+    The prompt goes through the audit log's secret redaction like every line.
+    """
+    try:
+        from core.audit import record
+
+        record(
+            "asset-request",
+            source=source,
+            kind=kind or "auto",
+            reply_media="1" if has_media else "0",
+            prompt=" ".join(str(prompt or "").split())[:600],
+            **ids,
+        )
+    except Exception:
+        pass
 
 
 def _ids(message) -> dict:
@@ -109,17 +145,50 @@ async def _post(message, result: AssetFile, caption: str) -> None:
     record_sent_message(sent, result.data)
 
 
+def _status_result(exc, text: str | None = None) -> ToolResult:
+    from core.imagine import RETRY_RULE, error_status
+
+    status = error_status(exc)
+    shown = exc.text if text is None else text
+    return ToolResult(
+        text=shown,
+        fence=False,
+        detail=f"status: {status}\n{shown}\n{RETRY_RULE}",
+        status=status,
+        outcome=_OUTCOME_FOR_STATUS.get(status, "error"),
+    )
+
+
 async def make_asset(ctx, arguments: dict) -> ToolResult:
-    ok, why = await _allowed(ctx)
-    if not ok:
-        return ToolResult(text=why, fence=False)
     message = getattr(ctx, "message", None)
     user_text = getattr(message, "content", "") or ""
+    raw_prompt = " ".join(str((arguments or {}).get("prompt") or "").split())
+    # Only a message that itself asks for something runs the tool. This uses
+    # no cap slot and posts nothing; the model's chat reply is used instead.
+    from core.asset_intent import decline_reason, strip_added_youthful_styles
+
+    declined = decline_reason(raw_prompt, user_text)
+    if declined:
+        try:
+            from core.audit import record
+
+            record("asset-request", source="chat", outcome="declined", reason=declined, **_ids(message))
+        except Exception:
+            pass
+        return ToolResult(text=NO_REQUEST_DECLINED, fence=False, declined=True, outcome="declined")
+    ok, why = await _allowed(ctx)
+    if not ok:
+        if why == COMMAND_MESSAGE_SKIPPED:
+            return ToolResult(text=why, fence=False, status="not_allowed", outcome="refusal")
+        from core.imagine import ImagineError as _IE
+
+        return _status_result(_IE(why))
     prompt = asset_prompt(arguments, user_text)
     from core.guardrails import softened_prompt
 
     if softened_prompt(prompt, user_text):
         prompt = asset_prompt({}, user_text)
+    prompt = strip_added_youthful_styles(prompt, user_text) or asset_prompt({}, user_text)
     kind = str((arguments or {}).get("kind") or "").strip().lower()
     if kind not in ("image", "video"):
         kind = ""
@@ -133,6 +202,7 @@ async def make_asset(ctx, arguments: dict) -> ToolResult:
         from core.asset_source import source_from_reply
 
         source = await source_from_reply(message)
+        audit_request(prompt=prompt, kind=kind, source="chat", has_media=source is not None, ids=ids)
         plan = plan_asset(prompt, kind="" if source is not None else kind, asset_mode=mode, source=source)
         result = await run_asset(
             plan, api_key(), asset_mode=mode, is_owner=bool(getattr(ctx, "_asset_owner", False)), **ids
@@ -151,10 +221,12 @@ async def make_asset(ctx, arguments: dict) -> ToolResult:
         confirm_asset_delivery(mode, channel, **ids)
         require_enabled(mode, **ids)
     except ImagineError as exc:
-        return ToolResult(text=exc.text, fence=False, detail=exc.text)
+        return _status_result(exc)
     except Exception as exc:
         dprint(f"[asset] failed: {type(exc).__name__}")
-        return ToolResult(text="I couldn't make that.", fence=False, detail=type(exc).__name__)
+        from core.imagine import ImagineError as _IE
+
+        return _status_result(_IE("Something went wrong on my end, so nothing was made.", status="error"))
     caption = plan.prompt
     if len(caption) > 120:
         caption = caption[:119].rstrip() + "…"
@@ -170,6 +242,8 @@ async def make_asset(ctx, arguments: dict) -> ToolResult:
             text="I made it, but Discord would not take the file.",
             fence=False,
             detail=type(exc).__name__,
+            status="error",
+            outcome="error",
         )
     mode = result.mode if isinstance(result, AssetFile) else plan.mode
     size = len(result.data) if isinstance(result, AssetFile) else 0

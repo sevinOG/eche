@@ -292,7 +292,9 @@ class HardenedAssetTests(unittest.TestCase):
             self.assertFalse(is_locked(78, root=raw))
             for _ in range(USER_HOURLY_CAP):
                 record_use(88, 99, root=raw)
-            self.assertEqual(rate_refusal(88, 99, root=raw), "The hourly asset limit for this user has been reached.")
+            self.assertTrue(
+                rate_refusal(88, 99, root=raw).startswith("The hourly asset limit for this user has been reached. It resets in")
+            )
             for _ in range(GUILD_HOURLY_CAP):
                 record_use(201, 99, root=raw)
             # user 201 may still be under the user cap; guild 99 is over after the first loop plus these
@@ -357,7 +359,9 @@ class HardenedAssetTests(unittest.TestCase):
         ):
             with self.assertRaises(ImagineError) as raised:
                 asyncio.run(check_generated_media(frame, "image/jpeg", footer_hash=FOOTER_HASH))
-            self.assertEqual(raised.exception.text, OUTPUT_REFUSAL)
+            # A checker failure still blocks, with the error wording.
+            self.assertEqual(raised.exception.text, OUTPUT_UNCHECKED)
+            self.assertEqual(raised.exception.status, "error")
         with mock.patch("core.classifier.classify_media_async", new=mock.AsyncMock(return_value="")), \
              mock.patch("core.classifier.age_vision_async", new=mock.AsyncMock(return_value="age-vision-unsure")):
             with self.assertRaises(ImagineError) as raised:

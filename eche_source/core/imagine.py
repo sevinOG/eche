@@ -109,9 +109,63 @@ class AssetFile:
 
 
 class ImagineError(Exception):
-    def __init__(self, text: str):
+    def __init__(self, text: str, *, status: str = ""):
         super().__init__(text)
         self.text = text
+        self.status = status
+
+
+# What happened, for the chat model and the audit log:
+#   safety_block       Eche's own checks refused the request or the file
+#   provider_filtered  xAI Imagine's own moderation refused it
+#   capped             the hourly limit was reached
+#   locked             a 24h minors-safety lockout is active
+#   not_allowed        a setting or permission gate (kill switch, owner only, DMs, review)
+#   error              something failed (timeout, checker or provider unavailable)
+ASSET_STATUSES = ("safety_block", "provider_filtered", "capped", "locked", "not_allowed", "error")
+RETRY_RULE = "Do not retry or rephrase unless they ask again in a new message."
+
+
+def error_status(exc) -> str:
+    """The status for an ImagineError, explicit or read from its fixed text."""
+    status = str(getattr(exc, "status", "") or "")
+    if status in ASSET_STATUSES:
+        return status
+    text = str(getattr(exc, "text", "") or exc or "")
+    try:
+        from core.asset_limits import DM_REFUSAL, is_cap_refusal, is_lockout_refusal, LOCKOUT_REFUSAL
+        from core.asset_safety import (
+            CHANNEL_CHANGED_REFUSAL,
+            KILL_SWITCH_OFF,
+            MISSING_KEY,
+            MODE_CHANGED_REFUSAL,
+            OUTPUT_REFUSAL,
+            SOURCE_REFUSAL,
+        )
+        from core.blocklist import REFUSAL
+        from core.guardrails import BYPASS_REFUSAL
+    except Exception:
+        return "error"
+    if text == _FILTERED:
+        return "provider_filtered"
+    if is_cap_refusal(text):
+        return "capped"
+    if text == LOCKOUT_REFUSAL or is_lockout_refusal(text):
+        return "locked"
+    if text in (OUTPUT_REFUSAL, SOURCE_REFUSAL, REFUSAL, BYPASS_REFUSAL):
+        return "safety_block"
+    if text in (KILL_SWITCH_OFF, MISSING_KEY, DM_REFUSAL, CHANNEL_CHANGED_REFUSAL, MODE_CHANGED_REFUSAL, ADULT_CHANNEL_REFUSAL):
+        return "not_allowed"
+    try:
+        from core.asset_review import OWNER_REVIEW_DENIED
+
+        if text == OWNER_REVIEW_DENIED:
+            return "not_allowed"
+    except Exception:
+        pass
+    if text == "Only the owner can ask for assets.":
+        return "not_allowed"
+    return "error"
 
 
 def api_key() -> str:
@@ -514,7 +568,10 @@ def request_for(plan: AssetPlan, prepared) -> tuple[str, dict]:
     return get_backend().build_request(plan, prepared)
 
 
-_FILTERED = "That one was filtered."
+_FILTERED = (
+    "xAI's own content filter refused that one, so nothing was posted. "
+    "It did not count toward your hourly limit."
+)
 _UNAVAILABLE = "Image generation is unavailable right now."
 _FILTER_MARKERS = (
     "content moderation",
@@ -856,9 +913,15 @@ def refuse_speaker(
     if not speaker_allowed(is_owner, snap):
         _audit("refusal", category="owner-only", mode=snap, **ids)
         return refusal(is_owner, snap)
-    if is_locked(user_id):
+    # The bot owner is exempt from the lockout, the same as the caps.
+    if not is_owner and is_locked(user_id):
         _audit("refusal", category="lockout", mode=snap, **ids)
-        return LOCKOUT_REFUSAL
+        try:
+            from core.asset_limits import lockout_message
+
+            return lockout_message(user_id)
+        except Exception:
+            return LOCKOUT_REFUSAL
     if out is not None:
         out["owner"] = bool(is_owner)
     # The bot owner has no hourly or daily cap. Safety checks still apply.
@@ -948,6 +1011,9 @@ async def _run_asset_reserved(plan, key, snap, ids, get_backend, prepare_generat
         channel_id=channel_id,
         mode=snap,
     )
+    from core.asset_safety import prompt_is_sexual
+
+    sexual = prompt_is_sexual(getattr(plan, "prompt", "") or "")
     source = getattr(plan, "source", None)
     if source is not None:
         # The replied-to file goes through the same hardcoded child checks
@@ -971,6 +1037,7 @@ async def _run_asset_reserved(plan, key, snap, ids, get_backend, prepare_generat
                 guild_id=guild_id,
                 channel_id=channel_id,
                 mode=snap,
+                sexual=sexual,
             )
         require_enabled(snap, user_id=user_id, guild_id=guild_id, channel_id=channel_id)
     elif plan.mode in ("image_edit", "video_edit"):
@@ -1019,9 +1086,13 @@ async def _run_asset_reserved(plan, key, snap, ids, get_backend, prepare_generat
         require_enabled(snap, user_id=user_id, guild_id=guild_id, channel_id=channel_id)
         data, mime = await asyncio.to_thread(http_bytes, url)
     except ImagineError as exc:
+        moderated = exc.text == _FILTERED
+        if moderated:
+            exc.status = "provider_filtered"
         _audit(
-            "error",
-            category="backend",
+            "refusal" if moderated else "error",
+            category="provider-moderation" if moderated else "backend",
+            reason=("" if moderated else exc.text[:120]),
             footer_hash=prepared.footer_hash,
             error_type=type(exc).__name__,
             mode=snap,
@@ -1037,7 +1108,7 @@ async def _run_asset_reserved(plan, key, snap, ids, get_backend, prepare_generat
             mode=snap,
             **ids,
         )
-        raise ImagineError("I couldn't make that.") from exc
+        raise ImagineError("I couldn't make that.", status="error") from exc
     if not data:
         # A URL we cannot download cannot be classified. Fail closed.
         _audit("refusal", category="unreadable-output", footer_hash=prepared.footer_hash, mode=snap, **ids)
@@ -1062,6 +1133,7 @@ async def _run_asset_reserved(plan, key, snap, ids, get_backend, prepare_generat
         request_id=job_ids.get("request_id", ""),
         response_id=job_ids.get("response_id", ""),
         mode=snap,
+        sexual=sexual,
     )
     require_enabled(snap, user_id=user_id, guild_id=guild_id, channel_id=channel_id)
     _audit(
