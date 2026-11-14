@@ -820,7 +820,7 @@ def refuse_speaker(
     from core.asset_safety import (
         KILL_SWITCH_OFF,
         _audit,
-        channel_is_age_restricted,
+        mode_for_channel,
         read_asset_mode,
     )
 
@@ -834,16 +834,21 @@ def refuse_speaker(
     if in_direct_message(guild_id):
         _audit("refusal", category="dm-disabled", mode=snap, **ids)
         return DM_REFUSAL
-    if snap.adult and not channel_is_age_restricted(channel, nsfw=nsfw):
-        _audit("refusal", category="adult-channel", mode=snap, **ids)
-        return ADULT_CHANNEL_REFUSAL
+    # 18+ applies only in age-restricted channels. Elsewhere the request
+    # runs under the normal SFW rules instead of being refused.
+    snap = mode_for_channel(snap, channel, nsfw=nsfw)
+    if out is not None:
+        out["mode"] = snap
     if not speaker_allowed(is_owner, snap):
         _audit("refusal", category="owner-only", mode=snap, **ids)
         return refusal(is_owner, snap)
     if is_locked(user_id):
         _audit("refusal", category="lockout", mode=snap, **ids)
         return LOCKOUT_REFUSAL
-    capped = rate_refusal(user_id, guild_id, caps=(snap.user_cap, snap.guild_cap))
+    if out is not None:
+        out["owner"] = bool(is_owner)
+    # The bot owner has no hourly or daily cap. Safety checks still apply.
+    capped = None if is_owner else rate_refusal(user_id, guild_id, caps=(snap.user_cap, snap.guild_cap))
     if capped:
         _audit("refusal", category="rate-limit", mode=snap, **ids)
         return capped
@@ -858,6 +863,7 @@ async def run_asset(
     guild_id=None,
     channel_id=None,
     asset_mode=None,
+    is_owner: bool = False,
 ) -> AssetFile:
     """Make one asset through the fail-closed choke point.
 
@@ -867,14 +873,13 @@ async def run_asset(
     wait for owner review before posting.
     """
     from core.asset_backend import get_backend
-    from core.asset_limits import reserve_use
+    from core.asset_limits import release_use, reserve_use
     from core.asset_safety import (
         KILL_SWITCH_OFF,
         MISSING_KEY,
         asset_enabled,
         check_generated_media,
         prepare_generation,
-        require_enabled,
         _audit,
     )
 
@@ -888,10 +893,29 @@ async def run_asset(
     if not key:
         _audit("refusal", category="missing-key", mode=snap, **ids)
         raise ImagineError(MISSING_KEY)
+    if is_owner:
+        # The bot owner is exempt from the caps and uses no slot. Every
+        # safety check below still runs unchanged.
+        return await _run_asset_reserved(plan, key, snap, ids, get_backend, prepare_generation, check_generated_media)
     capped = reserve_use(user_id, guild_id, caps=(snap.user_cap, snap.guild_cap))
     if capped:
         _audit("refusal", category="rate-limit", mode=snap, **ids)
         raise ImagineError(capped)
+    # A blocked, refused, or failed attempt gives its cap slot back. Only a
+    # finished, checked file keeps it.
+    try:
+        return await _run_asset_reserved(plan, key, snap, ids, get_backend, prepare_generation, check_generated_media)
+    except BaseException:
+        release_use(user_id, guild_id)
+        raise
+
+
+async def _run_asset_reserved(plan, key, snap, ids, get_backend, prepare_generation, check_generated_media):
+    from core.asset_safety import require_enabled, _audit
+
+    user_id = ids.get("user_id")
+    guild_id = ids.get("guild_id")
+    channel_id = ids.get("channel_id")
     prepared = await prepare_generation(
         getattr(plan, "prompt", "") or "",
         user_id=user_id,

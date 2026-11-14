@@ -1660,6 +1660,32 @@ async def classify_async(
     return result or image_fail
 
 
+async def classify_media_async(
+    images: list,
+    *,
+    ignore_lg4: frozenset[str] | set[str] | None = None,
+) -> str:
+    """Finished image or frame: the pixel content check only. '' allows.
+
+    No text checkers run here: Llama Guard 3 cannot see pixels, and running
+    it on a fixed instruction string that names minors flagged every image.
+    Age vision runs separately in the caller. Fail closed on any error.
+    """
+    if tests_are_allowing():
+        return ""
+    if not images:
+        return "classifier-error"
+    spec = _resolve_checker("image_check")
+    if spec.problem:
+        report_checker_problem(spec)
+        return (
+            "classifier-vision-unavailable"
+            if spec.problem in {"blank_model", "not_vision"}
+            else "classifier-error"
+        )
+    return await _classify_images_async("", images, ignore_lg4)
+
+
 def _prepare_messages(turns: list, *, images: list | None = None) -> tuple[list, str]:
     prepared: list[dict] = []
     for i, turn in enumerate(turns):
@@ -1806,7 +1832,7 @@ def _classify_images_sync(
         except Exception as exc:
             _log_vision_fallback("image-check", type(exc).__name__)
         else:
-            verdict = _verdict_to_check(raw, "yes_no", kind="image-check")
+            verdict = _verdict_to_check(raw, "yes_no", kind="image-check (grok-vision)")
             if verdict != "classifier-error":
                 return verdict
             _log_vision_fallback("image-check", "unclear reply")
@@ -2860,6 +2886,8 @@ def _age_vision_sync(images: list, *, adult: bool = False) -> str:
             _log_vision_fallback("age-vision", type(exc).__name__)
         else:
             if verdict != "age-vision-error":
+                if verdict:
+                    _log_check_block("age-vision", "category", category=f"{verdict} via grok-vision mode={'18+' if adult else 'sfw'}")
                 return verdict
             _log_vision_fallback("age-vision", "unclear reply")
     try:
@@ -2871,6 +2899,8 @@ def _age_vision_sync(images: list, *, adult: bool = False) -> str:
         _report_age_vision_problem(
             "Age-vision reply was not YES or NO; the image was blocked.", age_vision_ollama_model()
         )
+    elif verdict:
+        _log_check_block("age-vision", "category", category=f"{verdict} via local-vision mode={'18+' if adult else 'sfw'}")
     return verdict
 
 

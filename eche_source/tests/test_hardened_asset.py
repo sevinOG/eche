@@ -333,7 +333,7 @@ class HardenedAssetTests(unittest.TestCase):
     def test_frame_check_blocks_and_fails_closed_when_unreadable(self):
         frame = b"\xff\xd8\xff" + b"\x00" * 16
         with mock.patch("core.asset_safety.extract_video_frames", return_value=[frame]), \
-             mock.patch("core.classifier.classify_async", new=mock.AsyncMock(return_value="S2")), \
+             mock.patch("core.classifier.classify_media_async", new=mock.AsyncMock(return_value="S2")), \
              mock.patch("core.classifier.age_vision_async", new=mock.AsyncMock(return_value="")):
             with self.assertRaises(ImagineError) as raised:
                 asyncio.run(check_generated_media(b"mp4-bytes", "video/mp4", footer_hash=FOOTER_HASH))
@@ -343,20 +343,20 @@ class HardenedAssetTests(unittest.TestCase):
                 asyncio.run(check_generated_media(b"mp4-bytes", "video/mp4", footer_hash=FOOTER_HASH))
             self.assertEqual(raised.exception.text, OUTPUT_UNCHECKED)
         with mock.patch(
-            "core.classifier.classify_async",
+            "core.classifier.classify_media_async",
             new=mock.AsyncMock(return_value="classifier-image-unsupported"),
         ), mock.patch("core.classifier.age_vision_async", new=mock.AsyncMock(return_value="")):
             with self.assertRaises(ImagineError) as raised:
                 asyncio.run(check_generated_media(frame, "image/jpeg", footer_hash=FOOTER_HASH))
             self.assertEqual(raised.exception.text, VISION_UNAVAILABLE)
         with mock.patch(
-            "core.classifier.classify_async",
+            "core.classifier.classify_media_async",
             new=mock.AsyncMock(side_effect=RuntimeError("vision down")),
         ):
             with self.assertRaises(ImagineError) as raised:
                 asyncio.run(check_generated_media(frame, "image/jpeg", footer_hash=FOOTER_HASH))
             self.assertEqual(raised.exception.text, OUTPUT_REFUSAL)
-        with mock.patch("core.classifier.classify_async", new=mock.AsyncMock(return_value="")), \
+        with mock.patch("core.classifier.classify_media_async", new=mock.AsyncMock(return_value="")), \
              mock.patch("core.classifier.age_vision_async", new=mock.AsyncMock(return_value="age-vision-unsure")):
             with self.assertRaises(ImagineError) as raised:
                 asyncio.run(check_generated_media(frame, "image/jpeg", footer_hash=FOOTER_HASH))
@@ -630,7 +630,7 @@ class OfficialImagineHashTests(unittest.TestCase):
         frame = b"\xff\xd8\xff" + b"\x00" * 16
         with tempfile.TemporaryDirectory(prefix="eche-outlock-") as raw:
             with mock.patch("core.secrets._user_root", return_value=raw), \
-                 mock.patch("core.classifier.classify_async", new=mock.AsyncMock(return_value="S2")), \
+                 mock.patch("core.classifier.classify_media_async", new=mock.AsyncMock(return_value="S2")), \
                  mock.patch("core.classifier.age_vision_async", new=mock.AsyncMock(return_value="")):
                 with self.assertRaises(ImagineError):
                     asyncio.run(check_generated_media(frame, "image/jpeg", footer_hash=FOOTER_HASH, user_id=81))

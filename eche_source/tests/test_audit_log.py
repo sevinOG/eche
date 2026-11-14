@@ -456,6 +456,7 @@ REVIEWED_ENTRYPOINTS = {
     "_save": "economy bank record save",
     "check_for_updates": "settings check-for-updates",
     "run_asset": "official Imagine generation",
+    "_run_asset_reserved": "official Imagine generation body (quota released on failure)",
     "prepare_generation": "asset choke-point prompt check",
     "make_asset": "asset tool entry that calls run_asset",
     "asset": " ?asset cog command that calls run_asset",

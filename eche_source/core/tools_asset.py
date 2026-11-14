@@ -57,6 +57,7 @@ async def _allowed(ctx) -> tuple[bool, str]:
     if blocked:
         return False, blocked
     ctx._asset_mode = gate["mode"]
+    ctx._asset_owner = bool(gate.get("owner"))
     return True, ""
 
 
@@ -105,7 +106,9 @@ async def make_asset(ctx, arguments: dict) -> ToolResult:
     mode = getattr(ctx, "_asset_mode", None)
     try:
         plan = plan_asset(prompt, kind=kind, asset_mode=mode)
-        result = await run_asset(plan, api_key(), asset_mode=mode, **ids)
+        result = await run_asset(
+            plan, api_key(), asset_mode=mode, is_owner=bool(getattr(ctx, "_asset_owner", False)), **ids
+        )
         if not isinstance(result, AssetFile):
             raise ImagineError("I couldn't make that.")
         result = await require_owner_review(

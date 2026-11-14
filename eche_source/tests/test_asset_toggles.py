@@ -169,31 +169,28 @@ class CouplingTests(unittest.TestCase):
 
 
 class GateTests(unittest.TestCase):
-    def test_18_plus_is_refused_outside_age_restricted_channels_and_in_dms(self):
+    def test_18_plus_runs_sfw_outside_age_restricted_channels_and_refuses_dms(self):
         mode = AssetMode(enabled=True, adult=True, approval=True, owner_only=True, user_cap=10, guild_cap=30, video=True)
         with mock.patch("core.imagine.speaker_allowed", return_value=True), \
              mock.patch("core.asset_limits.is_locked", return_value=False), \
              mock.patch("core.asset_limits.rate_refusal", return_value=None), \
              mock.patch("core.asset_safety._audit"):
-            self.assertEqual(
-                refuse_speaker(True, guild_id=1, channel_id=2, nsfw=False, asset_mode=mode),
-                ADULT_CHANNEL_REFUSAL,
-            )
-            self.assertIsNone(
-                refuse_speaker(True, guild_id=1, channel_id=2, nsfw=True, asset_mode=mode),
-            )
+            for kwargs in ({"nsfw": False}, {"channel": _Channel(False)}):
+                out = {}
+                self.assertIsNone(refuse_speaker(True, guild_id=1, channel_id=2, asset_mode=mode, out=out, **kwargs))
+                self.assertFalse(out["mode"].adult, "an ordinary channel runs under SFW rules")
+                self.assertEqual(out["mode"].owner_only, mode.owner_only)
+                self.assertEqual((out["mode"].user_cap, out["mode"].guild_cap), (10, 30))
+            for kwargs in ({"nsfw": True}, {"channel": _Channel(True)}):
+                out = {}
+                self.assertIsNone(refuse_speaker(True, guild_id=1, channel_id=2, asset_mode=mode, out=out, **kwargs))
+                self.assertTrue(out["mode"].adult)
             from core.asset_limits import DM_REFUSAL
             self.assertEqual(
                 refuse_speaker(True, guild_id=None, channel_id=2, nsfw=True, asset_mode=mode),
                 DM_REFUSAL,
             )
-            self.assertEqual(
-                refuse_speaker(True, guild_id=1, channel=_Channel(False), asset_mode=mode),
-                ADULT_CHANNEL_REFUSAL,
-            )
-            self.assertIsNone(
-                refuse_speaker(True, guild_id=1, channel=_Channel(True), asset_mode=mode),
-            )
+        self.assertTrue(ADULT_CHANNEL_REFUSAL)
 
     def test_18_plus_follows_the_owner_only_toggle(self):
         from core.imagine import speaker_allowed
@@ -210,9 +207,9 @@ class GateTests(unittest.TestCase):
             self.assertIsNone(
                 refuse_speaker(False, guild_id=1, channel_id=2, nsfw=True, asset_mode=open_mode),
             )
-            self.assertEqual(
+            # An ordinary channel is not refused; it runs under SFW rules.
+            self.assertIsNone(
                 refuse_speaker(False, guild_id=1, channel_id=2, nsfw=False, asset_mode=open_mode),
-                ADULT_CHANNEL_REFUSAL,
             )
             self.assertEqual(
                 refuse_speaker(False, guild_id=None, channel_id=2, nsfw=True, asset_mode=open_mode),

@@ -23,7 +23,7 @@ import os
 import shutil
 import subprocess
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace as _dc_replace
 
 ADULT_RULE = (
     "All characters are adults 21 years or older. "
@@ -265,13 +265,14 @@ def confirm_asset_delivery(
         request_id=request_id,
         response_id=response_id,
     )
-    latest = read_asset_mode()
+    stored = read_asset_mode()
+    if mode.adult and not channel_is_age_restricted(channel, nsfw=nsfw):
+        _audit("refusal", category="adult-channel-changed", mode=stored, **ids)
+        raise ImagineError(CHANNEL_CHANGED_REFUSAL)
+    latest = mode_for_channel(stored, channel, nsfw=nsfw)
     if latest != mode:
         _audit("refusal", category="asset-mode-changed", mode=latest, **ids)
         raise ImagineError(MODE_CHANGED_REFUSAL)
-    if mode.adult and not channel_is_age_restricted(channel, nsfw=nsfw):
-        _audit("refusal", category="adult-channel-changed", mode=latest, **ids)
-        raise ImagineError(CHANNEL_CHANGED_REFUSAL)
     return latest
 
 
@@ -374,6 +375,18 @@ def channel_is_age_restricted(channel=None, *, nsfw: bool | None = None) -> bool
         except Exception:
             pass
     return bool(getattr(channel, "nsfw", False))
+
+
+def mode_for_channel(mode: AssetMode, channel=None, *, nsfw: bool | None = None) -> AssetMode:
+    """18+ rules apply only in age-restricted channels.
+
+    With the 18+ toggle on, an ordinary (non-age-restricted) channel is not
+    refused: the request runs under the normal SFW rules (no S12 relaxing,
+    the normal age check). Audience, approval, caps, and video are unchanged.
+    """
+    if mode.adult and not channel_is_age_restricted(channel, nsfw=nsfw):
+        return _dc_replace(mode, adult=False)
+    return mode
 
 
 # Consensual adult sexual content. Never ignore S4 (child sexual exploitation)
@@ -745,7 +758,7 @@ async def _classify_image(
     mode: AssetMode | None = None,
 ) -> None:
     from core.blocklist import note
-    from core.classifier import age_vision_async, classify_async
+    from core.classifier import age_vision_async, classify_media_async
     from core.imagine import ImagineError
 
     snap = mode if mode is not None else read_asset_mode(observe=False)
@@ -762,10 +775,12 @@ async def _classify_image(
     if part is None:
         _audit("refusal", category="unreadable-output", **ids)
         raise ImagineError(OUTPUT_UNCHECKED)
+    # Pixels only. The text checkers (Llama Guard 3 is text-only) must not
+    # judge a fixed instruction string: it names minors, so it was flagged
+    # S1/S4 on every finished image, even a car.
     try:
-        verdict = await classify_async(
-            OUTPUT_CLASSIFY_TEXT,
-            images=[part],
+        verdict = await classify_media_async(
+            [part],
             ignore_lg4=adult_output_ignore_lg4(snap),
         )
     except Exception:

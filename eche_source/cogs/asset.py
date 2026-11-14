@@ -43,7 +43,7 @@ class Asset(commands.Cog):
         mode = gate["mode"]
         try:
             plan = plan_asset(prompt, asset_mode=mode)
-            result = await run_asset(plan, api_key(), asset_mode=mode, **ids)
+            result = await run_asset(plan, api_key(), asset_mode=mode, is_owner=bool(gate.get("owner")), **ids)
             result = await require_owner_review(
                 result,
                 bot=self.bot,

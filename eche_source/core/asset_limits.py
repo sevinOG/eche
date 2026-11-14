@@ -194,6 +194,28 @@ def record_use(user_id, guild_id, *, root: str | None = None) -> None:
     _save(data, root)
 
 
+def release_use(user_id, guild_id, *, root: str | None = None) -> None:
+    """Give back the newest cap slot after a blocked, refused, or failed attempt."""
+    with _LOCK:
+        try:
+            data = _load(root)
+        except LimitsCorrupt:
+            return
+        now = _now()
+        changed = False
+        for bucket, key in (("users", user_id), ("guilds", guild_id)):
+            if key is None:
+                continue
+            table = data.setdefault(bucket, {})
+            stamps = _prune(table.get(str(key), []), now)
+            if stamps:
+                stamps.remove(max(stamps))
+                changed = True
+            table[str(key)] = stamps
+        if changed:
+            _save(data, root)
+
+
 def reserve_use(user_id, guild_id, *, root: str | None = None, caps: tuple[int, int] | None = None) -> str | None:
     """Atomically refuse or take a cap slot at the start of an attempt."""
     with _LOCK:
