@@ -126,3 +126,51 @@ def strip_added_youthful_styles(prompt: str, user_text: str) -> str:
 
     out = _ADDED_STYLE_RE.sub(_keep, str(prompt or ""))
     return " ".join(out.replace(" ,", ",").split()).strip(" ,")
+
+
+# School cues and youth-emphasis phrases the chat model adds on its own
+# (owner-approved 2026-11-14 10:34 ET, after a model-written prompt at 10:01 ET
+# added "young adult", a school jacket and "at school"). Only phrases the user
+# did not write are removed. A prompt the minors matcher or the media filter
+# already blocks is left unchanged by the caller, so stripping never turns a
+# blocked prompt into an allowed one.
+_ADDED_CUES = (
+    ("youth", re.compile(
+        r"(?i)\b(?:young[\s-]+adult|barely[\s-]+(?:legal|18|eighteen)|just[\s-]+(?:turned[\s-]+)?(?:18|eighteen)|"
+        r"fresh(?:ly)?[\s-]+(?:18|eighteen)|newly[\s-]+(?:18|eighteen)|youthful(?:[\s-]+looking)?|"
+        r"young[\s-]+looking|young-?ish|young(?=[\s-]+(?:woman|women|man|men|lady|ladies|female|male|person|"
+        r"people|adult|guy|gal|girl|boy)s?\b))\b,?\s*")),
+    ("school", re.compile(
+        r"(?i)\b(?:at|in|after|before|to|from|for)\s+(?:(?:high|middle|grade|boarding|prep|elementary)\s+)?school\b,?\s*")),
+    ("school", re.compile(r"(?i)\b(?:high|middle|grade|boarding|prep|elementary)[\s-]+school(?:ers?)?\b,?\s*")),
+    ("school", re.compile(
+        r"(?i)\bschool[\s-]+(?=(?:jacket|blazer|skirt|backpack|bag|tie|shirt|sweater|cardigan|hoodie|shoes|socks|"
+        r"bus|desk|hallway|hall|locker|gym|days?)s?\b)")),
+    ("school", re.compile(
+        r"(?i)\b(?:(?:in|at|inside|into|to|from)\s+(?:a|an|the|her|his|their|my)\s+)?(?:class\s*rooms?|home\s*room|hall\s*pass(?:es)?|class\s*mates?|detention|recess|"
+        r"freshm[ae]n|sophomores?|students?|pupils?)\b,?\s*")),
+    ("school", re.compile(r"(?i)(?<!old\s)(?<!old-)\bschool(?:s|yard|house|work)?\b(?!\s+of\s+(?:fish|thought)),?\s*")),
+)
+
+
+def strip_added_school_and_youth_cues(prompt: str, user_text: str) -> tuple[str, list[str]]:
+    """Drop school cues and youth-emphasis phrases the user did not write.
+
+    Returns (prompt, removed phrases). The checks still run on the result.
+    """
+    said = " ".join(_clean(user_text).casefold().split())
+    removed: list[str] = []
+
+    def _drop(match: re.Match) -> str:
+        phrase = " ".join(match.group(0).strip(" ,").casefold().split())
+        if phrase and phrase in said:
+            return match.group(0)
+        removed.append(phrase)
+        return " "
+
+    out = str(prompt or "")
+    for _name, rx in _ADDED_CUES:
+        out = rx.sub(_drop, out)
+    out = re.sub(r"\s+([,.;:!?])", r"\1", " ".join(out.split()))
+    out = re.sub(r"(?:,\s*){2,}", ", ", out).strip(" ,")
+    return out, removed

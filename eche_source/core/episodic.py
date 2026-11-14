@@ -311,7 +311,9 @@ def episode_summary_text(raw: str) -> str:
     """Prose from the summarizer. An error string is not a summary."""
     from core.client import drop_safety_preamble
 
-    text = tidy_summary(drop_safety_preamble(raw or ""))
+    from core.summary_safety import scrub_summary
+
+    text = tidy_summary(scrub_summary(drop_safety_preamble(raw or "")))
     if not text or text.upper().startswith("ERROR"):
         return ""
     try:
@@ -516,13 +518,14 @@ async def load_episodic(bot, guild_id) -> str:
 async def _fold_stored(summary: str, recent: list[str], limit: int) -> str:
     """Summarizer pass over the local file. Empty means try on a later turn."""
     from core.client import call_groq_raw
+    from core.summary_safety import with_summary_rule
     from core.context_caps import summary_tokens
     from core.debuglog import dprint
     from core.summarizer_prompt import get_summarizer_model
 
     try:
         raw = await call_groq_raw(
-            fold_prompt(summary, recent, limit),
+            with_summary_rule(fold_prompt(summary, recent, limit)),
             model=get_summarizer_model(),
             max_completion_tokens=summary_tokens(limit),
         )
@@ -539,13 +542,14 @@ async def _fold_stored(summary: str, recent: list[str], limit: int) -> str:
 async def _condense_stored(previous: str, fresh: str, limit: int) -> str:
     """Second summarizer pass. Empty means the first text stays unstored."""
     from core.client import call_groq_raw
+    from core.summary_safety import with_summary_rule
     from core.context_caps import summary_tokens
     from core.debuglog import dprint
     from core.summarizer_prompt import get_summarizer_model
 
     try:
         raw = await call_groq_raw(
-            condense_prompt(previous, fresh, limit),
+            with_summary_rule(condense_prompt(previous, fresh, limit)),
             model=get_summarizer_model(),
             max_completion_tokens=summary_tokens(limit),
         )

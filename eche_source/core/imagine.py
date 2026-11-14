@@ -98,6 +98,10 @@ class AssetPlan:
     aspect: str = ""
     # Edit source from a replied-to message (core.asset_source.AssetSource).
     source: object = field(default=None, repr=False)
+    # The user's own message and the model's prompt before stripping, for
+    # the prompt checks (chat tool only; blank for ?asset).
+    user_text: str = field(default="", repr=False)
+    model_prompt: str = field(default="", repr=False)
 
 
 @dataclass
@@ -990,12 +994,16 @@ async def _run_asset_reserved(plan, key, snap, ids, get_backend, prepare_generat
     user_id = ids.get("user_id")
     guild_id = ids.get("guild_id")
     channel_id = ids.get("channel_id")
+    source = getattr(plan, "source", None)
     prepared = await prepare_generation(
         getattr(plan, "prompt", "") or "",
         user_id=user_id,
         guild_id=guild_id,
         channel_id=channel_id,
         mode=snap,
+        user_text=getattr(plan, "user_text", "") or "",
+        model_prompt=getattr(plan, "model_prompt", "") or "",
+        edit=source is not None or getattr(plan, "mode", "") in ("image_edit", "video_edit"),
     )
     source = getattr(plan, "source", None)
     if source is not None:

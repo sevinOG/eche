@@ -12,6 +12,7 @@ from core.context_manager import (
     split_memory_pin,
 )
 from core.client import call_groq_raw, drop_safety_preamble, is_quota_error
+from core.summary_safety import scrub_summary, with_summary_rule
 from core.summarizer_prompt import (
     build_condense_prompt,
     build_merge_prompt,
@@ -174,7 +175,7 @@ def _clean_summary_text(text: str) -> str:
     t = re.sub(r"^```(?:\w+)?\s*", "", t)
     t = re.sub(r"\s*```$", "", t)
     t = re.sub(r"^(summary|memory|condensed summary)\s*:\s*", "", t, flags=re.I)
-    return t.strip()
+    return scrub_summary(t.strip())
 
 
 async def _llm_summary(
@@ -194,7 +195,7 @@ async def _llm_summary(
             from core.context_caps import summary_tokens
 
             raw = await call_groq_raw(
-                prompt,
+                with_summary_rule(prompt),
                 model=model,
                 max_completion_tokens=summary_tokens(char_target),
             )
@@ -563,7 +564,7 @@ async def _memory_completion(prompt: str, limit: int) -> str:
     from core.episodic import episode_summary_text
 
     raw = await call_groq_raw(
-        prompt,
+        with_summary_rule(prompt),
         model=get_summarizer_model(),
         max_completion_tokens=summary_tokens(limit),
     )
