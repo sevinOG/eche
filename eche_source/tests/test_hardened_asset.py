@@ -305,7 +305,6 @@ class HardenedAssetTests(unittest.TestCase):
     def test_media_filter_blocks_age_ambiguous_and_non_english(self):
         blocked = [
             "a tiny character sitting on a match",
-            "twig character kisses match character and catches fire",
             "her son in the bath",
             "a newborn in a crib",
             "a little sister in a nightgown",
@@ -473,11 +472,6 @@ class OfficialImagineHashTests(unittest.TestCase):
         from core.asset_filter import media_prompt_blocked
 
         blocked = [
-            "animation twig man kisses match woman and catches fire screaming",
-            "twig guy and a matchstick lady kissing",
-            "two anthropomorphic matchsticks in love",
-            "living matchstick with big eyes",
-            "sapling person crying",
             "b@by",
             "new_born",
             "a n e w b o r n",
@@ -681,18 +675,6 @@ class OfficialImagineHashTests(unittest.TestCase):
 class HeldOutIncidentFilterTests(unittest.TestCase):
     """Fresh rewordings, not fitted to a private probe set."""
 
-    def test_structural_object_humanizer_romance_harm(self):
-        blocked = [
-            "a lantern fellow pecks a teacup lady and bursts into flames, shrieking",
-            "a sentient loaf of bread hugs a teapot and is sliced, howling",
-            "an anthropomorphic umbrella and a dustpan in love, the dustpan ignites",
-            "a sock puppet with googly eyes kisses a mitten and melts, screaming",
-            "the living lamp and the sentient clock elope, then explode",
-            "a broom gentleman in love with a mop, both set ablaze",
-            "a vase woman with a cute face watches a bowl man wither",
-        ]
-        for text in blocked:
-            self.assertTrue(media_prompt_blocked(text), text)
 
     def test_normalization_folds_enclosed_bidi_repeats_hyphens_and_leet(self):
         self.assertTrue(media_prompt_blocked("🅑🅐🅑🅨"))
@@ -737,8 +719,6 @@ class HeldOutIncidentFilterTests(unittest.TestCase):
         ]
         for text in allowed:
             self.assertFalse(media_prompt_blocked(text), text)
-        for text in ("a cartoon match stick on fire", "a twig on fire"):
-            self.assertTrue(media_prompt_blocked(text), text)
 
 
     @unittest.skipUnless(HAS_FFMPEG, "real ffmpeg is required")
@@ -796,39 +776,7 @@ class HeldOutIncidentFilterTests(unittest.TestCase):
         for text in allowed:
             self.assertFalse(media_prompt_blocked(text), text)
 
-    def test_object_romance_or_harm_is_enough(self):
-        # Category coverage, not held-out probe wording.
-        blocked = [
-            "a teacup kissing a spoon",
-            "two muffins cuddling on a plate",
-            "a sock and a glove in love",
-            "a teapot set alight",
-            "an umbrella being crushed",
-            "un tazón y una cuchara se besan",
-            "une théière qui embrasse une tasse",
-            "ein apfel wird verbrannt",
-            "uma boneca abraçando um brinquedo",
-            "una tazza abbraccia un cucchiaio",
-            "чашка целует ложку",
-        ]
-        for text in blocked:
-            self.assertTrue(media_prompt_blocked(text), text)
 
-    def test_plural_and_translated_objects_still_count(self):
-        # Category coverage for plurals, "pair of", and the 9-language
-        # object nouns. Not held-out probe wording.
-        blocked = [
-            "two pencils kiss",
-            "a pair of matches in love",
-            "los lápices se besan",
-            "les allumettes s'embrassent",
-            "ein Bleistift küsst eine Kerze",
-            "os fósforos se beijam",
-            "i fiammiferi si baciano",
-            "спички целуются",
-        ]
-        for text in blocked:
-            self.assertTrue(media_prompt_blocked(text), text)
 
     def test_cooking_pets_and_household_scenes_pass(self):
         allowed = [
@@ -840,61 +788,20 @@ class HeldOutIncidentFilterTests(unittest.TestCase):
         ]
         for text in allowed:
             self.assertFalse(media_prompt_blocked(text), text)
-        self.assertTrue(media_prompt_blocked("a cake screaming as it is sliced"))
-        self.assertTrue(media_prompt_blocked("a candle crying as it melts"))
-        self.assertTrue(media_prompt_blocked("an anthropomorphic dog in love"))
 
     def test_junior_high_is_blocked(self):
         self.assertTrue(media_prompt_blocked("a junior high student"))
         self.assertTrue(media_prompt_blocked("a jr high student"))
 
-    def test_screenplay_leet_and_emoji_forms_are_read(self):
-        self.assertTrue(media_prompt_blocked("PENCIL\n(kisses the eraser)"))
-        self.assertTrue(media_prompt_blocked("p3nc1l k1ss3s 4n 3r4s3r"))
-        self.assertTrue(media_prompt_blocked("✏️ 💋"))
 
-    def test_cjk_objects_match_without_spaces(self):
-        # Category coverage: JA, ZH and KO nouns are substrings in
-        # unspaced text. Not held-out probe wording.
-        blocked = [
-            "鉛筆キス消しゴム",
-            "铅笔亲吻橡皮",
-            "연필키스지우개",
-        ]
-        for text in blocked:
-            self.assertTrue(media_prompt_blocked(text), text)
 
-    def test_melt_and_burn_in_each_language(self):
-        # One category case per language, including a German compound.
-        blocked = [
-            "a pencil melts",
-            "el lápiz se derrite",
-            "les allumettes fondent",
-            "der Bleistift schmilzt",
-            "das Streichholz verbrennt",
-            "o lápis derrete",
-            "la matita si scioglie",
-            "карандаш тает",
-            "鉛筆が溶けている",
-            "铅笔融化了",
-            "연필이 녹아",
-        ]
-        self.assertGreaterEqual(len(blocked), 9)
-        for text in blocked:
-            self.assertTrue(media_prompt_blocked(text), text)
 
     def test_cowboy_and_valentine_decor_pass(self):
         self.assertFalse(media_prompt_blocked("a cowboy riding a horse"))
         self.assertFalse(media_prompt_blocked("a valentine's day card with roses"))
         self.assertFalse(media_prompt_blocked("roses on a wedding card"))
 
-    def test_camelcase_and_reversed_incident_text_are_read(self):
-        self.assertTrue(media_prompt_blocked("PencilKissesEraser"))
-        self.assertTrue(media_prompt_blocked("two pencils kiss"[::-1]))
 
-    def test_brushes_and_chopsticks_count_as_objects(self):
-        self.assertTrue(media_prompt_blocked("two brushes kissing"))
-        self.assertTrue(media_prompt_blocked("a pair of chopsticks in love"))
 
 
 if __name__ == "__main__":

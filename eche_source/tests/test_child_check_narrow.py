@@ -25,6 +25,17 @@ C17_0701 = "add a video of an anthromorphic c17 globemaster as a heavy set femal
 C17_0708 = "an actual c17"
 ADDERALL = "adderall jaso"
 FALSE_POSITIVES = (C17_0701, C17_0708, ADDERALL)
+C17_0707 = (
+    "Anthropomorphic female C-17 Globemaster III military transport plane as a woman, full body, "
+    "standing confidently on a tarmac at sunset, wearing a flight suit and aviator goggles, large "
+    "breasts, cargo bay doors as a skirt, four jet engines as shoulder pads, military stomp boots, "
+    "short cropped hair, smirking, dramatic sky behind her"
+)
+C17_0757 = (
+    "make these anthromorphic women - two beautiful adult female pilots, each anthropomorphic "
+    "version of the military jet in the photo, in an in-air refueling scene high above the clouds, "
+    "one extending a refueling boom to the other, detailed cinematic"
+)
 
 # Explicit minor text (text only, never an image).
 EXPLICIT_MINORS = (
@@ -293,19 +304,57 @@ class AssetPathUsesTheChildCheck(Base):
                     self.fail(f"{text!r} blocked: {exc!r}")
             self.assertEqual([u for u, _ in self.requests], [XAI_URL], text)
 
-    def test_media_filter_on_the_0707_prompt_is_the_personified_object_rule(self):
-        # 07:07 ET: "Anthropomorphic female C-17 ... as a woman ... cargo bay
-        # doors as a skirt ... military stomp boots". The structural
-        # personified-object rule ("anthropomorphic" plus object words such as
-        # doors and boots) blocks it by design; the bare jet prompts pass.
+    def test_media_filter_passes_the_anthropomorphic_jet_prompts(self):
+        # 07:07 and 07:57 ET (Nov 14) were refused by the personified-object
+        # rule, which was removed (owner decision, 08:12 ET). Minors cues
+        # still block in the media filter and the blocklist.
         from core.asset_filter import media_prompt_blocked
+        from core import blocklist
 
-        self.assertTrue(media_prompt_blocked(
-            "Anthropomorphic female C-17 Globemaster III military transport plane as a woman, "
-            "cargo bay doors as a skirt, military stomp boots", adult=False))
-        for text in FALSE_POSITIVES:
-            self.assertFalse(media_prompt_blocked(text, adult=False), text)
+        for text in (C17_0707, C17_0757) + FALSE_POSITIVES:
+            for adult in (False, True):
+                self.assertFalse(media_prompt_blocked(text, adult=adult), (text, adult))
+            self.assertFalse(blocklist.is_blocked(text), text)
+        for text in ("a toddler in a garden", "a little girl", "a newborn in a crib", "pigtails, knee socks, innocent"):
+            self.assertTrue(media_prompt_blocked(text, adult=False), text)
+        for text in ("a 12 year old girl", "a schoolgirl", "twig boy"):
+            self.assertTrue(blocklist.is_blocked(text), text)
+        import core.asset_filter as af
+        for name in ("_anthro_incident", "_ANTHRO_RE", "_object_stems", "_OBJECT_LEXICON", "_HUMANIZER_RE"):
+            self.assertFalse(hasattr(af, name), name)
 
+    def test_prepare_generation_passes_the_anthropomorphic_jet_prompts(self):
+        from core import asset_safety as S
+        from core.asset_safety import AssetMode
+
+        sfw = AssetMode(enabled=True, adult=False, approval=False, owner_only=False, user_cap=10,
+                        guild_cap=40, video=True, video_user_cap=5, video_guild_cap=15)
+        for text in (C17_0707, C17_0757):
+            self.requests.clear()
+            with mock.patch("urllib.request.urlopen", side_effect=self._opener(grok="NO")), \
+                 mock.patch("core.asset_safety._audit"):
+                try:
+                    asyncio.run(S.prepare_generation(text, user_id=5, guild_id=1, channel_id=1, mode=sfw))
+                except Exception as exc:  # pragma: no cover
+                    self.fail(f"{text[:40]!r} blocked: {exc!r}")
+            self.assertEqual([u for u, _ in self.requests], [XAI_URL])
+
+    def test_explicit_minor_asset_prompt_is_still_refused(self):
+        from core import asset_safety as S
+        from core.asset_safety import AssetMode
+        from core.imagine import ImagineError
+
+        sfw = AssetMode(enabled=True, adult=False, approval=False, owner_only=False, user_cap=10,
+                        guild_cap=40, video=True, video_user_cap=5, video_guild_cap=15)
+        # Words the filters do not list still reach the child check, and YES refuses.
+        with mock.patch("urllib.request.urlopen", side_effect=self._opener(grok="YES")), \
+             mock.patch("core.asset_safety._audit"):
+            with self.assertRaises(ImagineError):
+                asyncio.run(S.prepare_generation("an anthropomorphic plane as a fourth grader",
+                                                 user_id=5, guild_id=1, channel_id=1, mode=sfw))
+            for text in ("a 12 year old girl", "a toddler in a garden"):
+                with self.assertRaises(ImagineError):
+                    asyncio.run(S.prepare_generation(text, user_id=5, guild_id=1, channel_id=1, mode=sfw))
 
 if __name__ == "__main__":
     unittest.main()

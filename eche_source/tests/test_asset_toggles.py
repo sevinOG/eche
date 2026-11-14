@@ -300,7 +300,7 @@ class AdultFilterTests(unittest.TestCase):
         from core.asset_filter import media_prompt_blocked
 
         self.assertTrue(media_prompt_blocked("a toddler in a garden", adult=True))
-        self.assertTrue(media_prompt_blocked("a teacup kissing a spoon", adult=True))
+        self.assertTrue(media_prompt_blocked("a little girl", adult=True))
 
 
 class ClassifierIgnoreTests(unittest.TestCase):
