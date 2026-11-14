@@ -76,12 +76,20 @@ _MALE_RE = re.compile(
     r"grooms?|princes?|kings?|wizards?|cowboys?|catboys?|husbandos?)\b",
     re.IGNORECASE,
 )
+# 2026-11-14 08:42 ET: "a goth woman driving a bouncing toyota yaris" (video
+# edit) passed frames 1-5 as adult, then frame 6/49 was read as an apparent
+# minor. The hint now asks for explicit mature-adult visual cues that stay
+# visible in every frame. Strengthen only; the checks are unchanged.
 _ADULT_HINT = (
     "Every person or character shown must be unmistakably and unambiguously an "
-    "adult, with no possible question about it: a mature adult {who} in {their} "
-    "30s or older, with a fully adult face, adult body proportions, adult "
-    "stature, and clearly adult features, and with no youthful, childlike, or "
-    "teen-like traits of any kind. Keep the requested art style."
+    "adult, with no possible question about it: a clearly mature adult {who} in "
+    "{their} 30s, 40s, or older, with a fully adult face, a defined adult jawline "
+    "and mature adult facial structure, adult body proportions, adult stature, "
+    "adult height in proportion to the surroundings, vehicles, and objects, and "
+    "clearly adult features, and with no youthful, childlike, or teen-like traits "
+    "of any kind. These mature adult features stay clearly visible in every view "
+    "and, for a video, in every frame throughout the whole clip. "
+    "Keep the requested art style."
 )
 
 
@@ -814,10 +822,6 @@ async def _classify_image(
     stage: str = "output",
     frame: str = "",
 ) -> None:
-    from core.blocklist import note
-    from core.classifier import age_vision_async, classify_media_async, collect_signals
-    from core.imagine import ImagineError
-
     snap = mode if mode is not None else read_asset_mode(observe=False)
     ids = dict(
         user_id=user_id,
@@ -829,6 +833,23 @@ async def _classify_image(
         mode=snap,
         frame=frame,
     )
+    # Verdict audit rows from the checkers carry this frame and stage.
+    from core.classifier import CHECK_FRAME, CHECK_STAGE
+
+    frame_token = CHECK_FRAME.set(frame or "1/1")
+    stage_token = CHECK_STAGE.set(stage)
+    try:
+        await _classify_image_checks(data, mime, ids=ids, snap=snap, stage=stage)
+    finally:
+        CHECK_STAGE.reset(stage_token)
+        CHECK_FRAME.reset(frame_token)
+
+
+async def _classify_image_checks(data: bytes, mime: str, *, ids: dict, snap: AssetMode, stage: str) -> None:
+    from core.blocklist import note
+    from core.classifier import age_vision_async, classify_media_async, collect_signals
+    from core.imagine import ImagineError
+
     source = stage == "source"
     refused = SOURCE_REFUSAL if source else OUTPUT_REFUSAL
     unchecked = SOURCE_UNCHECKED if source else OUTPUT_UNCHECKED

@@ -1728,36 +1728,112 @@ def _yesno_to_check(text: str, *, kind: str) -> str:
     return ""
 
 
+# Frame ("N/total") and stage of the media being checked, for the verdict
+# audit rows. Set by asset_safety around each output/source check; copied
+# into the checker thread by asyncio.to_thread.
+CHECK_FRAME: contextvars.ContextVar[str] = contextvars.ContextVar("eche_check_frame", default="")
+CHECK_STAGE: contextvars.ContextVar[str] = contextvars.ContextVar("eche_check_stage", default="")
+
+
+def _log_image_verdict(
+    checker: str,
+    model: str,
+    verdict: str,
+    *,
+    adult: bool,
+    reason: str = "",
+    error_type: str = "",
+) -> bool:
+    """One audit line per image-content-check decision. Never logs image data.
+
+    Written as a safety record, so a failed write raises inside audit and is
+    reported here as False; the caller then blocks instead of allowing an
+    unlogged pass (no missing logs), like the child check.
+    """
+    short = {"": "no", "classifier-unsafe": "yes"}.get(verdict, "error")
+    logged = True
+    try:
+        from core.audit import api as audit_api
+        audit_api(
+            "image-check",
+            outcome="block" if verdict else "pass",
+            checker=checker,
+            model=model,
+            verdict=short,
+            reason=reason or ("clear" if not verdict else short),
+            category=verdict or "image-check",
+            mode="18+" if adult else "sfw",
+            frame=CHECK_FRAME.get(),
+            stage=CHECK_STAGE.get(),
+            error_type=error_type,
+            safety=True,
+        )
+    except Exception:
+        logged = False
+    if not logged and not verdict:
+        try:
+            from core.gui_bridge import log
+            log("Safety check blocked (image-check): the audit log could not be written, so the image was blocked.",
+                channel="chat")
+        except Exception:
+            pass
+    return logged
+
+
+def _image_verdict(checker: str, model: str, verdict: str, *, adult: bool, reason: str = "",
+                   error_type: str = "") -> str:
+    """Log the verdict and return it; an allow that could not be audited blocks."""
+    logged = _log_image_verdict(checker, model, verdict, adult=adult, reason=reason, error_type=error_type)
+    if not verdict and not logged:
+        return "classifier-error"
+    return verdict
+
+
 def _classify_images_sync(text: str, images: list, *, adult: bool = False) -> str:
-    """Image content check: Grok vision first, local vision model backup."""
+    """Image content check: Grok vision first, local vision model backup.
+
+    Every decision writes an image-check verdict row (checker, model,
+    verdict, frame); a pass whose row cannot be written blocks.
+    """
     del text
     spec = _resolve_checker("image_check")
     if spec.problem:
         report_checker_problem(spec)
-        return "classifier-vision-unavailable" if spec.problem in {"blank_model", "not_vision"} else "classifier-error"
+        verdict = "classifier-vision-unavailable" if spec.problem in {"blank_model", "not_vision"} else "classifier-error"
+        return _image_verdict("none", spec.model or "", verdict, adult=adult, reason=f"checker problem: {spec.problem}")
     if not _has_backend(spec):
         _log_no_backend(spec)
-        return "classifier-error"
+        return _image_verdict("none", spec.model or "", "classifier-error", adult=adult, reason="checker error: no backend")
+    grok_error = ""
     if _xai_key() and _FORCE_BACKEND != "ollama":
         try:
             raw = _xai_vision_post(
                 images, IMAGE_CHECK_ADULT_PROMPT if adult else IMAGE_CHECK_PROMPT, service="image-check",
             )
         except Exception as exc:
-            _log_vision_fallback("image-check", type(exc).__name__)
+            grok_error = type(exc).__name__
+            _log_vision_fallback("image-check", grok_error)
         else:
             verdict = _yesno_to_check(raw, kind="image-check (grok-vision)")
             if verdict != "classifier-error":
-                return verdict
+                return _image_verdict("grok-vision", _xai_vision_model_cached(), verdict, adult=adult)
+            grok_error = "unclear reply"
             _log_vision_fallback("image-check", "unclear reply")
     messages, check = _image_check_yesno_messages(images, adult=adult)
     if check:
-        return check
+        detail = "checker error: local image unsupported" + (f"; grok {grok_error}" if grok_error else "")
+        return _image_verdict("local-vision", spec.model or "", check, adult=adult, reason=detail)
     try:
         raw = _post_with_images(messages, spec)
-        return _yesno_to_check(raw, kind="image-check")
-    except Exception:
-        return "classifier-error"
+    except Exception as exc:
+        detail = f"checker error: local {type(exc).__name__}" + (f"; grok {grok_error}" if grok_error else "")
+        return _image_verdict("local-vision", spec.model or "", "classifier-error", adult=adult,
+                              reason=detail, error_type=type(exc).__name__)
+    verdict = _yesno_to_check(raw, kind="image-check")
+    reason = ""
+    if verdict == "classifier-error":
+        reason = "checker error: local reply was not YES or NO" + (f"; grok {grok_error}" if grok_error else "")
+    return _image_verdict("local-vision", spec.model or "", verdict, adult=adult, reason=reason)
 
 
 async def _classify_images_async(text: str, images: list, *, adult: bool = False) -> str:
@@ -1769,6 +1845,8 @@ async def _classify_images_async(text: str, images: list, *, adult: bool = False
     except Exception as exc:
         reason = "timeout" if _is_timeout_error(exc) else "error"
         _log_check_block("image-check", reason, error_type=type(exc).__name__)
+        _log_image_verdict("deadline", "", "classifier-error", adult=adult,
+                           reason=f"checker {reason}", error_type=type(exc).__name__)
         return "classifier-error"
 
 
@@ -1956,6 +2034,12 @@ def _xai_vision_model() -> str:
     with _xai_model_lock:
         _xai_model_cache = (now, model)
     return model
+
+
+def _xai_vision_model_cached() -> str:
+    """The cached Grok vision model name for audit rows. Never fetches."""
+    with _xai_model_lock:
+        return _xai_model_cache[1] or ""
 
 
 def _xai_vision_models_fetch() -> str:
@@ -2255,7 +2339,8 @@ _VERDICT_REASON = {
 }
 
 
-def _log_age_verdict(checker: str, verdict: str, *, adult: bool, reason: str = "", error_type: str = "") -> None:
+def _log_age_verdict(checker: str, verdict: str, *, adult: bool, reason: str = "", error_type: str = "",
+                     model: str = "") -> None:
     """One audit line per age-vision decision: checker, verdict, mode, short reason."""
     short = {"": "pass", "age-vision-yes": "yes", "age-vision-unsure": "unsure"}.get(verdict, "error")
     why = reason or _VERDICT_REASON.get(verdict, "")
@@ -2272,6 +2357,9 @@ def _log_age_verdict(checker: str, verdict: str, *, adult: bool, reason: str = "
             verdict=short,
             reason=why,
             mode=mode,
+            model=model,
+            frame=CHECK_FRAME.get(),
+            stage=CHECK_STAGE.get(),
             error_type=error_type,
         )
     except Exception:
@@ -2302,7 +2390,7 @@ def _age_vision_sync(images: list, *, adult: bool = False) -> str:
         else:
             if verdict != "age-vision-error":
                 # Verdict and reason come from the same reply.
-                _log_age_verdict("grok-vision", verdict, adult=adult, reason=label)
+                _log_age_verdict("grok-vision", verdict, adult=adult, reason=label, model=_xai_vision_model_cached())
                 _note_signal("age-label", label)
                 return verdict
             grok_error = f"unclear reply ({label})"
@@ -2313,7 +2401,8 @@ def _age_vision_sync(images: list, *, adult: bool = False) -> str:
         detail = f"checker error: local {type(exc).__name__}"
         if grok_error:
             detail += f"; grok {grok_error}"
-        _log_age_verdict("local-vision", "age-vision-error", adult=adult, reason=detail, error_type=type(exc).__name__)
+        _log_age_verdict("local-vision", "age-vision-error", adult=adult, reason=detail, error_type=type(exc).__name__,
+                         model=age_vision_ollama_model())
         return "age-vision-error"
     verdict, label = parse_age_reply(raw)
     if verdict == "age-vision-error":
@@ -2323,9 +2412,9 @@ def _age_vision_sync(images: list, *, adult: bool = False) -> str:
         detail = f"checker error: local reply was not YES or NO ({label})"
         if grok_error:
             detail += f"; grok {grok_error}"
-        _log_age_verdict("local-vision", verdict, adult=adult, reason=detail)
+        _log_age_verdict("local-vision", verdict, adult=adult, reason=detail, model=age_vision_ollama_model())
     else:
-        _log_age_verdict("local-vision", verdict, adult=adult, reason=label)
+        _log_age_verdict("local-vision", verdict, adult=adult, reason=label, model=age_vision_ollama_model())
         _note_signal("age-label", label)
     return verdict
 
