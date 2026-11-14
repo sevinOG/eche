@@ -7,13 +7,16 @@ runs BUILD.bat, and starts Eche again.
 from __future__ import annotations
 
 import io
+import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import zipfile
 from pathlib import Path
+from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 GITHUB_OWNER = "sevinOG"
@@ -24,6 +27,13 @@ USER_AGENT = "Eche/2.1.0 (+https://github.com/sevinOG/eche)"
 _APP_CANDIDATES = ("eche_source", "echelon_source", "eche-source", "echelon-source")
 _SKIP_DIRS = {".venv", "__pycache__", "dist", "build", ".git", "cookies", "logs", "memories", "context"}
 _SKIP_FILES = {"settings.json", "secrets.dpapi.json"}
+
+# Written into eche_source by the installer and by every GitHub update, so the
+# next update pulls the same branch instead of silently switching to main.
+INSTALL_INFO_FILE = ".eche_github_install.json"
+UPDATE_BRANCH_KEY = "update_branch"
+_BRANCH_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$")
+_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 
 # Only these trees are considered program code. Never inspect or delete
 # anything outside them, and never touch user data even if it appears here.
@@ -197,11 +207,85 @@ def purge_removed_program_files(stage: str | Path, target: str | Path) -> list[s
     return removed
 
 
+def clean_branch(branch: str | None) -> str:
+    """A safe git branch name, or "" if it is blank or not a plain branch name."""
+    text = str(branch or "").strip()
+    if not text or not _BRANCH_RE.match(text):
+        return ""
+    if ".." in text or "//" in text or text.endswith(("/", ".", ".lock")) or "@{" in text:
+        return ""
+    return text
+
+
+def read_install_info(target: str | Path | None) -> dict:
+    """Branch and commit recorded in eche_source at install/update time. {} if none."""
+    if not target:
+        return {}
+    path = Path(target) / INSTALL_INFO_FILE
+    try:
+        if not path.is_file() or _is_link(path):
+            return {}
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    out = dict(data)
+    branch = clean_branch(data.get("branch"))
+    out["branch"] = branch
+    commit = str(data.get("commit") or "").strip().lower()
+    out["commit"] = commit if _SHA_RE.match(commit) else ""
+    return out
+
+
+def write_install_info(dest: str | Path, branch: str, commit: str | None = None) -> Path:
+    """Record which branch (and commit, when known) this source tree came from."""
+    branch = clean_branch(branch) or GITHUB_BRANCH
+    commit = str(commit or "").strip().lower()
+    info = {
+        "repo": f"{GITHUB_OWNER}/{GITHUB_REPO}",
+        "branch": branch,
+        "commit": commit if _SHA_RE.match(commit) else "",
+        "subdir": "eche_source",
+        "product": "eche_app_source",
+        "url": f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}",
+    }
+    path = Path(dest) / INSTALL_INFO_FILE
+    path.write_text(json.dumps(info, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def resolve_update_branch(setting: str | None = None, target: str | Path | None = None) -> str:
+    """Branch the GitHub update pulls.
+
+    1. The update_branch setting, when it is a valid branch name.
+    2. The branch this install came from (INSTALL_INFO_FILE in the target).
+    3. main.
+    """
+    chosen = clean_branch(setting)
+    if chosen:
+        return chosen
+    installed = read_install_info(target).get("branch") or ""
+    return installed or GITHUB_BRANCH
+
+
 def archive_zip_url(branch: str = GITHUB_BRANCH) -> str:
+    branch = clean_branch(branch)
+    if not branch:
+        raise ValueError("Update branch is not a valid git branch name.")
     return (
         f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/"
-        f"archive/refs/heads/{branch}.zip"
+        f"archive/refs/heads/{quote(branch, safe='/')}.zip"
     )
+
+
+def _archive_commit(zf: zipfile.ZipFile) -> str:
+    """GitHub stores the commit SHA as the archive's zip comment."""
+    try:
+        text = zf.comment.decode("ascii", "ignore").strip().lower()
+    except Exception:
+        return ""
+    return text if _SHA_RE.match(text) else ""
 
 
 def _looks_like_app_source(dest: Path) -> bool:
@@ -212,14 +296,20 @@ def _looks_like_app_source(dest: Path) -> bool:
     return (dest / "gui").is_dir() or (dest / "cogs").is_dir() or (dest / "core" / "eche.py").is_file()
 
 
-def extract_app_source_zip(raw: bytes, dest: str | Path) -> Path:
-    """Extract only the app source folder from a GitHub repo zip."""
+def extract_app_source_zip(raw: bytes, dest: str | Path, branch: str | None = None) -> Path:
+    """Extract only the app source folder from a GitHub repo zip.
+
+    When branch is given, records it (and the archive's commit) in
+    INSTALL_INFO_FILE so the copy into eche_source carries it along.
+    """
     dest = Path(dest)
+    commit = ""
     dest.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(io.BytesIO(raw)) as zf:
         names = zf.namelist()
         if not names:
             raise RuntimeError("GitHub archive was empty.")
+        commit = _archive_commit(zf)
         root = names[0].split("/")[0] + "/"
         chosen = None
         prefix = None
@@ -260,19 +350,28 @@ def extract_app_source_zip(raw: bytes, dest: str | Path) -> Path:
             "Downloaded files do not look like Eche source "
             "(need core/, gui/ or cogs/, and BUILD.bat)."
         )
+    if branch:
+        write_install_info(dest, branch, commit)
     return dest
 
 
-def stage_github_source(dest: str | Path, log=None) -> Path:
-    """Download main and extract eche_source into dest. Does not touch the running app."""
+def stage_github_source(dest: str | Path, log=None, branch: str | None = None) -> Path:
+    """Download a branch (main by default) and extract eche_source into dest.
+
+    Does not touch the running app.
+    """
     log = log or (lambda _m: None)
-    url = archive_zip_url()
+    branch = clean_branch(branch) or GITHUB_BRANCH
+    url = archive_zip_url(branch)
     log(f"Downloading {url}")
     req = Request(url, headers={"User-Agent": USER_AGENT, "Accept": "*/*"})
     with urlopen(req, timeout=180) as resp:
         raw = resp.read()
     log(f"Downloaded {len(raw):,} bytes. Extracting application source…")
-    found = extract_app_source_zip(raw, dest)
+    found = extract_app_source_zip(raw, dest, branch=branch)
+    info = read_install_info(found)
+    if info.get("commit"):
+        log(f"Branch {branch} at commit {info['commit'][:12]}")
     log(f"Staged source at {found}")
     return found
 
@@ -320,6 +419,95 @@ def default_source_target(stored: str | None = None) -> str:
     return sibling
 
 
+_PURGE_HELPER = """\
+# Eche update: remove program files the new release no longer ships.
+# Never fails the update: if the new release has no purge step, fall back to
+# the purge step from the copy that was installed before this update, or skip
+# the cleanup with a warning. Data, settings, and secrets are never touched.
+import importlib.util
+import sys
+
+STAGE = {stage!r}
+TARGET = {target!r}
+FALLBACK = {fallback!r}
+
+
+def _from_stage():
+    sys.path.insert(0, STAGE)
+    try:
+        from core.app_update import purge_removed_program_files as fn
+        return fn
+    except Exception as exc:
+        print("[update] The new release has no purge step (" + type(exc).__name__ + ").", flush=True)
+        return None
+    finally:
+        try:
+            sys.path.remove(STAGE)
+        except ValueError:
+            pass
+
+
+def _from_fallback():
+    if not FALLBACK:
+        return None
+    try:
+        spec = importlib.util.spec_from_file_location("eche_installed_app_update", FALLBACK)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return getattr(mod, "purge_removed_program_files", None)
+    except Exception as exc:
+        print("[update] The installed copy's purge step could not load (" + type(exc).__name__ + ").", flush=True)
+        return None
+
+
+def main():
+    fn = _from_stage()
+    if fn is None:
+        fn = _from_fallback()
+        if fn is not None:
+            print("[update] Using the purge step from the previously installed copy.", flush=True)
+    if fn is None:
+        print("[update] WARNING: skipping stale-file cleanup. The build continues; "
+              "your Data folder, settings, and secrets were not touched.", flush=True)
+        return 0
+    try:
+        removed = fn(STAGE, TARGET) or []
+        print("[update] Removed " + str(len(removed)) + " stale program file(s).", flush=True)
+    except Exception as exc:
+        print("[update] WARNING: stale-file cleanup failed (" + type(exc).__name__ + ": "
+              + str(exc)[:200] + "). The build continues.", flush=True)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+"""
+
+
+def _save_installed_updater(target: str) -> str:
+    """Copy the installed core/app_update.py aside before the copy overwrites it."""
+    src = Path(target) / "core" / "app_update.py"
+    try:
+        if not src.is_file() or _is_link(src):
+            return ""
+        fd, dst = tempfile.mkstemp(prefix="eche-update-prev-", suffix=".py")
+        os.close(fd)
+        shutil.copyfile(src, dst)
+        return _safe_path(dst)
+    except Exception:
+        return ""
+
+
+def _write_purge_helper(stage: str, target: str, fallback: str) -> str:
+    fd, path = tempfile.mkstemp(prefix="eche-update-purge-", suffix=".py")
+    os.close(fd)
+    Path(path).write_text(
+        _PURGE_HELPER.format(stage=stage, target=target, fallback=fallback),
+        encoding="utf-8",
+    )
+    return _safe_path(path)
+
+
 def write_handoff_script(
     *,
     pid: int,
@@ -347,6 +535,11 @@ def write_handoff_script(
                 )
     except ImportError:
         pass
+    helper_s = ""
+    fallback_s = ""
+    if stage_s:
+        fallback_s = _save_installed_updater(target_s)
+        helper_s = _write_purge_helper(stage_s, target_s, fallback_s)
     fd, path = tempfile.mkstemp(prefix="eche-update-", suffix=".bat")
     os.close(fd)
     skip_dirs = " ".join(_SKIP_DIRS)
@@ -364,14 +557,24 @@ if !errorlevel! GEQ 8 (
   exit /b 1
 )
 echo Removing program files the new release no longer ships...
-py -3 -c "import sys; sys.path.insert(0, r'{stage_s}'); from core.app_update import purge_removed_program_files; purge_removed_program_files(r'{stage_s}', r'{target_s}')"
-if errorlevel 1 (
-  python -c "import sys; sys.path.insert(0, r'{stage_s}'); from core.app_update import purge_removed_program_files; purge_removed_program_files(r'{stage_s}', r'{target_s}')"
+REM The helper runs purge_removed_program_files from the new release, falls back to
+REM the previously installed copy, and otherwise skips with a warning. It never stops the build.
+set "PURGE_DONE="
+if exist "{target_s}\\.venv\\Scripts\\python.exe" (
+  "{target_s}\\.venv\\Scripts\\python.exe" "{helper_s}"
+  if not errorlevel 1 set "PURGE_DONE=1"
 )
-if errorlevel 1 (
-  echo [Eche] Could not remove stale program files.
-  pause
-  exit /b 1
+if not defined PURGE_DONE (
+  py -3 "{helper_s}"
+  if not errorlevel 1 set "PURGE_DONE=1"
+)
+if not defined PURGE_DONE (
+  python "{helper_s}"
+  if not errorlevel 1 set "PURGE_DONE=1"
+)
+if not defined PURGE_DONE (
+  echo [Eche] WARNING: Python could not run the stale-file cleanup. Skipping it and building anyway.
+  echo [Eche] Your Data folder, settings, and secrets were not touched.
 )
 """
     script = f"""@echo off
@@ -439,6 +642,8 @@ if exist "{relaunch_s}" (
   pause
 )
 if not "{stage_s}"=="" rmdir /s /q "{stage_s}" 2>nul
+if not "{helper_s}"=="" del "{helper_s}" 2>nul
+if not "{fallback_s}"=="" del "{fallback_s}" 2>nul
 del "%~f0"
 exit /b 0
 """

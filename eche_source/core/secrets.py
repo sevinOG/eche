@@ -38,6 +38,7 @@ PUBLIC_KEYS = (
     "summarizer_model",
     "summarizer_prompt_path",
     "project_path",
+    "update_branch",       # GitHub branch for Update Eche; blank uses the installed branch, then main
     "suppress_no_provider_warn",
     "admin_tools",          # "1" while the Admin tools toggle is on
     "default_tools",        # "0" hides thread, lookup, and context. Blank stays on.

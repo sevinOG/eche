@@ -1237,7 +1237,7 @@ class SettingsWindow(QWidget):
         body.addLayout(row)
 
         self.update_mode = QButtonGroup(self)
-        self.radio_github = QRadioButton("GitHub  ·  sevinOG/eche main")
+        self.radio_github = QRadioButton(f"GitHub  ·  sevinOG/eche {self._installed_update_branch()}")
         self.radio_local = QRadioButton("Local source folder")
         self.radio_github.setChecked(True)
         self.update_mode.addButton(self.radio_github, 0)
@@ -1245,6 +1245,20 @@ class SettingsWindow(QWidget):
         self.radio_github.toggled.connect(self._on_update_mode)
         body.addWidget(self.radio_github)
         body.addWidget(self.radio_local)
+
+        branch_label_row = QHBoxLayout()
+        branch_lab = QLabel("GitHub branch")
+        branch_lab.setObjectName("FieldLabel")
+        branch_label_row.addWidget(branch_lab)
+        branch_label_row.addStretch()
+        body.addLayout(branch_label_row)
+        self.update_branch_edit = QLineEdit()
+        self.update_branch_edit.setText((self.data.get("update_branch") or "").strip())
+        self.update_branch_edit.setPlaceholderText(
+            f"{self._installed_update_branch()} (blank uses the branch this install came from, else main)"
+        )
+        self.update_branch_edit.setMinimumHeight(34)
+        body.addWidget(self.update_branch_edit)
 
         path_label_row = QHBoxLayout()
         path_lab = QLabel("Local eche_source path")
@@ -1986,6 +2000,11 @@ class SettingsWindow(QWidget):
                 payload[key] = str(self.data.get(key) or "").strip()
         if hasattr(self, "project_path_edit"):
             payload["project_path"] = self.project_path_edit.text().strip()
+        if hasattr(self, "update_branch_edit"):
+            from core.app_update import clean_branch
+            payload["update_branch"] = clean_branch(self.update_branch_edit.text())
+        else:
+            payload["update_branch"] = str(self.data.get("update_branch") or "").strip()
         if hasattr(self, "blocked_words_edit"):
             payload["blocked_words"] = "\n".join(
                 _split_blocked(self.blocked_words_edit.toPlainText())
@@ -2064,8 +2083,17 @@ class SettingsWindow(QWidget):
             if self.main_window and hasattr(self.main_window, "append_log"):
                 self.main_window.append_log(f"[WARN] Could not save admin tools toggle: {e}")
 
+    def _installed_update_branch(self) -> str:
+        """Branch Update Eche pulls when the branch field is blank."""
+        try:
+            from core.app_update import default_source_target, resolve_update_branch
+            stored = (self.data.get("project_path") or "").strip() or None
+            return resolve_update_branch(None, default_source_target(stored))
+        except Exception:
+            return "main"
+
     def check_for_updates(self):
-        from core.app_update import default_source_target
+        from core.app_update import clean_branch, default_source_target, resolve_update_branch
 
         local = bool(self.radio_local.isChecked())
         typed = self.project_path_edit.text().strip()
@@ -2088,7 +2116,22 @@ class SettingsWindow(QWidget):
             target = default_source_target(typed or None)
 
         self._update_target = os.path.abspath(target)
-        where = "GitHub (sevinOG/eche, main)" if not local else self._update_target
+        typed_branch = ""
+        if hasattr(self, "update_branch_edit"):
+            typed_branch = self.update_branch_edit.text().strip()
+        if typed_branch and not clean_branch(typed_branch):
+            show_error(
+                self,
+                "Update branch not valid",
+                "The GitHub branch must be a plain branch name, like main or asset-toggles.",
+                hint="Clear the field to use the branch this install came from.",
+                details=typed_branch,
+            )
+            return
+        self._update_branch = resolve_update_branch(typed_branch, self._update_target)
+        where = (
+            f"GitHub (sevinOG/eche, {self._update_branch})" if not local else self._update_target
+        )
         git_note = ""
         if not local and os.path.isdir(os.path.join(self._update_target, ".git")):
             git_note = (
@@ -2127,7 +2170,10 @@ class SettingsWindow(QWidget):
         )
         if hasattr(self, "update_loader"):
             self.update_loader.set_busy(True, self.update_status.text())
-        self._update_worker = UpdatePrepareWorker("github" if not local else "local")
+        self._update_worker = UpdatePrepareWorker(
+            "github" if not local else "local",
+            branch=getattr(self, "_update_branch", None),
+        )
         self._update_worker.log_line.connect(self._on_update_log)
         self._update_worker.finished_ok.connect(self._on_update_ready)
         self._update_worker.start()
