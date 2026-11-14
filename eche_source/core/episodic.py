@@ -314,6 +314,15 @@ def episode_summary_text(raw: str) -> str:
     text = tidy_summary(drop_safety_preamble(raw or ""))
     if not text or text.upper().startswith("ERROR"):
         return ""
+    try:
+        from core.blocklist import REFUSAL
+        from core.guardrails import is_refusal_text
+
+        if text == REFUSAL or is_refusal_text(text):
+            return ""
+    except Exception:
+        if text == "Nope. Not going there.":
+            return ""
     low = text.lower()
     # The condense prompt names its sections. A reply that opens with that
     # label is still the summary. A second copy of the label is the prompt.

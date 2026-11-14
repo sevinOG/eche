@@ -31,7 +31,6 @@ from PyQt6.QtWidgets import (
     QButtonGroup,
     QSpinBox,
     QSlider,
-    QPlainTextEdit,
 )
 
 from gui.theme import APP_NAME, APP_VERSION
@@ -76,12 +75,6 @@ except Exception:
 def load_settings():
     from core.secrets import load_all
     return load_all(PROJECT_ROOT)
-
-
-def _split_blocked(raw: str) -> list[str]:
-    from core.blocklist import parse_extra
-
-    return parse_extra(raw)
 
 
 def save_settings(data: dict):
@@ -546,39 +539,68 @@ class SettingsWindow(QWidget):
             "Optional photo search via Unsplash (free developer keys).",
             body,
         ))
-        imagine = QVBoxLayout()
-        imagine.setSpacing(12)
-        imagine.addLayout(self._field_block(
-            "Grok API key",
-            "xAI key for ?asset and the asset tool. Pictures and videos are billed to this key.",
+        asset_body = QVBoxLayout()
+        asset_body.setSpacing(12)
+        asset_body.addLayout(self._field_block(
+            "xAI API key",
+            "Required for ?asset. There is no fallback generator.",
             secret=True, key="xai_api_key", help_key="xai_api_key",
         ))
-        key_row = QHBoxLayout()
-        key_row.setSpacing(8)
-        xai_btn = QPushButton("xAI console")
-        xai_btn.setObjectName("link")
-        xai_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl("https://console.x.ai/")))
-        key_row.addWidget(xai_btn)
-        key_row.addWidget(self._info_button("xai_api_key"))
-        key_row.addStretch()
-        imagine.addLayout(key_row)
+        self.asset_enabled_box = QCheckBox("Enable ?asset")
+        self.asset_enabled_box.setObjectName("asset_enabled")
+        self.asset_enabled_box.setToolTip(
+            "Off by default. Only an owner can turn asset generation on."
+        )
         self.asset_owner_only_box = QCheckBox("Owner only")
         self.asset_owner_only_box.setObjectName("asset_owner_only")
         self.asset_owner_only_box.setToolTip(
-            "Off, anyone can ask for an asset. On, only Owner IDs can."
+            "On by default. Uncheck only if every member of the server should be able to use ?asset once it is enabled."
         )
-        imagine.addWidget(self.asset_owner_only_box)
-        imagine.addWidget(self._info_button("asset_access"))
+        self.asset_adult_box = QCheckBox("18+ (age-restricted channels only)")
+        self.asset_adult_box.setObjectName("asset_adult_enabled")
+        self.asset_adult_box.setToolTip(
+            "Off by default, settings-only. When it is on, any user in a Discord "
+            "age-restricted channel can use 18+ ?asset, not just the owner. "
+            "Owner approval is a separate toggle. Every minors check stays on. "
+            "18+ rules apply only in age-restricted channels; elsewhere ?asset "
+            "runs under the normal SFW rules. ?asset is refused in DMs."
+        )
+        self.asset_approval_box = QCheckBox("Require owner approval")
+        self.asset_approval_box.setObjectName("asset_approval_enabled")
+        self.asset_approval_box.setToolTip(
+            "On by default. Turning it off skips your review of each asset. The hourly "
+            "caps stay the same either way: 10 images and 5 videos per user, 40 images "
+            "and 15 videos per server (you have none). "
+            "Without 18+ it also makes ?asset owner-only. 18+ can run with approval off."
+        )
+        self.asset_adult_box.toggled.connect(self._sync_asset_toggles)
+        self.asset_approval_box.toggled.connect(self._sync_asset_toggles)
+        asset_body.addWidget(self.asset_enabled_box)
+        asset_body.addWidget(self.asset_owner_only_box)
+        asset_body.addWidget(self.asset_adult_box)
+        asset_body.addWidget(self.asset_approval_box)
+        asset_body.addWidget(self._info_button("asset_enabled"))
         layout.addWidget(self._card(
-            "Grok Imagine",
-            "Everyone can ask unless Owner only is on. "
-            "A video is a short 480p clip. ?asset still works when the prompt tool is off.",
-            imagine,
+            "Asset generation",
+            "Grok Imagine via xAI. Off until an owner enables it. No other generator is used.",
+            asset_body,
         ))
         layout.addStretch(1)
         return page
 
+    def _sync_asset_toggles(self, *_args) -> None:
+        """Approval-off without 18+ forces owner-only. 18+ and approval are independent."""
+        if not hasattr(self, "asset_adult_box"):
+            return
+        adult = self.asset_adult_box.isChecked()
+        approval = self.asset_approval_box.isChecked()
+        if (not approval) and (not adult) and not self.asset_owner_only_box.isChecked():
+            self.asset_owner_only_box.blockSignals(True)
+            self.asset_owner_only_box.setChecked(True)
+            self.asset_owner_only_box.blockSignals(False)
+
     def _page_memory(self) -> QWidget:
+
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(4, 0, 8, 8)
@@ -737,21 +759,11 @@ class SettingsWindow(QWidget):
 
         body = QVBoxLayout()
         body.setSpacing(10)
-        head = QHBoxLayout()
-        label = QLabel("Blocked words")
-        label.setObjectName("FieldLabel")
-        head.addWidget(label)
-        head.addStretch()
-        head.addWidget(self._info_button("blocked_words"))
-        body.addLayout(head)
-        self.blocked_words_edit = QPlainTextEdit()
-        self.blocked_words_edit.setPlaceholderText("One word or phrase per line, or separated by commas")
-        self.blocked_words_edit.setPlainText(
-            "\n".join(_split_blocked(self.data.get("blocked_words") or ""))
+        built_in = QLabel(
+            "Pictures and videos: always blocked (built in, not editable): "
+            + ", ".join(BLOCKED_WORDS)
+            + ", ages under 18, and baby in a sexual message."
         )
-        self.blocked_words_edit.setFixedHeight(96)
-        body.addWidget(self.blocked_words_edit)
-        built_in = QLabel("Always blocked: " + ", ".join(BLOCKED_WORDS) + ", ages under 18, and baby in a sexual message.")
         built_in.setObjectName("CardHint")
         built_in.setWordWrap(True)
         body.addWidget(built_in)
@@ -765,8 +777,9 @@ class SettingsWindow(QWidget):
         body.addLayout(row)
         return self._card(
             "Content",
-            "Anything involving minors is refused in chat, threads, and pictures or "
-            "videos, before the model or API is called. Add more words here.",
+            "Image and video requests involving minors are refused before any model or "
+            "API is called. The image and asset safety checks are built in, have no "
+            "settings, and cannot be turned off.",
             body,
         )
 
@@ -800,6 +813,11 @@ class SettingsWindow(QWidget):
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
+        try:
+            from core.audit import safe_activity
+            safe_activity("memory-access", action="request", outcome="success")
+        except Exception:
+            pass
         main = self.main_window
         running = bool(main and hasattr(main, "_bot_is_running") and main._bot_is_running())
         if running:
@@ -863,6 +881,11 @@ class SettingsWindow(QWidget):
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
+        try:
+            from core.audit import safe_activity
+            safe_activity("memory-wipe", action="request", outcome="success")
+        except Exception:
+            pass
         main = self.main_window
         running = bool(main and hasattr(main, "_bot_is_running") and main._bot_is_running())
         if running:
@@ -1124,7 +1147,7 @@ class SettingsWindow(QWidget):
         body.addLayout(row)
 
         self.update_mode = QButtonGroup(self)
-        self.radio_github = QRadioButton("GitHub  ·  sevinOG/eche main")
+        self.radio_github = QRadioButton(f"GitHub  ·  sevinOG/eche {self._installed_update_branch()}")
         self.radio_local = QRadioButton("Local source folder")
         self.radio_github.setChecked(True)
         self.update_mode.addButton(self.radio_github, 0)
@@ -1132,6 +1155,20 @@ class SettingsWindow(QWidget):
         self.radio_github.toggled.connect(self._on_update_mode)
         body.addWidget(self.radio_github)
         body.addWidget(self.radio_local)
+
+        branch_label_row = QHBoxLayout()
+        branch_lab = QLabel("GitHub branch")
+        branch_lab.setObjectName("FieldLabel")
+        branch_label_row.addWidget(branch_lab)
+        branch_label_row.addStretch()
+        body.addLayout(branch_label_row)
+        self.update_branch_edit = QLineEdit()
+        self.update_branch_edit.setText((self.data.get("update_branch") or "").strip())
+        self.update_branch_edit.setPlaceholderText(
+            f"{self._installed_update_branch()} (blank uses the branch this install came from, else main)"
+        )
+        self.update_branch_edit.setMinimumHeight(34)
+        body.addWidget(self.update_branch_edit)
 
         path_label_row = QHBoxLayout()
         path_lab = QLabel("Local eche_source path")
@@ -1265,8 +1302,29 @@ class SettingsWindow(QWidget):
         try:
             result = data_folder.apply_move(plan, overwrite=overwrite)
         except Exception as exc:
+            try:
+                from core.audit import safe_activity
+                safe_activity(
+                    "data-folder",
+                    action="move-data-folder",
+                    outcome="error",
+                    error_type=type(exc).__name__,
+                )
+            except Exception:
+                pass
             QMessageBox.warning(self, "Data folder", f"Could not move data: {exc}")
             return
+        try:
+            from core.audit import safe_activity
+            safe_activity(
+                "data-folder",
+                action="move-data-folder",
+                outcome="success",
+                overwrite=bool(overwrite),
+                copied=result.get("copied"),
+            )
+        except Exception:
+            pass
         self.data_folder_status.setText(
             f"Saved. Copied {result['copied']} file(s), kept {result['skipped']}, "
             f"{result['same']} already matched. Restart Eche to use {plan.target}."
@@ -1552,6 +1610,7 @@ class SettingsWindow(QWidget):
             self.provider_combo.setCurrentIndex(idx if idx >= 0 else 0)
             self.provider_combo.blockSignals(False)
 
+
         from core.ollama_thinking import parse_model_modes
         self._reasoning_models = parse_model_modes(self.data.get("reasoning_models"))
         if hasattr(self, "reasoning_box"):
@@ -1566,10 +1625,23 @@ class SettingsWindow(QWidget):
             self.security_admin_box.blockSignals(True)
             self.security_admin_box.setChecked(flag_on(self.data.get("admin_tools"), ""))
             self.security_admin_box.blockSignals(False)
-        if hasattr(self, "asset_owner_only_box"):
-            from core.admin_tools import flag_on
+        if hasattr(self, "asset_enabled_box"):
             from core.tools import prompt_choice
-            self.asset_owner_only_box.setChecked(flag_on(self.data.get("asset_owner_only"), ""))
+            self.asset_enabled_box.setChecked(
+                prompt_choice(self.data.get("asset_enabled"), default=False)
+            )
+            self.asset_owner_only_box.setChecked(
+                prompt_choice(self.data.get("asset_owner_only"), default=True)
+            )
+            self.asset_adult_box.setChecked(
+                prompt_choice(self.data.get("asset_adult_enabled"), default=False)
+            )
+            self.asset_approval_box.setChecked(
+                prompt_choice(self.data.get("asset_approval_enabled"), default=True)
+            )
+            self._sync_asset_toggles()
+        if hasattr(self, "_prompt_tool_boxes"):
+            from core.tools import prompt_choice
             for name, box in self._prompt_tool_boxes.items():
                 box.setChecked(prompt_choice(self.data.get(f"tool_{name}"), default=True))
             self.prompt_episodic_box.setChecked(
@@ -1780,6 +1852,13 @@ class SettingsWindow(QWidget):
                 openrouter_m = typed
         payload["openrouter_model"] = openrouter_m or _OPENROUTER_DEFAULT
 
+        try:
+            from core.media_scan import reject_image_model
+            payload["cloud_model"] = reject_image_model(payload["cloud_model"], _CLOUD_DEFAULT)
+            payload["ollama_model"] = reject_image_model(payload["ollama_model"], _OLLAMA_DEFAULT)
+            payload["openrouter_model"] = reject_image_model(payload["openrouter_model"], _OPENROUTER_DEFAULT)
+        except Exception:
+            pass
         if backend == "ollama":
             payload["groq_model"] = payload["ollama_model"]
         elif backend == "openrouter":
@@ -1806,12 +1885,11 @@ class SettingsWindow(QWidget):
                 payload[key] = str(self.data.get(key) or "").strip()
         if hasattr(self, "project_path_edit"):
             payload["project_path"] = self.project_path_edit.text().strip()
-        if hasattr(self, "blocked_words_edit"):
-            payload["blocked_words"] = "\n".join(
-                _split_blocked(self.blocked_words_edit.toPlainText())
-            )
+        if hasattr(self, "update_branch_edit"):
+            from core.app_update import clean_branch
+            payload["update_branch"] = clean_branch(self.update_branch_edit.text())
         else:
-            payload["blocked_words"] = str(self.data.get("blocked_words") or "").strip()
+            payload["update_branch"] = str(self.data.get("update_branch") or "").strip()
         if hasattr(self, "mask_slurs_box"):
             payload["memory_mask_slurs"] = "1" if self.mask_slurs_box.isChecked() else "0"
         else:
@@ -1825,18 +1903,21 @@ class SettingsWindow(QWidget):
             except Exception:
                 pass
             payload["admin_tools"] = admin
-        if hasattr(self, "asset_owner_only_box"):
+        if hasattr(self, "asset_enabled_box"):
+            self._sync_asset_toggles()
+            payload["asset_enabled"] = "1" if self.asset_enabled_box.isChecked() else "0"
             payload["asset_owner_only"] = "1" if self.asset_owner_only_box.isChecked() else "0"
+            payload["asset_adult_enabled"] = "1" if self.asset_adult_box.isChecked() else "0"
+            payload["asset_approval_enabled"] = "1" if self.asset_approval_box.isChecked() else "0"
+        if hasattr(self, "_prompt_tool_boxes"):
             for name, box in self._prompt_tool_boxes.items():
                 payload[f"tool_{name}"] = "1" if box.isChecked() else "0"
             payload["prompt_episodic"] = "1" if self.prompt_episodic_box.isChecked() else "0"
         else:
             for key in (
-                "asset_owner_only",
                 "tool_duckduckgo",
                 "tool_thread",
                 "tool_context_raw",
-                "tool_asset",
                 "prompt_episodic",
             ):
                 payload[key] = str(self.data.get(key) or "").strip()
@@ -1881,8 +1962,17 @@ class SettingsWindow(QWidget):
             if self.main_window and hasattr(self.main_window, "append_log"):
                 self.main_window.append_log(f"[WARN] Could not save admin tools toggle: {e}")
 
+    def _installed_update_branch(self) -> str:
+        """Branch Update Eche pulls when the branch field is blank."""
+        try:
+            from core.app_update import default_source_target, resolve_update_branch
+            stored = (self.data.get("project_path") or "").strip() or None
+            return resolve_update_branch(None, default_source_target(stored))
+        except Exception:
+            return "main"
+
     def check_for_updates(self):
-        from core.app_update import default_source_target
+        from core.app_update import clean_branch, default_source_target, resolve_update_branch
 
         local = bool(self.radio_local.isChecked())
         typed = self.project_path_edit.text().strip()
@@ -1905,7 +1995,22 @@ class SettingsWindow(QWidget):
             target = default_source_target(typed or None)
 
         self._update_target = os.path.abspath(target)
-        where = "GitHub (sevinOG/eche, main)" if not local else self._update_target
+        typed_branch = ""
+        if hasattr(self, "update_branch_edit"):
+            typed_branch = self.update_branch_edit.text().strip()
+        if typed_branch and not clean_branch(typed_branch):
+            show_error(
+                self,
+                "Update branch not valid",
+                "The GitHub branch must be a plain branch name, like main or asset-toggles.",
+                hint="Clear the field to use the branch this install came from.",
+                details=typed_branch,
+            )
+            return
+        self._update_branch = resolve_update_branch(typed_branch, self._update_target)
+        where = (
+            f"GitHub (sevinOG/eche, {self._update_branch})" if not local else self._update_target
+        )
         git_note = ""
         if not local and os.path.isdir(os.path.join(self._update_target, ".git")):
             git_note = (
@@ -1944,10 +2049,23 @@ class SettingsWindow(QWidget):
         )
         if hasattr(self, "update_loader"):
             self.update_loader.set_busy(True, self.update_status.text())
-        self._update_worker = UpdatePrepareWorker("github" if not local else "local")
+        self._update_worker = UpdatePrepareWorker(
+            "github" if not local else "local",
+            branch=getattr(self, "_update_branch", None),
+        )
         self._update_worker.log_line.connect(self._on_update_log)
         self._update_worker.finished_ok.connect(self._on_update_ready)
         self._update_worker.start()
+        try:
+            from core.audit import safe_activity
+            safe_activity(
+                "updater",
+                action="check-for-updates",
+                outcome="success",
+                mode="local" if local else "github",
+            )
+        except Exception:
+            pass
 
     def _on_update_log(self, line: str):
         self.update_status.setText(line[:240] if line else "Working…")

@@ -13,19 +13,21 @@ import json
 import os
 import stat
 import sys
+import threading
 from typing import Any
 
 # Keys that must never sit in plaintext settings.json
+CURRENT_XAI_KEY_EPOCH = "2026-11-hardened-asset"
+
 SECRET_KEYS = (
     "discord_token",
     "inf_api_key",       # GROQ_API_KEY
     "openrouter_api_key",  # OPENROUTER_API_KEY
     "us_access_token",   # US_ACCESS_TOKEN (Unsplash)
     "us_secret_token",   # US_SECRET_TOKEN (Unsplash)
-    "xai_api_key",       # XAI_API_KEY (Grok Imagine)
+    "xai_api_key",       # stored encrypted; read via load_all only, not ENV_MAP
 )
 
-# UPDATED PUBLIC KEYS (per your request)
 PUBLIC_KEYS = (
     "home_server_id",
     "groq_model",          # active model → GROQ_MODEL env (for client.py)
@@ -36,17 +38,16 @@ PUBLIC_KEYS = (
     "summarizer_model",
     "summarizer_prompt_path",
     "project_path",
+    "update_branch",       # GitHub branch for Update Eche; blank uses the installed branch, then main
     "suppress_no_provider_warn",
     "admin_tools",          # "1" while the Admin tools toggle is on
     "default_tools",        # "0" hides thread, lookup, and context. Blank stays on.
     "owner_id",             # Discord user ids for owner commands and admin tools
     "channel_completion_tokens",  # channel reply budget; blank uses 64
     "thread_completion_tokens",   # one thread post; blank uses 316
-    "asset_owner_only",           # "1" limits ?asset and the asset tool to owners. Blank means everyone.
     "tool_duckduckgo",            # "0" leaves lookup out of the prompt. Blank stays on.
     "tool_thread",                # "0" leaves thread out of the prompt. Blank stays on.
     "tool_context_raw",           # "0" leaves context out of the prompt. Blank stays on.
-    "tool_asset",                 # "0" leaves the asset tool out of the prompt. Blank stays on.
     "prompt_episodic",            # "0" leaves the server episode out of the prompt. Blank stays on.
     "reasoning_cloud",            # "1" lets Groq think. Blank stays off.
     "reasoning_openrouter",       # "1" lets OpenRouter think. Blank stays off.
@@ -74,8 +75,31 @@ PUBLIC_KEYS = (
     "thread_posted_chars",          # earlier posts each thread post sees; blank/0 = all
     "thread_topic_scan",            # messages searched for a thread subject; blank uses 8
     "local_history_turns",          # desktop chat turns sent; blank uses 20
-    "blocked_words",                # extra hard-blocked words, one per line or comma (core/blocklist.py)
     "memory_mask_slurs",            # "0" stops masking slurs in memory pins. Blank stays on.
+    "asset_enabled",                # "1" turns ?asset on. Blank or missing stays OFF.
+    "asset_owner_only",             # blank or missing stays ON (owner only). "0" opens it to the guild.
+    "asset_adult_enabled",          # "1" turns 18+ mode on. Blank or missing stays OFF.
+    "asset_approval_enabled",       # "0" turns owner approval off. Blank or missing stays ON.
+    "xai_key_epoch",                # must match CURRENT_XAI_KEY_EPOCH or the stored xAI key is ignored
+    # The image safety checkers have no settings; their models are
+    # hardcoded in core/classifier.py. See RETIRED_PUBLIC_KEYS below.
+)
+
+# Keys older versions saved. Ignored on read (public_value returns '') and
+# dropped from settings.json on the next save. Nothing else reads them.
+RETIRED_PUBLIC_KEYS = (
+    "content_filter_provider",
+    "content_filter_model",
+    "child_check_provider",
+    "child_check_model",
+    "image_check_provider",
+    "image_check_model",
+    "age_vision_ollama_model",
+    "blocked_words",
+    # Old "In the prompt > Asset" box. A leftover "0" from a pre-removal
+    # install hid the chat asset tool while the pictures line said it existed.
+    # The Asset switch (asset_enabled) alone decides now.
+    "tool_asset",
 )
 
 # Map settings key -> environment variable used by the bot
@@ -85,7 +109,6 @@ ENV_MAP = {
     "openrouter_api_key": "OPENROUTER_API_KEY",
     "us_access_token": "US_ACCESS_TOKEN",
     "us_secret_token": "US_SECRET_TOKEN",
-    "xai_api_key": "XAI_API_KEY",
     "home_server_id": "HOME_SERVER_ID",
     "groq_model": "GROQ_MODEL",
     "provider_backend": "ECHE_PROVIDER",
@@ -99,6 +122,10 @@ ENV_MAP = {
 
 _SECRETS_FILENAME = "secrets.dpapi.json"
 _SETTINGS_FILENAME = "settings.json"
+
+
+class SettingsUnreadable(Exception):
+    """settings.json exists but cannot be read or parsed."""
 
 
 def _user_root() -> str:
@@ -235,21 +262,38 @@ def redact(value: str, keep: int = 4) -> str:
 
 
 def _restrict_acl_windows(path: str) -> None:
-    try:
-        import getpass
-        import subprocess
+    """Owner+SYSTEM ACL. A nonzero icacls exit is a failure: chmod, then raise.
 
+    On non-Windows hosts icacls is unavailable; chmod is the control and is
+    not treated as an ACL failure.
+    """
+    if not sys.platform.startswith("win"):
+        try:
+            mode = 0o700 if os.path.isdir(path) else (stat.S_IRUSR | stat.S_IWUSR)
+            os.chmod(path, mode)
+        except Exception:
+            pass
+        return
+    import getpass
+    import subprocess
+
+    err: Exception | None = None
+    try:
         user = getpass.getuser()
         flags = 0
         if sys.platform.startswith("win"):
             flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        subprocess.run(
+        is_dir = os.path.isdir(path)
+        grant = "(OI)(CI)(F)" if is_dir else "(R,W)"
+        result = subprocess.run(
             [
                 "icacls",
                 path,
                 "/inheritance:r",
                 "/grant:r",
-                f"{user}:(R,W)",
+                f"{user}:{grant}",
+                "/grant:r",
+                f"SYSTEM:{grant}",
             ],
             check=False,
             capture_output=True,
@@ -257,11 +301,19 @@ def _restrict_acl_windows(path: str) -> None:
             timeout=8,
             creationflags=flags,
         )
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "").strip()
+            err = RuntimeError(f"icacls exited {result.returncode}: {detail}")
+    except Exception as exc:
+        err = exc
+    if err is None:
+        return
+    try:
+        mode = 0o700 if os.path.isdir(path) else (stat.S_IRUSR | stat.S_IWUSR)
+        os.chmod(path, mode)
     except Exception:
-        try:
-            os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
-        except Exception:
-            pass
+        pass
+    raise err
 
 
 def _read_json(path: str) -> dict[str, Any]:
@@ -312,7 +364,11 @@ def _save_encrypted_secrets(root: str, secrets: dict[str, str]) -> None:
     path = secrets_path(root)
     _write_json(path, payload)
     if sys.platform.startswith("win"):
-        _restrict_acl_windows(path)
+        try:
+            _restrict_acl_windows(path)
+        except Exception:
+            # chmod fallback already ran inside the helper
+            pass
 
 
 def _load_public(root: str) -> dict[str, str]:
@@ -328,6 +384,8 @@ def _save_public(root: str, public: dict[str, str]) -> None:
     for key in SECRET_KEYS:
         data.pop(key, None)
     data.pop("thoughts_thread_id", None)
+    for key in RETIRED_PUBLIC_KEYS:
+        data.pop(key, None)
     for key in PUBLIC_KEYS:
         data[key] = str(public.get(key) or "").strip()
     data["secrets_backend"] = "dpapi"
@@ -361,7 +419,8 @@ def _migrate_plaintext_settings(root: str) -> None:
     for key in SECRET_KEYS:
         plain = str(data.get(key) or "").strip()
         if plain:
-            if not secrets.get(key):
+            # Pre-build / legacy xAI keys in settings.json must not come back.
+            if key != "xai_api_key" and not secrets.get(key):
                 secrets[key] = plain
             found = True
             data.pop(key, None)
@@ -373,8 +432,34 @@ def _migrate_plaintext_settings(root: str) -> None:
         _write_json(path, data)
 
 
+_load_cache_lock = threading.Lock()
+_load_cache: dict[str, tuple[tuple, dict[str, str]]] = {}
+
+
+def _settings_fingerprint(root: str) -> tuple:
+    parts = []
+    for path in (settings_path(root), secrets_path(root)):
+        try:
+            st = os.stat(path)
+            parts.append((path, st.st_mtime_ns, st.st_size))
+        except OSError:
+            parts.append((path, None, None))
+    return tuple(parts)
+
+
+def clear_load_cache() -> None:
+    """Tests and save_all. Drops the in-memory settings snapshot."""
+    with _load_cache_lock:
+        _load_cache.clear()
+
+
 def load_all(root: str | None = None) -> dict[str, str]:
     root = root or _user_root()
+    finger = _settings_fingerprint(root)
+    with _load_cache_lock:
+        hit = _load_cache.get(root)
+        if hit and hit[0] == finger:
+            return dict(hit[1])
     os.makedirs(os.path.join(root, "config"), exist_ok=True)
     _migrate_plaintext_settings(root)
 
@@ -392,6 +477,9 @@ def load_all(root: str | None = None) -> dict[str, str]:
     out = {**public, **secrets}
     for key in (*SECRET_KEYS, *PUBLIC_KEYS):
         out.setdefault(key, "")
+    if (out.get("xai_api_key") or "").strip():
+        if str(out.get("xai_key_epoch") or "").strip() != CURRENT_XAI_KEY_EPOCH:
+            out["xai_api_key"] = ""
 
     stored = (out.get("project_path") or "").strip()
     try:
@@ -456,14 +544,134 @@ def load_all(root: str | None = None) -> dict[str, str]:
         else:
             out["groq_model"] = _CLOUD_DEFAULT
 
+    try:
+        from core.media_scan import reject_image_model
+    except Exception:
+        reject_image_model = lambda value, default="": value or default
+    out["cloud_model"] = reject_image_model(out.get("cloud_model"), _CLOUD_DEFAULT)
+    out["ollama_model"] = reject_image_model(out.get("ollama_model"), _OLLAMA_DEFAULT)
+    out["openrouter_model"] = reject_image_model(out.get("openrouter_model"), _OPENROUTER_DEFAULT)
+    if backend == "ollama":
+        out["groq_model"] = out["ollama_model"]
+    elif backend == "openrouter":
+        out["groq_model"] = out["openrouter_model"]
+    else:
+        out["groq_model"] = out["cloud_model"]
+    if not (out.get("groq_model") or "").strip():
+        out["groq_model"] = (
+            _OLLAMA_DEFAULT if backend == "ollama"
+            else _OPENROUTER_DEFAULT if backend == "openrouter"
+            else _CLOUD_DEFAULT
+        )
+
+    with _load_cache_lock:
+        _load_cache[root] = (finger, dict(out))
     return out
+
+
+
+def _asset_flag(store: dict | None, key: str, *, default: bool) -> bool:
+    from core.asset_safety import parse_safety_flag
+
+    value, _invalid = parse_safety_flag((store or {}).get(key), default=default)
+    return value
+
+
+def _asset_flag_raw(store: dict | None, key: str, *, default: bool) -> tuple[bool, bool, str]:
+    from core.asset_safety import parse_safety_flag
+
+    raw = str((store or {}).get(key) or "")
+    value, invalid = parse_safety_flag(raw, default=default)
+    return value, invalid, raw
+
+
+def couple_asset_toggles(public: dict, *, invalid: list | None = None) -> dict:
+    """Approval-off without 18+ forces owner-only. 18+ and approval are independent.
+
+    18+ itself is not owner-only: the audience follows asset_owner_only, and
+    18+ may run with owner approval off.
+    """
+    data = dict(public or {})
+    adult, ad_bad, ad_raw = _asset_flag_raw(data, "asset_adult_enabled", default=False)
+    approval, ap_bad, ap_raw = _asset_flag_raw(data, "asset_approval_enabled", default=True)
+    owner, ow_bad, ow_raw = _asset_flag_raw(data, "asset_owner_only", default=True)
+    if not approval and not adult:
+        owner = True
+    data["asset_adult_enabled"] = "1" if adult else "0"
+    data["asset_approval_enabled"] = "1" if approval else "0"
+    data["asset_owner_only"] = "1" if owner else "0"
+    if invalid is not None:
+        if ad_bad:
+            invalid.append(("asset_adult_enabled", ad_raw))
+        if ap_bad:
+            invalid.append(("asset_approval_enabled", ap_raw))
+        if ow_bad:
+            invalid.append(("asset_owner_only", ow_raw))
+    return data
+
+
+def _notify_asset_toggle_owners(lines: list[str]) -> None:
+    """Best-effort DM to each owner when an 18+ or approval toggle changes."""
+    if not lines:
+        return
+    try:
+        from core.gui_bridge import get_bot, get_loop
+        import asyncio
+
+        bot = get_bot()
+        loop = get_loop()
+        if bot is None or loop is None:
+            return
+        body = "\n".join(lines)
+
+        async def _send() -> None:
+            try:
+                from core.asset_review import _reviewer_ids
+
+                reviewers = await _reviewer_ids(bot)
+            except Exception:
+                return
+            fetch = getattr(bot, "fetch_user", None)
+            for owner_id in reviewers or []:
+                try:
+                    owner = await fetch(owner_id) if fetch else None
+                    send = getattr(owner, "send", None)
+                    if send is not None:
+                        await send(body)
+                except Exception:
+                    continue
+
+        asyncio.run_coroutine_threadsafe(_send(), loop)
+    except Exception:
+        return
 
 
 def save_all(data: dict[str, Any], root: str | None = None) -> None:
     root = root or _user_root()
+    clear_load_cache()
     os.makedirs(os.path.join(root, "config"), exist_ok=True)
 
     public = {k: str(data.get(k) or "").strip() for k in PUBLIC_KEYS}
+    try:
+        from core.media_scan import reject_image_model
+        for key, default in (
+            ("cloud_model", "qwen/qwen3.8-27b"),
+            ("ollama_model", "llama3"),
+            ("openrouter_model", "openrouter/free"),
+            ("groq_model", ""),
+        ):
+            if key in public:
+                public[key] = reject_image_model(public[key], default)
+        backend = (public.get("provider_backend") or data.get("provider_backend") or "").strip().lower()
+        if not public.get("groq_model"):
+            if backend == "ollama":
+                public["groq_model"] = public.get("ollama_model") or "llama3"
+            elif backend == "openrouter":
+                public["groq_model"] = public.get("openrouter_model") or "openrouter/free"
+            else:
+                public["groq_model"] = public.get("cloud_model") or "qwen/qwen3.8-27b"
+    except Exception:
+        pass
     from core.home_id import parse_home_server_id
     saved_home = parse_home_server_id(public.get("home_server_id"))
     if saved_home:
@@ -471,12 +679,84 @@ def save_all(data: dict[str, Any], root: str | None = None) -> None:
     secrets = {k: str(data.get(k) or "").strip() for k in SECRET_KEYS}
 
     existing = _load_encrypted_secrets(root)
+    existing_public = _load_public(root)
+    entered_xai = bool(secrets.get("xai_api_key"))
     for key in SECRET_KEYS:
         if not secrets.get(key) and existing.get(key):
+            if key == "xai_api_key":
+                epoch = str(public.get("xai_key_epoch") or existing_public.get("xai_key_epoch") or "").strip()
+                if epoch != CURRENT_XAI_KEY_EPOCH:
+                    continue
             secrets[key] = existing[key]
+    if entered_xai:
+        public["xai_key_epoch"] = CURRENT_XAI_KEY_EPOCH
+        secrets["xai_api_key"] = str(data.get("xai_api_key") or "").strip()
+
+    invalid: list[tuple[str, str]] = []
+    public = couple_asset_toggles(public, invalid=invalid)
+    # asset_enabled is default-OFF; couple does not rewrite it. Normalize for the log.
+    from core.asset_safety import parse_safety_flag
+    old_enabled_val, _ = parse_safety_flag(existing_public.get("asset_enabled"), default=False)
+    new_enabled_val, _ = parse_safety_flag(public.get("asset_enabled"), default=False)
+    old_owner_val, _ = parse_safety_flag(existing_public.get("asset_owner_only"), default=True)
+    new_owner_val = _asset_flag(public, "asset_owner_only", default=True)
+    old_enabled = "1" if old_enabled_val else "0"
+    old_owner = "1" if old_owner_val else "0"
+    new_enabled = "1" if new_enabled_val else "0"
+    new_owner = "1" if new_owner_val else "0"
+    old_adult = "1" if _asset_flag(existing_public, "asset_adult_enabled", default=False) else "0"
+    old_approval = "1" if _asset_flag(existing_public, "asset_approval_enabled", default=True) else "0"
+    new_adult = str(public.get("asset_adult_enabled") or "0")
+    new_approval = str(public.get("asset_approval_enabled") or "1")
+    key_set = bool((secrets.get("xai_api_key") or "").strip())
 
     _save_public(root, public)
     _save_encrypted_secrets(root, secrets)
+    try:
+        from core.audit import record, safe_activity
+        fields = {}
+        for key, raw in invalid:
+            record("settings-invalid", outcome="error", key=key, value=raw, safety=True)
+        safe_activity("settings-save", outcome="success", **fields)
+        record(
+            "settings-save",
+            outcome="success",
+            asset_enabled_old=old_enabled,
+            asset_enabled_new=new_enabled,
+            asset_owner_only_old=old_owner,
+            asset_owner_only_new=new_owner,
+            asset_adult_enabled_old=old_adult,
+            asset_adult_enabled_new=new_adult,
+            asset_approval_enabled_old=old_approval,
+            asset_approval_enabled_new=new_approval,
+            xai_key_set=key_set,
+            **fields,
+        )
+        try:
+            from core.classifier import mark_checker_settings_saved
+            mark_checker_settings_saved(public, root)
+        except Exception:
+            pass
+    except Exception:
+        # A failed audit must fail the save: revert the written files and surface the error.
+        try:
+            _save_public(root, existing_public)
+        except Exception:
+            pass
+        try:
+            _save_encrypted_secrets(root, existing)
+        except Exception:
+            pass
+        raise
+    notices = []
+    if old_adult != new_adult:
+        notices.append(f"18+ mode changed from {old_adult} to {new_adult}.")
+    if old_approval != new_approval:
+        notices.append(f"Owner approval changed from {old_approval} to {new_approval}.")
+    if notices:
+        _notify_asset_toggle_owners(
+            ["An ?asset safety toggle changed in Settings.", *notices]
+        )
 
 
 def apply_to_environ(root: str | None = None, override_existing: bool = False) -> dict[str, str]:
@@ -500,6 +780,11 @@ def clear_secrets(root: str | None = None) -> None:
     public = _load_public(root)
     _save_public(root, public)
     _save_encrypted_secrets(root, {k: "" for k in SECRET_KEYS})
+    try:
+        from core.audit import safe_activity
+        safe_activity("clear-secrets", action="clear-secrets", outcome="success")
+    except Exception:
+        pass
 
 
 def scrub_text(text: str, root: str | None = None) -> str:

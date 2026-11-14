@@ -31,6 +31,16 @@ def is_enabled() -> bool:
     )
 
 
+def get_bot():
+    """The running Discord bot, or None if this process is not the bot."""
+    return _bot
+
+
+def get_loop():
+    """The bot event loop, or None."""
+    return _loop
+
+
 def enable() -> None:
     global _enabled
     _enabled = True
@@ -113,6 +123,20 @@ def normalize_cog_module(module: str) -> str:
     return "cogs." + module
 
 
+def _deny_if_media(module: str) -> str:
+    """Return a log line if this module must never load; otherwise empty.
+
+    Hard denylist plus a source scan for leftover media generation.
+    """
+    from core.media_scan import module_is_blocked
+
+    name = normalize_cog_module(module)
+    blocked = module_is_blocked(name) or module_is_blocked(module)
+    if blocked:
+        return f"Refused to load denied media module: {name} ({blocked})"
+    return ""
+
+
 def _music_busy(bot) -> bool:
     """True if the music cog is actively playing audio."""
     music = bot.get_cog("Music")
@@ -156,11 +180,20 @@ async def _toggle_cog(bot, module: str) -> None:
         if loaded:
             await bot.unload_extension(full)
             log(f"Unloaded cog: {full}", channel="cogs")
+            from core.audit import safe_activity
+            safe_activity("cog-toggle", module=full, action="unload", outcome="success")
         else:
             await bot.load_extension(full)
             log(f"Loaded cog: {full}", channel="cogs")
+            from core.audit import safe_activity
+            safe_activity("cog-toggle", module=full, action="load", outcome="success")
     except Exception as e:
         log(f"Cog toggle failed for {full}: {e}", channel="cogs")
+        try:
+            from core.audit import safe_activity
+            safe_activity("cog-toggle", module=full, action="toggle", outcome="error", error_type=type(e).__name__)
+        except Exception:
+            pass
     await _emit_cog_list(bot)
 
 
@@ -185,10 +218,12 @@ async def _announce(bot, text: str) -> None:
     home_id = home_server_id_from_env()
     if not home_id:
         log("ANNOUNCE failed: HOME_SERVER_ID not set", channel="bridge")
+        _audit_announce(None, None, "error")
         return
     guild = bot.get_guild(home_id)
     if guild is None:
         log("ANNOUNCE failed: home guild not found", channel="bridge")
+        _audit_announce(home_id, None, "error")
         return
     from core.discord_store import find_category
 
@@ -206,12 +241,15 @@ async def _announce(bot, text: str) -> None:
                 break
     if channel is None:
         log("ANNOUNCE failed: no sendable channel", channel="bridge")
+        _audit_announce(home_id, None, "error")
         return
     try:
         await channel.send(text)
         log(f"Announced: {text}", channel="bridge")
+        _audit_announce(home_id, getattr(channel, "id", None), "success")
     except Exception as e:
         log(f"ANNOUNCE failed: {e}", channel="bridge")
+        _audit_announce(home_id, getattr(channel, "id", None), "error")
 
 
 async def _reset_memory(bot) -> None:
@@ -219,13 +257,20 @@ async def _reset_memory(bot) -> None:
         from core.context_manager import get_home_guild
         from core.memory_wipe import wipe_memory
 
+        guild = get_home_guild(bot)
         report = await wipe_memory(
-            get_home_guild(bot),
+            guild,
             log=lambda text: log(text, channel="memory"),
         )
         emit("memory_reset", {"ok": report.ok, "summary": report.summary()})
+        _audit_stdin(
+            "RESET_MEMORY",
+            outcome="success" if report.ok else "error",
+            guild_id=getattr(guild, "id", None),
+        )
     except Exception as e:
         log(f"Memory reset failed: {e}", channel="memory")
+        _audit_stdin("RESET_MEMORY", outcome="error", error_type=type(e).__name__)
 
 
 async def _unlock_memory(bot) -> None:
@@ -233,13 +278,35 @@ async def _unlock_memory(bot) -> None:
         from core.context_manager import get_home_guild
         from core.memory_access import unlock_memory
 
+        guild = get_home_guild(bot)
         report = await unlock_memory(
-            get_home_guild(bot),
+            guild,
             log=lambda text: log(text, channel="memory"),
         )
         emit("memory_access", {"ok": report.ok, "summary": report.summary()})
+        # Action and ids only; never the report text.
+        _audit_stdin(
+            "UNLOCK_MEMORY",
+            outcome="success" if report.ok else "error",
+            guild_id=getattr(guild, "id", None),
+        )
     except Exception as e:
         log(f"Memory access failed: {e}", channel="memory")
+        _audit_stdin("UNLOCK_MEMORY", outcome="error", error_type=type(e).__name__)
+
+
+def _audit_announce(guild_id, channel_id, outcome: str) -> None:
+    # Ids and the action only. Never the announcement text.
+    _audit_stdin("ANNOUNCE", outcome=outcome, guild_id=guild_id, channel_id=channel_id)
+
+
+def _audit_stdin(action: str, *, outcome: str = "success", **extra) -> None:
+    # Ids and the action only. Never the command payload or secret values.
+    try:
+        from core.audit import safe_activity
+        safe_activity("stdin", action=action, outcome=outcome, **extra)
+    except Exception:
+        pass
 
 
 async def _handle_line(bot, line: str) -> None:
@@ -251,49 +318,78 @@ async def _handle_line(bot, line: str) -> None:
 
     if upper == "PING":
         emit("log", {"message": "PONG", "channel": "bridge"})
+        _audit_stdin("PING")
         return
 
     if upper == "LIST_COGS" or upper == "COG_LIST":
         await _emit_cog_list(bot)
+        _audit_stdin("LIST_COGS" if upper == "LIST_COGS" else "COG_LIST")
         return
 
     if upper == "STATUS":
         emit("status", _bot_busy(bot))
+        _audit_stdin("STATUS")
         return
 
     if upper == "RESET_MEMORY":
         # Only the desktop app writes this pipe. There is no Discord command.
         await _reset_memory(bot)
+        _audit_stdin("RESET_MEMORY")
         return
 
     if upper == "UNLOCK_MEMORY":
         # Only the desktop app writes this pipe. There is no Discord command.
         await _unlock_memory(bot)
+        _audit_stdin("UNLOCK_MEMORY")
         return
 
     if upper.startswith("ANNOUNCE "):
         text = line[len("ANNOUNCE "):].strip()
         if text:
             await _announce(bot, text)
+        _audit_stdin("ANNOUNCE")
         return
 
     if upper.startswith("TOGGLE_COG "):
         module = line[len("TOGGLE_COG "):].strip()
+        denied = _deny_if_media(module)
+        if denied:
+            log(denied, channel="cogs")
+            await _emit_cog_list(bot)
+            _audit_stdin("TOGGLE_COG", outcome="error")
+            return
         await _toggle_cog(bot, module)
+        _audit_stdin("TOGGLE_COG")
         return
 
     if upper.startswith("LOAD_COG "):
         module = normalize_cog_module(line[len("LOAD_COG "):].strip())
+        denied = _deny_if_media(module)
+        if denied:
+            log(denied, channel="cogs")
+            await _emit_cog_list(bot)
+            _audit_stdin("LOAD_COG", outcome="error")
+            return
         try:
             if module in bot.extensions:
                 await bot.reload_extension(module)
                 log(f"Reloaded cog: {module}", channel="cogs")
+                from core.audit import safe_activity
+                safe_activity("cog-toggle", module=module, action="reload", outcome="success")
             else:
                 await bot.load_extension(module)
                 log(f"Loaded cog: {module}", channel="cogs")
+                from core.audit import safe_activity
+                safe_activity("cog-toggle", module=module, action="load", outcome="success")
         except Exception as e:
             log(f"Load cog failed for {module}: {e}", channel="cogs")
+            try:
+                from core.audit import safe_activity
+                safe_activity("cog-toggle", module=module, action="load", outcome="error", error_type=type(e).__name__)
+            except Exception:
+                pass
         await _emit_cog_list(bot)
+        _audit_stdin("LOAD_COG")
         return
 
     if upper.startswith("UNLOAD_COG "):
@@ -302,11 +398,19 @@ async def _handle_line(bot, line: str) -> None:
             if module in bot.extensions:
                 await bot.unload_extension(module)
                 log(f"Unloaded cog: {module}", channel="cogs")
+                from core.audit import safe_activity
+                safe_activity("cog-toggle", module=module, action="unload", outcome="success")
             else:
                 log(f"Cog not loaded: {module}", channel="cogs")
         except Exception as e:
             log(f"Unload cog failed for {module}: {e}", channel="cogs")
+            try:
+                from core.audit import safe_activity
+                safe_activity("cog-toggle", module=module, action="unload", outcome="error", error_type=type(e).__name__)
+            except Exception:
+                pass
         await _emit_cog_list(bot)
+        _audit_stdin("UNLOAD_COG")
         return
 
     log(f"Unknown stdin command: {line}", channel="bridge")

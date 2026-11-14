@@ -41,9 +41,10 @@ class UpdatePrepareWorker(QThread):
     log_line = pyqtSignal(str)
     finished_ok = pyqtSignal(bool, str)
 
-    def __init__(self, mode: str):
+    def __init__(self, mode: str, branch: str | None = None):
         super().__init__()
         self.mode = mode
+        self.branch = branch
 
     def run(self):
         if self.mode != "github":
@@ -55,7 +56,7 @@ class UpdatePrepareWorker(QThread):
         try:
             from core.app_update import stage_github_source
 
-            stage_github_source(stage, log=self.log_line.emit)
+            stage_github_source(stage, log=self.log_line.emit, branch=self.branch)
             self.finished_ok.emit(True, stage)
         except Exception as exc:
             try:

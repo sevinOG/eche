@@ -115,10 +115,10 @@ class ReasoningTestBase(unittest.TestCase):
             json.dump(values, fh)
 
     def run_post(self, fake: FakeOllama, *, reasoning=None, max_tokens=64, temperature=0.7):
-        payload = client._build_payload(
+        payload = asyncio.run(client._build_payload(
             [{"role": "user", "content": "hi"}], self.model,
             max_tokens=max_tokens, temperature=temperature, reasoning=reasoning,
-        )
+        ))
         with mock.patch("requests.post", fake.post):
             data = client._sync_post(client._api_url(), payload, client._headers())
         return payload, data
@@ -184,45 +184,19 @@ class CapableModelTests(ReasoningTestBase):
 
     def test_async_path_matches(self):
         self.settings({"reasoning_ollama": "1"})
-        fake = FakeOllama(caps=["completion", "thinking"])
-        captured = {}
-
-        class _Resp:
-            status = 200
-
-            async def text(self):
-                return json.dumps(native("Async reply.", thinking="t")[1])
-
-            async def json(self, content_type=None):
-                return native("Async reply.", thinking="t")[1]
-
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, *a):
-                return False
-
-        class _Session:
-            def __init__(self, *a, **k):
-                pass
-
-            def post(self, url, json=None, headers=None):
-                captured["url"], captured["body"] = url, json
-                return _Resp()
-
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, *a):
-                return False
-
-        payload = client._build_payload([{"role": "user", "content": "hi"}], self.model, 64, 0.7)
-        with mock.patch("requests.post", fake.post), \
-                mock.patch.object(client.aiohttp, "ClientSession", _Session):
+        fake = FakeOllama(
+            caps=["completion", "thinking"],
+            chat_replies=[native("Async reply.", thinking="t")],
+        )
+        payload = asyncio.run(client._build_payload([{"role": "user", "content": "hi"}], self.model, 64, 0.7))
+        with mock.patch("requests.post", fake.post):
             data = asyncio.run(client._async_post(client._api_url(), payload, client._headers()))
         self.assertEqual(fake.show_count(), 1)
-        self.assertTrue(captured["url"].endswith("/api/chat"))
-        self.assertIs(captured["body"]["think"], True)
+        chat = [(url, body) for url, body in fake.calls if str(url).endswith("/api/chat")]
+        self.assertTrue(chat)
+        self.assertTrue(chat[0][0].endswith("/api/chat"))
+        self.assertIs(chat[0][1]["think"], True)
+        self.assertIn("Async reply", str(data))
         self.assertEqual(self.reply_of(data), "Async reply.")
 
 
@@ -337,7 +311,7 @@ class V1FallbackTests(ReasoningTestBase):
             fake.calls.append((url, json))
             return FakeResponse(200, reply)
 
-        payload = client._build_payload([{"role": "user", "content": "hi"}], self.model, 64, 0.7)
+        payload = asyncio.run(client._build_payload([{"role": "user", "content": "hi"}], self.model, 64, 0.7))
         with mock.patch("requests.post", post):
             data = client._sync_post(client._api_url(), payload, client._headers())
         url, body = fake.calls[-1]

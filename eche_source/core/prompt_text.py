@@ -15,7 +15,6 @@ TOOL_LINES = {
     ),
     "thread": (
         "thread: they asked for a thread, or agreed to one you offered. The tool names the thread. "
-        "Pictures or videos they asked to put in that thread are posted there. "
         "Trying a search again is not a thread."
     ),
     "context_raw": (
@@ -23,17 +22,15 @@ TOOL_LINES = {
         "or what you remember about them. "
         "A pasted link, an image, or 'what do you think' about something they sent is not this tool."
     ),
-    "asset": (
-        "asset: they asked for a picture, a video, or a change to one they attached. "
-        "prompt is their words, copied through — do not soften or rewrite for filters. "
-        "kind is image or video when they named one. "
-        "If they cite Image 1 or a character lock, they must attach or reply to that file. "
-        "A thread of those files is the thread tool."
-    ),
     "kick": "kick: only when an owner explicitly asks to kick one member.",
     "ban": "ban: only when an owner explicitly asks to ban one member.",
     "timeout": "timeout: only when an owner gives a duration, such as 10m or 1h.",
     "mute": "mute: only when an owner asks to server-mute someone in voice.",
+    "asset": (
+        "asset: make a picture or a video when they ask for one, or edit the picture or video "
+        "their message replies to when they ask for a change to it (the replied-to file is the source). "
+        "prompt is their wording, copied through. kind is image or video when they named one."
+    ),
 }
 
 _CLOSER = "When one of these fits, call it. That call is the reply."
@@ -60,12 +57,38 @@ _STYLE = (
     "Then quote what it found, or say it found nothing.\n"
     "Never rewrite, soften, or coach anyone so a prompt will pass a filter. "
     "If they ask for a plan to get around one, refuse and give no tips.\n"
-    "Only describe a picture or video you actually made in this conversation. "
-    "If you are not sure what was generated, say you don't remember. "
-    "Do not invent one, and do not invent billing or credit problems.\n"
+)
+_STYLE_TAIL = (
     "You send one message per turn. If they ask for something in several messages, "
     "put it in one message or offer a thread. Do not start a 1/N series."
 )
+_PICTURES_OFF = (
+    "You cannot make pictures or videos. If they ask, say so. "
+    "Do not claim you generated one.\n"
+)
+_PICTURES_ON = (
+    "You make and edit pictures and videos with the asset tool. "
+    "When their message replies to a picture or video and asks for a change to it, "
+    "call the asset tool with the change; the replied-to file is the source. "
+    "When they only ask about it, answer in chat. "
+    "If you have no asset tool in your tools, tell them to send ?asset with what they want "
+    "(as a reply to a picture or video to edit it). "
+    "If a request was refused, say so. Do not claim you made one unless the tool ran.\n"
+)
+
+
+def _pictures_line() -> str:
+    try:
+        from core.asset_safety import asset_enabled
+        if asset_enabled():
+            return _PICTURES_ON
+    except Exception:
+        pass
+    return _PICTURES_OFF
+
+
+def _style() -> str:
+    return _STYLE + _pictures_line() + _STYLE_TAIL
 _THREAD_OFFER = (
     "When the answer needs more and they did not ask for a thread, ask once to open one."
 )
@@ -174,7 +197,7 @@ def system_text(
     if shape:
         parts.append(shape)
     if job in ("channel", "plain", "lookup"):
-        parts.append(_STYLE)
+        parts.append(_style())
     if job == "channel":
         catalog = tool_catalog(tools)
         if catalog:

@@ -10,6 +10,7 @@ import os
 import re
 import json
 import asyncio
+import contextvars
 from dataclasses import dataclass, field
 import requests
 import aiohttp
@@ -25,6 +26,54 @@ load_dotenv()
 # ---------------------------------------------------------------------------
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 OLLAMA_API_URL = "http://localhost:11434/v1/chat/completions"
+
+# Recent request text (persona/cards/latest user) for the output check.
+_output_context: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "eche_output_context", default=""
+)
+# True while the current request carries pictures. Text-only chat has no
+# keyword filter (the safety footer is its guard); the image path keeps its
+# checks on.
+_request_images: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "eche_request_images", default=False
+)
+# Image parts (by data URL) that already passed the hardcoded image checks:
+# replied-to pictures cleared by core/reply_images. They do not put the
+# request on the image path, so the reply text gets no text filter.
+_precleared_images: contextvars.ContextVar[frozenset] = contextvars.ContextVar(
+    "eche_precleared_images", default=frozenset()
+)
+
+
+def _part_url(part) -> str:
+    if not isinstance(part, dict):
+        return ""
+    url = part.get("image_url")
+    if isinstance(url, dict):
+        url = url.get("url")
+    return str(url or "")
+
+
+def set_precleared_images(parts) -> contextvars.Token:
+    """Mark image parts as already checked for this task's chat request."""
+    urls = frozenset(u for u in (_part_url(p) for p in parts or []) if u)
+    return _precleared_images.set(urls)
+
+
+def reset_precleared_images(token) -> None:
+    try:
+        _precleared_images.reset(token)
+    except Exception:
+        _precleared_images.set(frozenset())
+
+
+def _unchecked_images(prepared) -> list:
+    """Image parts that still need the image path (all but pre-cleared ones)."""
+    from core.classifier import extract_images
+
+    cleared = _precleared_images.get(frozenset())
+    return [p for p in extract_images(prepared) if not (cleared and _part_url(p) in cleared)]
+
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 DEFAULT_MODEL = "qwen/qwen3.8-27b"
@@ -347,12 +396,42 @@ def _model_is_unset(raw: str) -> bool:
 def _model() -> str:
     raw = (os.getenv("GROQ_MODEL") or "").strip()
     backend = _provider_backend()
+    if backend == "ollama":
+        fallback = DEFAULT_OLLAMA_MODEL
+    elif backend == "openrouter":
+        fallback = DEFAULT_OPENROUTER_MODEL
+    else:
+        fallback = DEFAULT_MODEL
+    try:
+        from core.media_scan import usable_chat_model
+        raw = usable_chat_model(raw, "")
+    except Exception:
+        pass
     if _model_is_unset(raw):
-        if backend == "ollama":
-            return DEFAULT_OLLAMA_MODEL
-        if backend == "openrouter":
-            return DEFAULT_OPENROUTER_MODEL
-        return DEFAULT_MODEL
+        return fallback
+    return raw
+
+
+def _chat_fallback() -> str:
+    backend = _provider_backend()
+    if backend == "ollama":
+        return DEFAULT_OLLAMA_MODEL
+    if backend == "openrouter":
+        return DEFAULT_OPENROUTER_MODEL
+    return DEFAULT_MODEL
+
+
+def _safe_chat_model(model: str) -> str:
+    """Never send an image/video generator id. Used by every request path."""
+    raw = (model or "").strip()
+    try:
+        from core.media_scan import usable_chat_model
+        raw = usable_chat_model(raw, "")
+    except Exception:
+        # If the filter cannot load, do not send the raw id.
+        return _chat_fallback()
+    if _model_is_unset(raw):
+        return _chat_fallback()
     return raw
 
 
@@ -710,7 +789,260 @@ def _reasoning_for(payload: dict | None) -> bool:
     return reasoning_enabled()
 
 
-def _build_payload(
+def _request_output_context(messages: list) -> str:
+    """Persona, character cards, and the latest user text for the output check."""
+    from core.blocklist import split_transcript
+    from core.safety import is_footer_message, is_user_guard, message_text
+
+    parts: list[str] = []
+    last_user = ""
+    for message in messages or []:
+        if is_footer_message(message) or is_user_guard(message):
+            continue
+        text = message_text(message) if isinstance(message, dict) else str(message or "")
+        role = (message.get("role") if isinstance(message, dict) else "") or ""
+        history, latest = split_transcript(text)
+        if latest is not None:
+            last_user = latest
+            continue
+        if role.lower() == "system":
+            parts.append(text)
+        elif role.lower() == "user":
+            last_user = text
+    if last_user.strip():
+        parts.append(last_user)
+    return "\n".join(p for p in parts if p and p.strip())
+
+
+def _sanitize_outgoing(messages: list) -> list:
+    """Apply the hardcoded safety footer. Sync, no classifier.
+
+    Text-only chat gets the footer and nothing else: no keyword filter, no
+    memory, history, episode, or system-prompt scan. Only a request with
+    pictures runs the word-list check and history quarantine, ahead of the
+    image classifier.
+    """
+    from core.blocklist import note, sanitize_messages
+    from core.safety import MinorsBlocked, prepare_llm_messages
+
+    prepared = prepare_llm_messages(messages)
+    has_images = bool(_unchecked_images(prepared))
+    _request_images.set(has_images)
+    if has_images:
+        prepared, check = sanitize_messages(prepared)
+        if check:
+            note(check)
+            raise MinorsBlocked(check)
+    _output_context.set(_request_output_context(prepared))
+    return prepared
+
+
+
+def _drop_or_rebuild_history(prepared: list, drop_indices: set[int]) -> list:
+    """Drop pure history messages; rebuild combined turns so the latest stays.
+
+    History and the latest user line often share one message, split by
+    === MOST RECENT MESSAGE ===. Flagged or unclassified history must not
+    take that latest turn with it. An empty turn is never sent.
+    """
+    from core.blocklist import split_transcript
+    from core.safety import message_text
+
+    rebuilt: list = []
+    for i, message in enumerate(prepared):
+        if i not in drop_indices:
+            rebuilt.append(message)
+            continue
+        text = message_text(message) if isinstance(message, dict) else str(message or "")
+        _hist, latest = split_transcript(text)
+        if latest is None:
+            continue
+        kept = (latest or "").strip()
+        if not kept:
+            # Never send an empty user turn; skip this message instead.
+            continue
+        if isinstance(message, dict):
+            rebuilt.append({
+                **message,
+                "content": "=== MOST RECENT MESSAGE ===\n" + kept,
+            })
+        else:
+            rebuilt.append(kept)
+    return rebuilt
+
+
+def _outgoing_messages(messages: list) -> list:
+    """Apply the hardcoded safety footer.
+
+    Text-only chat runs no keyword filter and no model-based child checks. If the
+    request has images, the image-path classifier stays fail-closed:
+    sync callers with no loop run it here; a running loop must use
+    _outgoing_messages_async rather than skip those checks.
+    """
+    prepared = _sanitize_outgoing(messages)
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(_classify_outgoing(prepared))
+    if _unchecked_images(prepared):
+        from core.blocklist import note
+        from core.safety import MinorsBlocked
+        note("llm-input-classifier-error")
+        raise MinorsBlocked("llm-input-classifier-error")
+    return prepared
+
+
+async def _outgoing_messages_async(messages: list) -> list:
+    prepared = _sanitize_outgoing(messages)
+    return await _classify_outgoing(prepared)
+
+
+async def _classify_outgoing(prepared: list) -> list:
+    from core.blocklist import note, split_transcript
+    from core.classifier import (
+        classify_async,
+        HISTORY_WINDOW,
+    )
+    from core.safety import MinorsBlocked, is_footer_message, is_user_guard, message_text
+
+    _output_context.set(_request_output_context(prepared))
+    images = _unchecked_images(prepared)
+
+    hard_parts: list[str] = []
+    history_parts: list[str] = []
+    last_user = -1
+    scan_rows: list[tuple[int, str, str]] = []
+    for i, message in enumerate(prepared):
+        if is_footer_message(message) or is_user_guard(message):
+            continue
+        role = (message.get("role") if isinstance(message, dict) else "") or ""
+        text = message_text(message) if isinstance(message, dict) else str(message or "")
+        scan_rows.append((i, role, text))
+        if role.lower() == "user":
+            last_user = len(scan_rows) - 1
+
+    def _hard(role: str, text: str, index: int) -> bool:
+        from core.blocklist import _looks_like_persona_or_card
+        return (
+            index == last_user
+            or _looks_like_persona_or_card(text, role)
+            or (role.lower() == "system" and "persona" in (text or "").lower())
+        )
+
+    # (index, history text, combined-with-latest?)
+    history_entries: list[tuple[int, str, bool]] = []
+    history_indices: list[int] = []
+    for scan_i, (i, role, text) in enumerate(scan_rows):
+        if not str(text).strip():
+            continue
+        hist, latest = split_transcript(text)
+        if latest is not None:
+            hard_parts.append(latest)
+            if hist.strip():
+                history_parts.append(hist)
+                history_entries.append((i, hist, True))
+                history_indices.append(i)
+            continue
+        if _hard(role, text, scan_i):
+            hard_parts.append(text)
+        else:
+            history_parts.append(text)
+            history_entries.append((i, text, False))
+            history_indices.append(i)
+
+    stale_entries = history_entries[:-HISTORY_WINDOW] if len(history_entries) > HISTORY_WINDOW else []
+    window_entries = history_entries[-HISTORY_WINDOW:]
+    # Compute both drop sets against the ORIGINAL list, then apply once.
+    # Rebuilding first would shift later indices and drop the wrong
+    # messages (including the trailing footer and user guard).
+    drop_stale = {i for i, _hist, _combined in stale_entries}
+    drop_window: set[int] = set()
+    window = [hist for _i, hist, _combined in window_entries]
+    hard_text = "\n".join(p for p in hard_parts if p and str(p).strip())
+    history_text = "\n".join(window)
+    combined = hard_text
+    if history_text.strip():
+        combined = (hard_text + "\n\nHISTORY:\n" + history_text).strip()
+
+    # Text-only chat: footer + keyword/blocklist only. Image attachments
+    # always run the image content check, the narrow prompt child check, and
+    # age vision (no Llama Guard), and those checks cannot be turned off.
+    verdict = ""
+    if images:
+        verdict = await classify_async(combined or hard_text or " ", images=images)
+    if verdict:
+        hard_verdict = await classify_async(hard_text or " ", images=images)
+        if hard_verdict:
+            check = f"llm-input-{hard_verdict}"
+            note(check)
+            raise MinorsBlocked(check)
+        if window_entries:
+            note("llm-history-quarantine")
+            drop_window = {i for i, _hist, _combined in window_entries}
+
+    drop = drop_stale | drop_window
+    if drop:
+        prepared = _drop_or_rebuild_history(prepared, drop)
+    from core.safety import prepare_llm_messages
+    prepared = prepare_llm_messages(prepared)
+    _output_context.set(_request_output_context(prepared))
+    return prepared
+
+
+async def _output_blocked(*texts, tool_calls=None) -> bool:
+    """True when a model reply or tool call depicts or sexualizes a minor.
+
+    The reply is checked on its own and together with recent RP / card
+    context so school or young cues in the scene are not missed.
+    Replies are classified as an assistant turn against the latest user text.
+    """
+    from core.blocklist import is_blocked, match_info, note
+    import json as _json
+
+    parts = [str(t) for t in texts if t]
+    for call in tool_calls or []:
+        if not isinstance(call, dict):
+            parts.append(str(call))
+            continue
+        parts.append(str(call.get("name") or ""))
+        args = call.get("arguments")
+        if isinstance(args, str):
+            parts.append(args)
+        elif args:
+            try:
+                parts.append(_json.dumps(args, ensure_ascii=False))
+            except Exception:
+                parts.append(str(args))
+    if not _request_images.get(False):
+        # Text-only chat: no keyword filter on the reply. Only an image tool
+        # call keeps its argument check; the asset command keeps its own checks too.
+        image_parts: list[str] = []
+        for call in tool_calls or []:
+            if isinstance(call, dict) and str(call.get("name") or "").casefold() == "asset":
+                args = call.get("arguments")
+                if isinstance(args, str):
+                    image_parts.append(args)
+                elif args:
+                    try:
+                        image_parts.append(_json.dumps(args, ensure_ascii=False))
+                    except Exception:
+                        image_parts.append(str(args))
+        if image_parts and is_blocked(*image_parts):
+            note("llm-output")
+            return True
+        return False
+    reply = "\n".join(parts)
+    context = _output_context.get("")
+    combined = (context + "\n" + reply).strip() if context else reply
+    if is_blocked(*parts) or (combined and match_info(combined, force_context=True)[1]):
+        note("llm-output")
+        return True
+    # Chat text replies do not run the model child check. Generated-image
+    # and asset outputs are checked on the image path, which stays on.
+    return False
+
+
+async def _build_payload(
     messages: list,
     model: str,
     max_tokens: int,
@@ -718,8 +1050,9 @@ def _build_payload(
     *,
     reasoning: bool | None = None,
 ) -> dict:
+    messages = await _outgoing_messages_async(messages)
     payload = {
-        "model": model,
+        "model": _safe_chat_model(model),
         "messages": messages,
         "max_tokens": max_tokens,
         "temperature": temperature,
@@ -911,7 +1244,18 @@ def _after_http_ok(payload: dict, visible: int, stage: int, data: dict) -> int |
 
 
 def _request_body(payload: dict) -> dict:
-    return {key: value for key, value in payload.items() if not str(key).startswith("_")}
+    # Never request image/video modalities. Providers that accept a
+    # modalities field would otherwise generate pictures.
+    return {
+        key: value
+        for key, value in payload.items()
+        if not str(key).startswith("_")
+        and str(key) not in {
+            "modal" + "ities",
+            "response_" + "modalities",
+            "response" + "Modalities",
+        }
+    }
 
 
 def _ollama_native_url(url: str) -> str | None:
@@ -1102,6 +1446,14 @@ def _openai_from_native(data: dict) -> dict:
     }
 
 
+def _audit_http(response=None, payload=None, *, outcome: str = "") -> None:
+    try:
+        from core.audit import api_from_http
+        api_from_http(_provider_label() or "llm", response, payload, outcome=outcome)
+    except Exception:
+        pass
+
+
 def _sync_post(url: str, payload: dict, headers: dict, timeout: int = 45) -> dict:
     visible = int(payload.get("max_tokens") or 256)
     stage = 0
@@ -1112,6 +1464,7 @@ def _sync_post(url: str, payload: dict, headers: dict, timeout: int = 45) -> dic
                 send_url, json=body, headers=headers, timeout=timeout
             )
         except Exception as e:
+            _audit_http(outcome="error")
             return {"error": _format_transport_error(e, send_url)}
 
         if response.status_code != 200:
@@ -1131,6 +1484,7 @@ def _sync_post(url: str, payload: dict, headers: dict, timeout: int = 45) -> dic
             )
             nxt = _after_http_error(payload, visible, stage, err)
             if nxt is None:
+                _audit_http(response, outcome="error")
                 return {"error": err}
             stage = nxt
             continue
@@ -1149,7 +1503,9 @@ def _sync_post(url: str, payload: dict, headers: dict, timeout: int = 45) -> dic
         nxt = _after_http_ok(payload, visible, stage, data)
         if nxt is None:
             if isinstance(data, dict) and data.get("error") and not data.get("choices"):
+                _audit_http(response, data, outcome="error")
                 return {"error": _error_text(data.get("error"))}
+            _audit_http(response, data, outcome="success")
             return data
         stage = nxt
     return {"error": f"{_provider_label()} request failed. model=`{payload.get('model', '?')}`"}
@@ -1159,21 +1515,23 @@ async def _async_post(url: str, payload: dict, headers: dict, timeout: int = 45)
     visible = int(payload.get("max_tokens") or 256)
     stage = 0
     if _provider_backend() == "ollama":
-        # /api/show is a blocking lookup. Run it off the event loop once;
-        # the request below reads the cached answer.
-        model = str(payload.get("model") or "")
-        await asyncio.get_running_loop().run_in_executor(
-            None, _ollama_capabilities, url, model
+        # Chat, checkers' sibling path, and the episodic summary must not
+        # block the loop. _sync_post also covers /api/show and the body.
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None, lambda: _sync_post(url, payload, headers, timeout)
         )
     for _ in range(3):
         send_url = url
         try:
             timeout_cfg = aiohttp.ClientTimeout(total=timeout)
             send_url, body = _ollama_request(url, payload)
+            http_resp = None
             async with aiohttp.ClientSession(timeout=timeout_cfg) as session:
                 async with session.post(
                     send_url, json=body, headers=headers
                 ) as resp:
+                    http_resp = resp
                     text = await resp.text()
                     if resp.status != 200:
                         if (
@@ -1192,6 +1550,7 @@ async def _async_post(url: str, payload: dict, headers: dict, timeout: int = 45)
                         )
                         nxt = _after_http_error(payload, visible, stage, err)
                         if nxt is None:
+                            _audit_http(http_resp, outcome="error")
                             return {"error": err}
                         stage = nxt
                         continue
@@ -1205,6 +1564,7 @@ async def _async_post(url: str, payload: dict, headers: dict, timeout: int = 45)
                             )
                         }
         except Exception as e:
+            _audit_http(outcome="error")
             return {"error": _format_transport_error(e, send_url)}
         data = _openai_from_native(data)
         if payload.get("_reasoning") != "off":
@@ -1212,7 +1572,9 @@ async def _async_post(url: str, payload: dict, headers: dict, timeout: int = 45)
         nxt = _after_http_ok(payload, visible, stage, data)
         if nxt is None:
             if isinstance(data, dict) and data.get("error") and not data.get("choices"):
+                _audit_http(http_resp, data, outcome="error")
                 return {"error": _error_text(data.get("error"))}
+            _audit_http(http_resp, data, outcome="success")
             return data
         stage = nxt
     return {"error": f"{_provider_label()} request failed. model=`{payload.get('model', '?')}`"}
@@ -1614,7 +1976,12 @@ def _extract_message(data: dict) -> dict | None:
         msg = data["choices"][0]["message"]
     except (KeyError, IndexError, TypeError):
         return None
-    return msg if isinstance(msg, dict) else None
+    if not isinstance(msg, dict):
+        return None
+    # Ignore provider image-generation payloads (OpenRouter message.images).
+    if "images" in msg:
+        msg = {key: value for key, value in msg.items() if key != "images"}
+    return msg
 
 
 def _parse_tool_arguments(arguments) -> dict:
@@ -1865,6 +2232,7 @@ async def _groq_sdk_call(
     {"error": "..."}. reasoning_effort defaults to "none" so native
     chain-of-thought stays out of the reply.
     """
+    messages = await _outgoing_messages_async(messages)
     try:
         from groq import AsyncGroq
     except ImportError:
@@ -1882,7 +2250,7 @@ async def _groq_sdk_call(
     client = AsyncGroq(api_key=api_key)
 
     kwargs: dict = {
-        "model": model,
+        "model": _safe_chat_model(model),
         "messages": messages,
         "temperature": temperature,
         "max_completion_tokens": max_completion_tokens,
@@ -1901,13 +2269,19 @@ async def _groq_sdk_call(
 
     async def _create(kw: dict) -> str | dict:
         completion = await client.chat.completions.create(**kw)
+        try:
+            _audit_http(completion, getattr(completion, "id", None), outcome="success")
+        except Exception:
+            pass
         if kw.get("stream"):
             parts: list[str] = []
             async for chunk in completion:
                 delta = chunk.choices[0].delta.content if chunk.choices else None
                 if delta:
                     parts.append(delta)
-            return "".join(parts)
+            text = "".join(parts)
+            from core.blocklist import REFUSAL
+            return REFUSAL if await _output_blocked(text) else text
         choice = completion.choices[0]
         msg = choice.message
         content = getattr(msg, "content", None) or ""
@@ -1923,6 +2297,10 @@ async def _groq_sdk_call(
         }
         if kw.get("tools"):
             out["tool_calls"] = _tool_calls_from_message(msg)
+        from core.blocklist import REFUSAL
+        if await _output_blocked(out.get("content"), tool_calls=out.get("tool_calls")):
+            out["content"] = REFUSAL
+            out["tool_calls"] = []
         return out
 
     try:
@@ -2003,6 +2381,9 @@ async def call_groq_turn(
     A quota miss returns no tool calls, so the caller does not run tools
     or start another request on that turn.
     """
+    from core.blocklist import REFUSAL
+    from core.safety import MinorsBlocked
+
     if max_completion_tokens is None:
         max_completion_tokens = channel_completion_tokens()
     else:
@@ -2039,17 +2420,20 @@ async def call_groq_turn(
             effort = None
             parsed = "parsed"
             budget = max_completion_tokens + _think_room()
-        result = await _groq_sdk_call(
-            messages,
-            model=model,
-            max_completion_tokens=budget,
-            temperature=0.6,
-            top_p=0.95,
-            reasoning_effort=effort,
-            reasoning_format=parsed,
-            stream=False,
-            tools=tools or None,
-        )
+        try:
+            result = await _groq_sdk_call(
+                messages,
+                model=model,
+                max_completion_tokens=budget,
+                temperature=0.6,
+                top_p=0.95,
+                reasoning_effort=effort,
+                reasoning_format=parsed,
+                stream=False,
+                tools=tools or None,
+            )
+        except MinorsBlocked:
+            return ModelTurn(REFUSAL, "", [], False)
 
         if isinstance(result, dict) and "error" in result:
             error_msg = result["error"]
@@ -2080,9 +2464,12 @@ async def call_groq_turn(
             return ModelTurn(_public_error(err), f"({err})", [], False)
 
         url = _api_url()
-        payload = _build_payload(
-            messages, model, max_tokens=max_completion_tokens, temperature=0.7
-        )
+        try:
+            payload = await _build_payload(
+                messages, model, max_tokens=max_completion_tokens, temperature=0.7
+            )
+        except MinorsBlocked:
+            return ModelTurn(REFUSAL, "", [], False)
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
@@ -2153,6 +2540,8 @@ async def call_groq_turn(
     if quota:
         calls = []
     cut = reply_was_cut(reason) and not calls and not quota
+    if await _output_blocked(reply, thoughts, tool_calls=calls):
+        return ModelTurn(REFUSAL, "", [], False)
     return ModelTurn(reply, thoughts, calls, quota, cut)
 
 
@@ -2233,6 +2622,9 @@ async def call_groq_simple(prompt: str, max_chars: int = 2000):
     Returns ONLY the model's text — no thoughts, no tags, no tuples.
     On failure returns ("error", message).
     """
+    from core.blocklist import REFUSAL
+    from core.safety import MinorsBlocked
+
     max_tokens = tokens_for(max_chars)
     model = _model()
     backend = _provider_backend()
@@ -2240,15 +2632,18 @@ async def call_groq_simple(prompt: str, max_chars: int = 2000):
     messages = [{"role": "user", "content": prompt}]
 
     if backend == "cloud":
-        result = await _groq_sdk_call(
-            messages,
-            model=model,
-            max_completion_tokens=max_tokens,
-            temperature=0.9,
-            top_p=0.95,
-            reasoning_effort="none",
-            stream=False,
-        )
+        try:
+            result = await _groq_sdk_call(
+                messages,
+                model=model,
+                max_completion_tokens=max_tokens,
+                temperature=0.9,
+                top_p=0.95,
+                reasoning_effort="none",
+                stream=False,
+            )
+        except MinorsBlocked:
+            return REFUSAL
         if isinstance(result, dict) and "error" in result:
             return ("error", result["error"])
         text = result.get("content") if isinstance(result, dict) else result
@@ -2256,15 +2651,18 @@ async def call_groq_simple(prompt: str, max_chars: int = 2000):
         if "<reply>" in text.lower():
             r, _ = parse_sections(text)
             text = r or text
-        return text
+        return REFUSAL if await _output_blocked(text) else text
 
     if not _api_key() and backend != "ollama":
         return ("error", _missing_key_error())
 
     url = _api_url()
-    payload = _build_payload(
-        messages, model, max_tokens=max_tokens, temperature=0.9, reasoning=False
-    )
+    try:
+        payload = await _build_payload(
+            messages, model, max_tokens=max_tokens, temperature=0.9, reasoning=False
+        )
+    except MinorsBlocked:
+        return REFUSAL
     data = await _async_post(url, payload, _headers(), timeout=90)
 
     if "error" in data:
@@ -2276,7 +2674,8 @@ async def call_groq_simple(prompt: str, max_chars: int = 2000):
             "error",
             f"{_provider_label()} bad response shape (no content). [{_config_snapshot()}]",
         )
-    return _visible_reply(_message_text(msg))
+    text = _visible_reply(_message_text(msg))
+    return REFUSAL if await _output_blocked(text) else text
 
 
 # ---------------------------------------------------------------------------
@@ -2291,6 +2690,9 @@ async def call_groq_raw(
     Sends a prompt and returns ONLY the model's text.
     Optional model= overrides the chat model (memory summarizer).
     """
+    from core.blocklist import REFUSAL
+    from core.safety import MinorsBlocked
+
     use_model = (model or "").strip() or _model()
     backend = _provider_backend()
     messages = [{"role": "user", "content": prompt}]
@@ -2300,31 +2702,39 @@ async def call_groq_raw(
         # back empty. The SDK default asks for the answer only. A model that
         # rejects that retries without it. OpenRouter uses the REST path
         # below and does not send reasoning_effort.
-        result = await _groq_sdk_call(
-            messages,
-            model=use_model,
-            max_completion_tokens=max_completion_tokens,
-            temperature=0.4,
-            top_p=0.95,
-            stream=False,
-        )
+        try:
+            result = await _groq_sdk_call(
+                messages,
+                model=use_model,
+                max_completion_tokens=max_completion_tokens,
+                temperature=0.4,
+                top_p=0.95,
+                stream=False,
+            )
+        except MinorsBlocked:
+            return REFUSAL
         if isinstance(result, dict) and "error" in result:
             return f"ERROR: {result['error']}"
         if isinstance(result, dict):
-            return drop_safety_preamble(_strip_think(result.get("content") or ""))
-        return drop_safety_preamble(_strip_think(result or ""))
+            text = drop_safety_preamble(_strip_think(result.get("content") or ""))
+        else:
+            text = drop_safety_preamble(_strip_think(result or ""))
+        return REFUSAL if await _output_blocked(text) else text
 
     if not _api_key() and backend != "ollama":
         return f"ERROR: {_missing_key_error()}"
 
     url = _api_url()
-    payload = _build_payload(
-        messages,
-        use_model,
-        max_tokens=max_completion_tokens,
-        temperature=0.4,
-        reasoning=False,
-    )
+    try:
+        payload = await _build_payload(
+            messages,
+            use_model,
+            max_tokens=max_completion_tokens,
+            temperature=0.4,
+            reasoning=False,
+        )
+    except MinorsBlocked:
+        return REFUSAL
     data = await _async_post(url, payload, _headers(), timeout=90)
 
     if "error" in data:
@@ -2338,4 +2748,5 @@ async def call_groq_raw(
         )
     # Empty when the model spent the reply on a trace. The caller retries
     # the fold later instead of storing the trace.
-    return drop_safety_preamble(_strip_think(_message_text(msg)))
+    text = drop_safety_preamble(_strip_think(_message_text(msg)))
+    return REFUSAL if await _output_blocked(text) else text

@@ -404,7 +404,12 @@ class CogManagerWindow(QMainWindow):
                     full_path = os.path.join(root, file)
                     rel = os.path.relpath(full_path, base)
                     modules.append(rel.replace(os.sep, ".")[:-3])
-        return sorted(set(modules))
+        from core.media_scan import module_is_blocked
+        from core.denied_modules import is_denied_module
+        return sorted({
+            m for m in modules
+            if not is_denied_module(m) and not module_is_blocked(m)
+        })
 
     @staticmethod
     def _short_module(ext: str) -> str:
@@ -497,6 +502,16 @@ class CogManagerWindow(QMainWindow):
         else:
             full = "cogs." + display_module
 
+        from core.media_scan import module_is_blocked
+        blocked = module_is_blocked(full)
+        if blocked:
+            self.status_label.setText(f"Refused to load denied media module: {full} ({blocked})")
+            cb = self._rows.get(display_module)
+            if cb:
+                cb.blockSignals(True)
+                cb.setChecked(False)
+                cb.blockSignals(False)
+            return
         if checked:
             self._send(f"LOAD_COG {full}")
         else:
@@ -535,6 +550,7 @@ class CogManagerWindow(QMainWindow):
 
         placed: list[str] = []
         errors: list[str] = []
+        installed: list[tuple[str, str]] = []
 
         for src in paths:
             if not src.lower().endswith(".py"):
@@ -569,8 +585,35 @@ class CogManagerWindow(QMainWindow):
                 shutil.copy2(src, dest)
                 rel = os.path.relpath(dest, cogs_root)
                 placed.append(f"{name} → cogs/{rel.replace(os.sep, '/')} ({kind})")
+                installed.append((name, kind))
             except Exception as e:
                 errors.append(f"{name}: {e}")
+
+        try:
+            from core.audit import safe_activity
+
+            if placed and errors:
+                outcome = "partial"
+            elif placed:
+                outcome = "success"
+            else:
+                outcome = "error"
+            kinds = []
+            seen_kinds = set()
+            for _name, kind in installed:
+                if kind not in seen_kinds:
+                    seen_kinds.add(kind)
+                    kinds.append(kind)
+            safe_activity(
+                "cog-install",
+                action="install-cog",
+                outcome=outcome,
+                count=len(installed),
+                kind=",".join(kinds),
+                file=",".join(name for name, _k in installed),
+            )
+        except Exception:
+            pass
 
         if placed:
             msg = "Placed: " + "; ".join(placed)

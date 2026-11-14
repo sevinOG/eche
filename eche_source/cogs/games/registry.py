@@ -1,44 +1,33 @@
 # games/registry.py
-# Auto-discovers game modules in this package so drag-dropped files register.
-# Uses _core for the actual registry to avoid circular imports during autoload.
-
+# Import only the known bundled games. Do not auto-import every file in
+# this folder: a drop-in module could be a leftover generator.
 from __future__ import annotations
 
 import importlib
-import pkgutil
 import sys
 
 from cogs.games._core import GAME_REGISTRY, register_game
 
-# Explicit fallback list for frozen builds (PyInstaller), where
-# pkgutil.iter_modules() cannot see bundled submodules. Keep new games
-# added here so they still register in Eche.exe. Harmless in source mode
-# (modules are cached after the first import).
+# Bundled games. New first-party games must be added here explicitly.
 _KNOWN_GAMES = ("highlow", "slots", "simon", "holdem")
 
 
 def _autoload_games():
-    """Import every submodule in cogs.games except this registry and _core."""
+    """Import the explicit bundled game list after a media/denylist check."""
     package_name = __name__.rsplit(".", 1)[0]  # cogs.games
     prefix = package_name + "."
-    discovered = set()
-
     try:
-        package = sys.modules.get(package_name) or importlib.import_module(package_name)
-        paths = list(getattr(package, "__path__", []) or [])
+        from core.media_scan import module_is_blocked
     except Exception:
-        paths = []
+        module_is_blocked = lambda _name: ""
 
-    # Source mode: discover drag-dropped modules dynamically.
-    for mod in pkgutil.iter_modules(paths):
-        if mod.name in ("registry", "_core") or mod.name.startswith("_"):
-            continue
-        discovered.add(mod.name)
-
-    # Frozen mode: pkgutil finds nothing, so fall back to the known list.
-    for name in (*discovered, *_KNOWN_GAMES):
+    for name in _KNOWN_GAMES:
         full = prefix + name
         if full in sys.modules:
+            continue
+        blocked = module_is_blocked(full)
+        if blocked:
+            print(f"[games.registry] refused to import {full}: {blocked}")
             continue
         try:
             importlib.import_module(full)

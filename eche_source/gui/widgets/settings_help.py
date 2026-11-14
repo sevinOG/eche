@@ -57,40 +57,65 @@ FIELD_HELP: dict[str, tuple[str, str]] = {
         "Most simple searches only need the Access Token.",
     ),
     "xai_api_key": (
-        "Grok API key (Imagine)",
+        "xAI API key",
         "### What is this?\n"
-        "The key Eche sends to xAI when someone asks for a picture or a video. "
-        "`?asset` and the asset tool both use it.\n\n"
-        "### How to get one\n"
-        "1. Open the [xAI console](https://console.x.ai/)\n"
-        "2. Create an API key\n"
-        "3. Paste it here and click **Save Settings**\n\n"
-        "### Safety\n"
-        "Stored encrypted for your Windows user only. A picture or a video is billed to this key. "
-        "Leave the field blank on a later save to keep the key you already stored.",
+        "The key for Grok Imagine, the only backend ?asset uses. "
+        "It is stored encrypted with your other secrets.\n\n"
+        "### Do I need it?\n"
+        "Yes, if you turn ?asset on. There is no fallback generator. "
+        "A missing key fails closed with an owner-facing message.\n\n"
+        "If this key may have been used before the removal, revoke it at the xAI console and paste a new one.",
     ),
-    "asset_access": (
-        "Who can ask for an asset",
-        "### Owner only\n"
-        "Off, anyone can use `?asset` and Eche can make an asset when they ask. "
-        "On, only the Owner IDs on the Security page can.\n\n"
-        "A video is a short 480p clip, up to 8 seconds. "
-        "Attach a picture to edit it, or ask for a video of that picture. "
-        "Attach a video to edit the video.",
+    "asset_enabled": (
+        "Enable ?asset",
+        "### Kill switch\n"
+        "Off by default. Only an owner can turn ?asset on in Settings → Media. "
+        "While it is off, the command, the asset tool, and any generation request are refused.\n\n"
+        "**Owner only** is a second, optional restriction once generation is on.\n\n"
+        "### 18+ mode\n"
+        "Off by default, set only in Settings. When it is on, any user in a Discord age-restricted channel can use 18+ ?asset, not just the owner, and never in DMs. "
+        "While 18+ is on, ?asset in a non-NSFW channel runs under the normal SFW rules "
+        "(no 18+ relaxing). "
+        "Owner approval is separate and can be on or off. Every minors check stays, including the matcher, media filter, "
+        "child check, age vision, incident rule, and the safety footer (the footer text does not change). "
+        "The age check is stricter: anything short of clearly adult is blocked, and so are anime, "
+        "cartoon, chibi, doll, stylized, and real or identifiable people. The only relaxation is "
+        "consensual adult sexual content between clearly adult, non-real characters on generated output; "
+        "anything that could be a minor, stylized sexual content, and real people still block.\n\n"
+        "### Owner approval\n"
+        "On by default. Turning it off skips owner review of each asset. Video stays "
+        "available. The hourly caps are the same either way: each user gets 10 images "
+        "and 5 videos an hour, counted separately, and each server 40 images and 15 "
+        "videos. A blocked or failed try gives its slot back. The bot owner has no caps. "
+        "Without 18+ it also makes ?asset owner-only. "
+        "18+ can run with approval off; the minors checks still run on every request.",
+    ),
+    "asset_adult_enabled": (
+        "18+",
+        "### 18+ mode\n"
+        "Off by default, settings-only. See the ?asset help for the full rules: any user in an age-restricted "
+        "channels only (in non-NSFW channels ?asset runs under the normal SFW rules), "
+        "owner approval optional, stricter age and style checks, and consensual adult "
+        "content between clearly adult characters allowed on output only.",
+    ),
+    "asset_approval_enabled": (
+        "Require owner approval",
+        "### Owner approval\n"
+        "On by default. Turning it off skips owner review of each asset. The hourly "
+        "caps stay the same: 10 images and 5 videos per user, 40 images and 15 videos "
+        "per server (the owner has none). "
+        "Without 18+ it also makes ?asset owner-only. 18+ can run with approval off.",
     ),
     "prompt_tools": (
         "Tools in the prompt",
         "### What these boxes do\n"
         "Each box puts that tool in the prompt Eche sees. Off, and the model is not offered it. "
         "A blank install leaves them on.\n\n"
-        "The main window **Default tools** switch still turns lookup, thread, context, and asset off together. "
+        "The main window **Default tools** switch still turns lookup, thread, and context off together. "
         "These boxes can turn one of them off while the switch stays on.\n\n"
         "### Episodic memory\n"
         "Off, and this server's episode is left out of the prompt. Eche still stores it, "
         "so turning the box back on brings it back.\n\n"
-        "### Asset\n"
-        "This box only controls whether the model may call the tool. "
-        "`?asset` still works for whoever Media settings allows.\n\n"
         "Admin tools stay on the Security page.",
     ),
     "home_server_id": (
@@ -522,19 +547,6 @@ def _cap_help() -> dict[str, tuple[str, str]]:
         "### Reset\n"
         "**Reset to defaults** puts every slider back to the value Eche used "
         "before these were settings.",
-    )
-    out["blocked_words"] = (
-        "Blocked words",
-        "### What it does\n"
-        "Eche refuses anything involving minors: the message, its own reply, "
-        "tool calls, thread posts, and every ?asset or picture/video prompt. "
-        "The model and the image API are not called for a blocked request. "
-        "The built-in list is in core/blocklist.py.\n\n"
-        "### Adding words\n"
-        "One word or phrase per line, or commas between them. Whole words only, "
-        "any case, so `kid` does not block `kidney`. Saved as `blocked_words`.\n\n"
-        "### When it changes\n"
-        "Save Settings. The next message uses the new list.",
     )
     out["memory_mask_slurs"] = (
         "Mask slurs in memory",

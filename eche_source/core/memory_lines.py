@@ -78,20 +78,15 @@ def _arg(arguments, key: str, limit: int = _ACTION_ARG_LIMIT) -> str:
     return value
 
 
-def tool_action(name: str, arguments: dict | None = None, posted: str = "") -> str:
+def tool_action(name: str, arguments: dict | None = None, posted: str = "", status: str = "") -> str:
     """One bracketed note of what eche did with a tool, in eche's own voice.
 
-    posted is text a quiet tool already put on Discord itself (an asset
-    caption). It is kept so the record says what came out, not only the call.
+    posted is text a quiet tool already put on Discord itself. It is kept
+    so the record says what came out, not only the call.
     """
     tool = " ".join(str(name or "").split()).lower() or "a tool"
     detail = ""
-    if tool == "asset":
-        kind = _arg(arguments, "kind", 10).lower()
-        prompt = _arg(arguments, "prompt")
-        what = f"a {kind}" if kind in ("image", "video") else "an asset"
-        detail = f"made {what}" + (f' of "{prompt}"' if prompt else "")
-    elif tool == "duckduckgo":
+    if tool == "duckduckgo":
         query = _arg(arguments, "query")
         detail = f'searched "{query}"' if query else "searched the web"
     elif tool == "thread":
@@ -105,6 +100,14 @@ def tool_action(name: str, arguments: dict | None = None, posted: str = "") -> s
         if len(shown) > _ACTION_ARG_LIMIT:
             shown = shown[: _ACTION_ARG_LIMIT - 1].rstrip() + "…"
         head = f'{head}; posted "{shown}"'
+    status = " ".join(str(status or "").split())
+    if status:
+        # The chat model reads this on later turns. A failed or blocked try
+        # is not retried on its own.
+        head = (
+            f"{head}; result: {status}. Do not retry or rephrase unless they ask again "
+            "in a new message"
+        )
     return f"[{head}]"
 
 

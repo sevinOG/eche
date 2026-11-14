@@ -48,6 +48,7 @@ from gui.widgets.dialogs import (
     present_failure,
     show_error,
     looks_like_traceback,
+    match_config_hint,
 )
 
 # Tip jar (Cash App + on-chain Bitcoin)
@@ -278,7 +279,7 @@ class MainWindow(QMainWindow):
         tools_col.setSpacing(6)
         self.default_tools_box = self._tool_toggle(
             "Default tools",
-            "Thread, lookup, context, and asset. Off, and those tools are left out of chat.",
+            "Thread, lookup, and context. Off, and those tools are left out of chat.",
             self._default_tools_saved_on(),
             self._on_default_tools_toggled,
         )
@@ -382,9 +383,9 @@ class MainWindow(QMainWindow):
             self.default_tools_box.blockSignals(False)
             return
         if checked:
-            self.append_log("[INFO] Default tools on. Thread, lookup, context, and asset are available.")
+            self.append_log("[INFO] Default tools on. Thread, lookup, and context are available.")
         else:
-            self.append_log("[INFO] Default tools off. Thread, lookup, context, and asset are left out.")
+            self.append_log("[INFO] Default tools off. Thread, lookup, and context are left out.")
 
     def _on_admin_tools_toggled(self, checked: bool):
         try:
@@ -702,8 +703,10 @@ class MainWindow(QMainWindow):
         reply = (reply or "").strip() or "(empty)"
         self.local_output.append(f"Eche: {reply}")
         try:
+            from core.guardrails import is_refusal_text
             from core.local_chat_memory import append_turn
-            append_turn("assistant", reply)
+            if not is_refusal_text(reply):
+                append_turn("assistant", reply)
         except Exception as e:
             self.local_output.append(f"(save assistant turn failed: {e})")
         sb = self.local_output.verticalScrollBar()
@@ -723,9 +726,24 @@ class MainWindow(QMainWindow):
             from core.local_chat_memory import clear_turns
             clear_turns()
         except Exception as e:
+            try:
+                from core.audit import safe_activity
+                safe_activity(
+                    "desktop-chat",
+                    action="clear-history",
+                    outcome="error",
+                    error_type=type(e).__name__,
+                )
+            except Exception:
+                pass
             self.local_output.append(f"(clear failed: {e})")
             return
         self.local_output.clear()
+        try:
+            from core.audit import safe_activity
+            safe_activity("desktop-chat", action="clear-history", outcome="success")
+        except Exception:
+            pass
 
     def _panel(self, title: str, body: QWidget) -> QFrame:
         frame = QFrame()
@@ -945,11 +963,21 @@ class MainWindow(QMainWindow):
                 startupinfo=startupinfo,
             )
             self.append_log(f"[INFO] Bot process started with PID: {self.bot_process.pid}")
+            try:
+                from core.audit import safe_activity
+                safe_activity("bot-run", action="run", outcome="success")
+            except Exception:
+                pass
         except Exception as e:
             tb = traceback.format_exc()
             self.append_log(f"[ERROR] Failed to start bot: {e}\n{tb}")
             self.set_loading(False)
             self._present_failure(tb, log_fn=None, default_title="Failed to start bot")
+            try:
+                from core.audit import safe_activity
+                safe_activity("bot-run", action="run", outcome="error", error_type=type(e).__name__)
+            except Exception:
+                pass
             return
 
         BOT_STARTED = True
@@ -1012,9 +1040,20 @@ class MainWindow(QMainWindow):
         BOT_STARTED = False
         self.set_status("offline")
         self.append_log("[INFO] Bot stopped.")
+        try:
+            from core.audit import safe_activity
+            safe_activity("bot-run", action="stop", outcome="success")
+        except Exception:
+            pass
 
     def shutdown_for_update(self):
         """Stop the bot and quit so the detached update script can replace Eche.exe."""
+        try:
+            from core.audit import safe_activity, close as close_audit
+            safe_activity("shutdown", kind="gui-update", outcome="success")
+            close_audit()
+        except Exception:
+            pass
         self.append_log("[update] Closing Eche so the update can replace the running files.")
         try:
             self.on_stop_clicked()
@@ -1125,8 +1164,13 @@ class MainWindow(QMainWindow):
                 channel = data.get("channel", "")
                 text = f"[{channel}] {msg}" if channel else str(msg)
                 self.append_log(text)
-                if looks_like_traceback(str(msg)):
+                if looks_like_traceback(str(msg)) or match_config_hint(str(msg)):
                     self._present_failure(str(msg), log_fn=None)
+            elif event == "error":
+                msg = str(data.get("message") or "")
+                self.append_log(f"[ERROR] {msg}")
+                if msg:
+                    self._present_failure(msg, log_fn=None)
             elif event == "fatal":
                 msg = str(data.get("message") or "Bot failed to start")
                 self.append_log(f"[FATAL] {msg}")
@@ -1386,6 +1430,12 @@ class MainWindow(QMainWindow):
             print(f"FATAL ERROR: Could not save GUI logs to {LOG_FILE_PATH}: {e}")
 
     def closeEvent(self, event):
+        try:
+            from core.audit import safe_activity, close as close_audit
+            safe_activity("shutdown", kind="gui-close", outcome="success")
+            close_audit()
+        except Exception:
+            pass
         self.append_log("[INFO] GUI closing...")
         try:
             self.save_logs_to_file()

@@ -142,28 +142,15 @@ BOT_BLACKLIST = {
 # ⭐ CUSTOM PREFIX — ONLY RESPOND TO MESSAGES STARTING WITH '?'
 # ---------------------------------------------------------
 def strict_prefix(bot, message):
-    content = message.content
-    if content.startswith("?"):
-        return ["?"]   # must be iterable
-    return []          # safe: “no prefixes”
-
-
-def is_asset_command(content: str) -> bool:
-    """True only when discord.py will run ?asset.
-
-    The prefix has to be the first character. Whitespace right after ?
-    is kept, because strip_after_prefix is off, and the command name is
-    the next word. ?asset and ?Asset count. A leading space, ?assets,
-    and ?assetory do not.
-    """
-    text = content or ""
-    if not text.startswith("?"):
-        return False
-    rest = text[1:]
-    if not rest or rest[0].isspace():
-        return False
-    word = rest.split(None, 1)[0]
-    return word.casefold() == "asset"
+    # A registered ?command at the start of any line (leading spaces or an
+    # earlier line such as "how" allowed) runs that command; the chat path
+    # skips the same messages (core/command_lines.py). Anything else: no prefix.
+    try:
+        from core.command_lines import command_prefix_for
+        return command_prefix_for(bot, message)
+    except Exception:
+        content = getattr(message, "content", "") or ""
+        return ["?"] if content.startswith("?") else []
 
 
 class Eche(commands.Bot):
@@ -224,6 +211,18 @@ class Eche(commands.Bot):
     # ---------------------------------------------------------
     # RAW GATEWAY EVENT DIAGNOSTICS
     # ---------------------------------------------------------
+    async def _watch_asset_mode(self):
+        """Re-read toggles so a GUI save or a hand edit is audited and DM'd."""
+        import asyncio
+        from core.asset_safety import read_asset_mode
+
+        while True:
+            await asyncio.sleep(5)
+            try:
+                read_asset_mode()
+            except Exception:
+                pass
+
     async def on_ready(self):
         print(f">>> BOT READY AS {self.user}")
 
@@ -237,6 +236,11 @@ class Eche(commands.Bot):
             ready(str(self.user) if self.user else "")
         except Exception:
             pass
+        try:
+            from core.asset_safety import read_asset_mode
+            read_asset_mode()
+        except Exception:
+            pass
 
         # Home layout: category "bot memory", channel "bot", thread music-queue.
         # User channels are created when that person is stored.
@@ -245,6 +249,79 @@ class Eche(commands.Bot):
             await ensure_queue_message(self)
         except Exception as exc:
             print(f">>> music queue thread: {exc}")
+        try:
+            from core.audit import safe_activity
+            safe_activity(
+                "ready",
+                outcome="success",
+                user_id=getattr(self.user, "id", None),
+            )
+        except Exception:
+            pass
+
+    async def on_disconnect(self):
+        try:
+            from core.audit import safe_activity
+            safe_activity("disconnect", outcome="success")
+        except Exception:
+            pass
+
+    async def on_resumed(self):
+        try:
+            from core.audit import safe_activity
+            safe_activity("reconnect", outcome="success")
+        except Exception:
+            pass
+
+    async def on_guild_join(self, guild):
+        try:
+            from core.audit import safe_activity
+            safe_activity("guild-join", outcome="success", guild_id=getattr(guild, "id", None))
+        except Exception:
+            pass
+
+    async def on_guild_remove(self, guild):
+        try:
+            from core.audit import safe_activity
+            safe_activity("guild-leave", outcome="success", guild_id=getattr(guild, "id", None))
+        except Exception:
+            pass
+
+    async def on_voice_state_update(self, member, before, after):
+        try:
+            me = getattr(self, "user", None)
+            if me is not None and getattr(member, "id", None) != getattr(me, "id", None):
+                return
+            from core.audit import safe_activity
+            before_ch = getattr(before, "channel", None)
+            after_ch = getattr(after, "channel", None)
+            if before_ch == after_ch:
+                return
+            if after_ch and not before_ch:
+                action = "join"
+            elif before_ch and not after_ch:
+                action = "leave"
+            else:
+                action = "move"
+            safe_activity(
+                "voice-state",
+                outcome="success",
+                action=action,
+                user_id=getattr(member, "id", None),
+                guild_id=getattr(getattr(member, "guild", None), "id", None),
+                channel_id=getattr(after_ch or before_ch, "id", None),
+            )
+        except Exception:
+            pass
+
+    async def close(self):
+        try:
+            from core.audit import safe_activity, close as close_audit
+            safe_activity("shutdown", outcome="success")
+            close_audit()
+        except Exception:
+            pass
+        await super().close()
 
     # ---------------------------------------------------------
     # ⭐ GLOBAL BOT/BOT INTERACTION CHECK
@@ -273,12 +350,121 @@ class Eche(commands.Bot):
             return
 
         # Process commands normally
+        try:
+            from core.audit import bind_from_message
+            bind_from_message(message)
+        except Exception:
+            pass
         await self.process_commands(message)
 
     # ---------------------------------------------------------
     # ⭐ UPDATED ERROR HANDLER — IGNORE UNKNOWN COMMANDS
     # ---------------------------------------------------------
+    async def on_command_completion(self, ctx):
+        try:
+            from core.audit import command_from_ctx
+            command_from_ctx(ctx, "success")
+        except Exception:
+            pass
+
+    async def on_message_edit(self, before, after):
+        author = getattr(after, "author", None)
+        # Skip bots, this bot's own edits, and embed-only / unchanged content.
+        if author is None or getattr(author, "bot", False):
+            return
+        me = getattr(self, "user", None)
+        if me is not None and getattr(author, "id", None) == getattr(me, "id", None):
+            return
+        if getattr(before, "content", None) == getattr(after, "content", None):
+            return
+        try:
+            from core.audit import bind_from_message, record
+            bind_from_message(after)
+            record(
+                "message_edit",
+                user_id=getattr(author, "id", None),
+                guild_id=getattr(getattr(after, "guild", None), "id", None),
+                channel_id=getattr(getattr(after, "channel", None), "id", None),
+            )
+        except Exception:
+            pass
+
+    async def on_app_command_completion(self, interaction, command):
+        try:
+            from core.audit import command as audit_command
+            user = getattr(interaction, "user", None)
+            guild = getattr(interaction, "guild", None)
+            channel = getattr(interaction, "channel", None)
+            name = getattr(command, "qualified_name", None) or getattr(command, "name", None) or "app"
+            audit_command(
+                str(name),
+                "success",
+                user_id=getattr(user, "id", None),
+                guild_id=getattr(guild, "id", None),
+                channel_id=getattr(channel, "id", None),
+            )
+        except Exception:
+            pass
+
+    async def on_error(self, event_method, *args, **kwargs):
+        """Unhandled event or cog listener exception."""
+        import traceback
+        try:
+            from core.audit import error as audit_error
+            message = None
+            ctx = None
+            for item in args:
+                if getattr(item, "author", None) is not None and getattr(item, "channel", None) is not None:
+                    message = item
+                    break
+                if getattr(item, "command", None) is not None or getattr(item, "send", None) is not None:
+                    ctx = item
+                    break
+            import sys
+            exc = sys.exc_info()[1]
+            audit_error(
+                str(event_method or "event"),
+                error_type=type(exc).__name__ if exc is not None else "unhandled",
+                ctx=ctx,
+                message=message,
+            )
+        except Exception:
+            pass
+        traceback.print_exc()
+
+    async def on_app_command_error(self, interaction, error):
+        try:
+            from core.audit import command as audit_command, error as audit_error
+            user = getattr(interaction, "user", None)
+            guild = getattr(interaction, "guild", None)
+            channel = getattr(interaction, "channel", None)
+            command = getattr(interaction, "command", None)
+            name = getattr(command, "qualified_name", None) or getattr(command, "name", None) or "app"
+            ids = dict(
+                user_id=getattr(user, "id", None),
+                guild_id=getattr(guild, "id", None),
+                channel_id=getattr(channel, "id", None),
+            )
+            audit_command(str(name), "error", error_type=type(error).__name__, **ids)
+            audit_error("app_command", error_type=type(error).__name__, **ids, name=str(name))
+        except Exception:
+            pass
+
     async def on_command_error(self, ctx, error):
+        try:
+            from core.audit import command_from_ctx, error as audit_error
+            if isinstance(error, (commands.NotOwner, commands.CheckFailure, commands.MissingPermissions)):
+                command_from_ctx(ctx, "refusal")
+            else:
+                command_from_ctx(ctx, "error", error_type=type(error).__name__)
+            audit_error(
+                "command",
+                error_type=type(error).__name__,
+                ctx=ctx,
+                name=getattr(getattr(ctx, 'command', None), 'qualified_name', None) or getattr(getattr(ctx, 'command', None), 'name', None) or getattr(ctx, 'invoked_with', '') or '',
+            )
+        except Exception:
+            pass
         if isinstance(error, commands.CommandNotFound):
             return
         if isinstance(error, commands.NotOwner):
@@ -304,6 +490,15 @@ class Eche(commands.Bot):
     # ---------------------------------------------------------
     async def setup_hook(self):
         print(">>> setup_hook: loading extensions")
+        try:
+            self.tree.error(self.on_app_command_error)
+        except Exception as e:
+            print(f">>> app command error hook skipped: {e}")
+        try:
+            from core.classifier import warn_if_unconfigured
+            warn_if_unconfigured()
+        except Exception as e:
+            print(f">>> classifier startup check skipped: {e}")
 
         # Attach GUI bridge once the asyncio loop is running
         try:
@@ -312,6 +507,15 @@ class Eche(commands.Bot):
                 attach(self)
         except Exception as e:
             print(f">>> gui_bridge attach skipped: {e}")
+        try:
+            from core.asset_safety import read_asset_mode
+            read_asset_mode()
+        except Exception as e:
+            print(f">>> asset mode snapshot skipped: {e}")
+        try:
+            self.loop.create_task(self._watch_asset_mode())
+        except Exception as e:
+            print(f">>> asset mode watch skipped: {e}")
 
         # Load each extension independently so one missing optional dep
         # (yt_dlp, dateparser, …) cannot abort the whole bot on a flash-drive copy.
@@ -326,7 +530,6 @@ class Eche(commands.Bot):
             "cogs.image_search",
             "cogs.asset",
             "cogs.convert",
-            "cogs.flash",
             "cogs.hire.lawyer.lawyer",
             "cogs.economy.bank",
             "cogs.economy.bet",
@@ -340,7 +543,16 @@ class Eche(commands.Bot):
 
         loaded = 0
         failed: list[str] = []
+        from core.media_scan import module_is_blocked, official_pins_ok
+        pin_fail = official_pins_ok()
+        if pin_fail:
+            print(f">>> official Imagine pins failed: {pin_fail}")
         for ext in extensions:
+            blocked = module_is_blocked(ext)
+            if blocked:
+                failed.append(f"{ext}: {blocked}")
+                print(f">>> refused to load {ext}: {blocked}")
+                continue
             try:
                 await self.load_extension(ext)
                 loaded += 1
@@ -362,6 +574,12 @@ class Eche(commands.Bot):
             failed.append(f"cogs.poker.poker: {e}")
             print(f">>> FAILED poker import: {e}")
 
+        try:
+            from core.safety import log_startup_hash
+            log_startup_hash()
+        except Exception as exc:
+            print(f">>> safety footer hash log skipped: {exc}")
+
         print(f">>> setup_hook: {loaded}/{len(extensions)} extensions loaded")
         if failed:
             print(f">>> setup_hook: {len(failed)} failed (non-fatal):")
@@ -373,6 +591,12 @@ class Eche(commands.Bot):
 
         # ⭐ START ENTERTAINER BACKGROUND LOOP
         self.loop.create_task(entertainer_background_loop(self))
+
+        try:
+            from core.audit_hooks import instrument_bot
+            instrument_bot(self)
+        except Exception as exc:
+            print(f">>> audit hooks skipped: {exc}")
 
 
 # ---------------------------------------------------------

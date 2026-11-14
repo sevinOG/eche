@@ -8,17 +8,15 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
-import os
 import re
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 API = "https://api.x.ai/v1"
 IMAGE_MODEL = "grok-imagine-image-2.0"
 VIDEO_MODEL = "grok-imagine-video-1.5-lite"
-VIDEO_EDIT_MODEL = "grok-imagine-video"
 MAX_PROMPT = 2000
 MAX_SECONDS = 8
 DEFAULT_SECONDS = 6
@@ -93,24 +91,13 @@ _SUFFIX_MIME = {
 
 
 @dataclass
-class SourceMedia:
-    data: bytes
-    mime: str
-
-    @property
-    def kind(self) -> str:
-        if self.mime in _VIDEO_MIME:
-            return "video"
-        return "image"
-
-
-@dataclass
 class AssetPlan:
     mode: str
     prompt: str
     seconds: int = DEFAULT_SECONDS
     aspect: str = ""
-    source: SourceMedia | None = None
+    # Edit source from a replied-to message (core.asset_source.AssetSource).
+    source: object = field(default=None, repr=False)
 
 
 @dataclass
@@ -122,43 +109,105 @@ class AssetFile:
 
 
 class ImagineError(Exception):
-    def __init__(self, text: str):
+    def __init__(self, text: str, *, status: str = ""):
         super().__init__(text)
         self.text = text
+        self.status = status
+
+
+# What happened, for the chat model and the audit log:
+#   safety_block       Eche's own checks refused the request or the file
+#   provider_filtered  xAI Imagine's own moderation refused it
+#   capped             the hourly limit was reached
+#   not_allowed        a setting or permission gate (kill switch, owner only, DMs, review)
+#   error              something failed (timeout, checker or provider unavailable)
+ASSET_STATUSES = ("safety_block", "provider_filtered", "capped", "not_allowed", "error")
+RETRY_RULE = "Do not retry or rephrase unless they ask again in a new message."
+
+
+def error_status(exc) -> str:
+    """The status for an ImagineError, explicit or read from its fixed text."""
+    status = str(getattr(exc, "status", "") or "")
+    if status in ASSET_STATUSES:
+        return status
+    text = str(getattr(exc, "text", "") or exc or "")
+    try:
+        from core.asset_limits import DM_REFUSAL, is_cap_refusal
+        from core.asset_safety import (
+            CHANNEL_CHANGED_REFUSAL,
+            KILL_SWITCH_OFF,
+            MISSING_KEY,
+            MODE_CHANGED_REFUSAL,
+            OUTPUT_REFUSAL,
+            SOURCE_REFUSAL,
+        )
+        from core.blocklist import REFUSAL
+        from core.guardrails import BYPASS_REFUSAL
+    except Exception:
+        return "error"
+    if text == _FILTERED:
+        return "provider_filtered"
+    if is_cap_refusal(text):
+        return "capped"
+    if text in (OUTPUT_REFUSAL, SOURCE_REFUSAL, REFUSAL, BYPASS_REFUSAL):
+        return "safety_block"
+    if text in (KILL_SWITCH_OFF, MISSING_KEY, DM_REFUSAL, CHANNEL_CHANGED_REFUSAL, MODE_CHANGED_REFUSAL, ADULT_CHANNEL_REFUSAL):
+        return "not_allowed"
+    try:
+        from core.asset_review import OWNER_REVIEW_DENIED
+
+        if text == OWNER_REVIEW_DENIED:
+            return "not_allowed"
+    except Exception:
+        pass
+    if text == "Only the owner can ask for assets.":
+        return "not_allowed"
+    return "error"
 
 
 def api_key() -> str:
-    saved = ""
+    """xAI key from config only. No fallback to any other generator or key."""
     try:
         from core.secrets import load_all
-        saved = str(load_all().get("xai_api_key") or "").strip()
+        return str(load_all().get("xai_api_key") or "").strip()
     except Exception:
-        saved = ""
-    return saved or (os.getenv("XAI_API_KEY") or "").strip()
+        return ""
 
 
 def _flag(stored) -> bool:
     return str(stored or "").strip().lower() in ("1", "true", "yes", "on")
 
 
-def asset_audience() -> str:
-    """all, unless Owner only is on."""
-    owner_only = False
+def asset_audience(asset_mode=None) -> str:
+    """owner, unless Owner only is explicitly turned off in config."""
+    if asset_mode is not None:
+        return "owner" if asset_mode.owner_only else "all"
     try:
-        from core.secrets import load_all
-        owner_only = _flag(load_all().get("asset_owner_only"))
+        from core.asset_safety import parse_safety_flag
+        from core.secrets import public_value
+
+        raw = public_value("asset_owner_only")
+        value, _invalid = parse_safety_flag(raw, default=True)
+        return "owner" if value else "all"
     except Exception:
-        owner_only = _flag(os.getenv("ECHE_ASSET_OWNER_ONLY"))
-    return "owner" if owner_only else "all"
+        return "owner"
 
 
-def speaker_allowed(is_owner: bool) -> bool:
-    if asset_audience() == "owner":
+def speaker_allowed(is_owner: bool, asset_mode=None) -> bool:
+    from core.asset_safety import asset_enabled, owner_only_required
+
+    if not asset_enabled(asset_mode):
+        return False
+    if owner_only_required(asset_mode):
         return bool(is_owner)
     return True
 
 
-def refusal(is_owner: bool) -> str:
+def refusal(is_owner: bool, asset_mode=None) -> str:
+    from core.asset_safety import KILL_SWITCH_OFF, asset_enabled
+
+    if not asset_enabled(asset_mode):
+        return KILL_SWITCH_OFF
     del is_owner
     return "Only the owner can ask for assets."
 
@@ -219,12 +268,25 @@ def _payload_texts(payload) -> list[str]:
     return found
 
 
+def _strip_footer(text: str) -> str:
+    try:
+        from core.safety import SAFETY_FOOTER
+        footer = SAFETY_FOOTER
+    except Exception:
+        return text
+    if not text:
+        return text
+    if text.endswith(footer):
+        return text[: -len(footer)].rstrip()
+    return text.replace(footer, " ").strip()
+
+
 def check_payload(payload) -> None:
     """Refuse a finished file whose caption or rewritten prompt is blocked."""
     from core.blocklist import REFUSAL, is_blocked, note
 
     for text in _payload_texts(payload):
-        if is_blocked(text):
+        if is_blocked(_strip_footer(text)):
             note("asset reply")
             raise ImagineError(REFUSAL)
 
@@ -415,7 +477,21 @@ def _needs_source(text: str) -> bool:
     return bool(_SOURCE_MARK.search(text or ""))
 
 
-def plan_asset(text: str, *, kind: str = "", source: SourceMedia | None = None) -> AssetPlan:
+def _edit_plan(prompt: str, source, asset_mode=None) -> AssetPlan:
+    """An edit of the replied-to file. Same video rule as new videos."""
+    kind = getattr(source, "kind", "")
+    if kind == "video":
+        from core.asset_safety import video_allowed
+
+        if not video_allowed(asset_mode):
+            raise ImagineError("Video is not available right now.")
+        return AssetPlan(mode="video_edit", prompt=prompt, source=source)
+    if kind == "image":
+        return AssetPlan(mode="image_edit", prompt=prompt, source=source)
+    raise ImagineError("Only pictures and videos can be edited.")
+
+
+def plan_asset(text: str, *, kind: str = "", source=None, asset_mode=None) -> AssetPlan:
     """Decide image, video, edit, or image-to-video. Raises ImagineError when the ask is not one of those."""
     raw = _words(text)
     asked, body = _leading_kind(raw)
@@ -434,16 +510,17 @@ def plan_asset(text: str, *, kind: str = "", source: SourceMedia | None = None) 
         lead, rest = _leading_kind(raw)
         if lead == explicit:
             prompt = _words(rest)
-    if not prompt and source is None:
+    if not prompt:
+        if source is not None:
+            raise ImagineError("Say what to change. Reply to it with `?asset make the sky purple`")
         raise ImagineError("Say what to make. `?asset a red paper boat`")
-    if not prompt and source is not None:
-        raise ImagineError("Say what to change.")
     if len(prompt) > MAX_PROMPT:
         prompt = prompt[:MAX_PROMPT].rstrip()
-    check_prompt(raw)
-    if source is None and _needs_source(raw):
+    if source is not None:
+        return _edit_plan(prompt, source, asset_mode)
+    if _needs_source(raw):
         raise ImagineError(
-            "Attach or reply to the picture that prompt uses (Image 1 / character lock), then ask again."
+            "To edit a picture or video, reply to it with `?asset` and the change."
         )
     visual = asked in ("image", "video") or _has_word(prompt, _VIDEO_WORDS + _IMAGE_WORDS)
     if source is None and not visual and _has_word(prompt, _AUDIO_WORDS):
@@ -451,76 +528,47 @@ def plan_asset(text: str, *, kind: str = "", source: SourceMedia | None = None) 
             "Imagine makes a picture or a video. Say which, and what it should show."
         )
     if not asked:
-        asked = "video" if source is not None and source.kind == "video" else "image"
+        asked = "image"
     if asked == "video":
-        if source is not None and source.kind == "video":
-            mode = "video_edit"
-        elif source is not None and source.kind == "image":
-            mode = "image_video"
-        else:
-            mode = "video"
+        from core.asset_safety import video_allowed
+
+        if not video_allowed(asset_mode):
+            raise ImagineError(
+                "Video is not available right now."
+            )
+        mode = "video"
         aspects = _VIDEO_ASPECTS
     else:
-        if source is not None and source.kind == "video":
-            raise ImagineError(
-                "That file is a video. Ask for a video, or attach a picture."
-            )
-        if source is not None and source.kind == "image":
-            mode = "image_edit"
-        else:
-            mode = "image"
+        mode = "image"
         aspects = _IMAGE_ASPECTS
     return AssetPlan(
         mode=mode,
         prompt=prompt,
-        seconds=_seconds(raw) if mode in ("video", "image_video") else DEFAULT_SECONDS,
+        seconds=_seconds(raw) if mode == "video" else DEFAULT_SECONDS,
         aspect=_aspect(raw, aspects),
-        source=source if mode != "image" else None,
     )
 
 
-def _data_uri(source: SourceMedia) -> str:
-    encoded = base64.b64encode(source.data).decode("ascii")
-    return f"data:{source.mime};base64,{encoded}"
 
 
-def request_for(plan: AssetPlan) -> tuple[str, dict]:
-    """POST path and JSON body. No network."""
-    check_prompt(getattr(plan, "prompt", "") or "")
-    if plan.mode == "image":
-        body: dict = {"model": IMAGE_MODEL, "prompt": plan.prompt}
-        if plan.aspect:
-            body["aspect_ratio"] = plan.aspect
-        return "/images/generations", body
-    if plan.mode == "image_edit":
-        body = {
-            "model": IMAGE_MODEL,
-            "prompt": plan.prompt,
-            "image": {"url": _data_uri(plan.source), "type": "image_url"},
-        }
-        if plan.aspect:
-            body["aspect_ratio"] = plan.aspect
-        return "/images/edits", body
-    if plan.mode == "video_edit":
-        return "/videos/edits", {
-            "model": VIDEO_EDIT_MODEL,
-            "prompt": plan.prompt,
-            "video": {"url": _data_uri(plan.source)},
-        }
-    body = {
-        "model": VIDEO_MODEL,
-        "prompt": plan.prompt,
-        "duration": plan.seconds,
-        "resolution": "480p",
-    }
-    if plan.aspect:
-        body["aspect_ratio"] = plan.aspect
-    if plan.mode == "image_video":
-        body["image"] = {"url": _data_uri(plan.source)}
-    return "/videos/generations", body
+def request_for(plan: AssetPlan, prepared) -> tuple[str, dict]:
+    """POST path and JSON body. No network.
+
+    `prepared` is required: the choke-point result, with the adult rewrite
+    and the safety footer last. There is no fallback to plan.prompt, and
+    negative_prompt is not sent (it is not a documented xAI parameter).
+    """
+    if prepared is None or not getattr(prepared, "sent_prompt", None):
+        raise ImagineError("Safety rules could not be applied, so nothing was generated.")
+    from core.asset_backend import get_backend
+
+    return get_backend().build_request(plan, prepared)
 
 
-_FILTERED = "That one was filtered."
+_FILTERED = (
+    "xAI's own content filter refused that one, so nothing was posted. "
+    "It did not count toward your hourly limit."
+)
 _UNAVAILABLE = "Image generation is unavailable right now."
 _FILTER_MARKERS = (
     "content moderation",
@@ -639,9 +687,48 @@ def video_poll(payload: dict) -> tuple[str, str]:
     return "failed", "Imagine did not finish the video."
 
 
-def http_json(method: str, url: str, key: str, body: dict | None = None, timeout: int = 120) -> tuple[int, dict]:
-    if isinstance(body, dict):
-        check_prompt(str(body.get("prompt") or ""))
+def _ids_from_http(headers=None, payload=None) -> dict[str, str]:
+    req_id = ""
+    resp_id = ""
+    if headers is not None:
+        try:
+            get = headers.get
+            req_id = str(get("x-request-id") or get("X-Request-Id") or "").strip()
+            resp_id = str(get("x-groq-id") or "").strip()
+        except Exception:
+            pass
+    if isinstance(payload, dict):
+        req_id = req_id or str(payload.get("request_id") or "").strip()
+        resp_id = resp_id or str(payload.get("id") or payload.get("response_id") or "").strip()
+    out: dict[str, str] = {}
+    if req_id:
+        out["request_id"] = req_id
+    if resp_id:
+        out["response_id"] = resp_id
+    return out
+
+
+class HttpJsonResult(tuple):
+    """status, payload — plus per-call request/response ids (L1)."""
+
+    def __new__(cls, status, payload, ids=None):
+        obj = super().__new__(cls, (status, payload))
+        obj.request_id = str((ids or {}).get("request_id") or "")
+        obj.response_id = str((ids or {}).get("response_id") or "")
+        return obj
+
+    def ids(self) -> dict[str, str]:
+        out: dict[str, str] = {}
+        if self.request_id:
+            out["request_id"] = self.request_id
+        if self.response_id:
+            out["response_id"] = self.response_id
+        return out
+
+
+def http_json(method: str, url: str, key: str, body: dict | None = None, timeout: int = 120) -> HttpJsonResult:
+    # The choke point already checked the user prompt. The body prompt
+    # includes the safety footer and must not be re-run through the matcher.
     data = None
     headers = {
         "Authorization": f"Bearer {key}",
@@ -652,13 +739,16 @@ def http_json(method: str, url: str, key: str, body: dict | None = None, timeout
         data = json.dumps(body).encode("utf-8")
         headers["Content-Type"] = "application/json"
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    resp_headers = None
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             status = getattr(resp, "status", 200) or 200
             raw = resp.read()
+            resp_headers = getattr(resp, "headers", None)
     except urllib.error.HTTPError as exc:
         status = exc.code
         raw = exc.read()
+        resp_headers = getattr(exc, "headers", None)
     except Exception as exc:
         raise ImagineError("Could not reach Imagine.") from exc
     try:
@@ -670,7 +760,7 @@ def http_json(method: str, url: str, key: str, body: dict | None = None, timeout
     if not isinstance(payload, dict):
         raise ImagineError("Imagine returned an unexpected response.")
     check_payload(payload)
-    return status, payload
+    return HttpJsonResult(status, payload, _ids_from_http(resp_headers, payload))
 
 
 def _host_name(url: str) -> str:
@@ -767,42 +857,245 @@ def http_bytes(url: str, limit: int = MAX_BYTES, timeout: int = 120) -> tuple[by
     return b"".join(chunks), mime
 
 
-async def run_asset(plan: AssetPlan, key: str) -> AssetFile | str:
-    """Make one asset. A string result is a temporary URL that was too large to attach."""
-    # A plan built without plan_asset is checked too.
-    check_prompt(getattr(plan, "prompt", "") or "")
+ADULT_CHANNEL_REFUSAL = (
+    "18+ asset generation is only available in age-restricted channels."
+)
+
+
+def refuse_speaker(
+    is_owner: bool,
+    *,
+    user_id=None,
+    guild_id=None,
+    channel_id=None,
+    channel=None,
+    nsfw=None,
+    asset_mode=None,
+    out=None,
+) -> str | None:
+    """Audit and return a refusal if a gate applies (kill switch, owner-only, DMs, caps).
+
+    Reads one AssetMode snapshot when the caller does not pass one, and
+    stores it on out['mode'] so the rest of the request can reuse it.
+    """
+    from core.asset_limits import (
+        DM_REFUSAL,
+        in_direct_message,
+        no_slot_refusal,
+    )
+    from core.asset_safety import (
+        KILL_SWITCH_OFF,
+        _audit,
+        mode_for_channel,
+        read_asset_mode,
+    )
+
+    snap = asset_mode if asset_mode is not None else read_asset_mode()
+    if out is not None:
+        out["mode"] = snap
+    ids = dict(user_id=user_id, guild_id=guild_id, channel_id=channel_id)
+    if not snap.enabled:
+        _audit("refusal", category="kill-switch", mode=snap, **ids)
+        return KILL_SWITCH_OFF
+    if in_direct_message(guild_id):
+        _audit("refusal", category="dm-disabled", mode=snap, **ids)
+        return DM_REFUSAL
+    # 18+ applies only in age-restricted channels. Elsewhere the request
+    # runs under the normal SFW rules instead of being refused.
+    snap = mode_for_channel(snap, channel, nsfw=nsfw)
+    if out is not None:
+        out["mode"] = snap
+    if not speaker_allowed(is_owner, snap):
+        _audit("refusal", category="owner-only", mode=snap, **ids)
+        return refusal(is_owner, snap)
+    if out is not None:
+        out["owner"] = bool(is_owner)
+    # The bot owner has no hourly or daily cap. Safety checks still apply.
+    # The kind is not known yet, so only refuse when no image or video slot
+    # is left; run_asset reserves the exact slot.
+    from core.asset_safety import video_caps as _video_caps
+
+    capped = None if is_owner else no_slot_refusal(
+        user_id, guild_id, caps=(snap.user_cap, snap.guild_cap), video_caps=_video_caps(snap)
+    )
+    if capped:
+        _audit("refusal", category="rate-limit", mode=snap, **ids)
+        return capped
+    return None
+
+
+async def run_asset(
+    plan: AssetPlan,
+    key: str,
+    *,
+    user_id=None,
+    guild_id=None,
+    channel_id=None,
+    asset_mode=None,
+    is_owner: bool = False,
+) -> AssetFile:
+    """Make one asset through the fail-closed choke point.
+
+    Always returns a classified file, or raises. A blocked prompt is not
+    retried. A blocked or unchecked file is not returned, and a download
+    URL is never handed to the caller in place of bytes. Callers must still
+    wait for owner review before posting.
+    """
+    from core.asset_backend import get_backend
+    from core.asset_limits import release_use, reserve_use
+    from core.asset_safety import (
+        KILL_SWITCH_OFF,
+        MISSING_KEY,
+        asset_enabled,
+        check_generated_media,
+        prepare_generation,
+        _audit,
+    )
+
+    from core.asset_safety import read_asset_mode
+
+    snap = asset_mode if asset_mode is not None else read_asset_mode()
+    ids = dict(user_id=user_id, guild_id=guild_id, channel_id=channel_id)
+    if not snap.enabled:
+        _audit("refusal", category="kill-switch", mode=snap, **ids)
+        raise ImagineError(KILL_SWITCH_OFF)
     if not key:
-        raise ImagineError("Add a Grok API key in Media settings.")
-    path, body = request_for(plan)
-    timeout = 180 if plan.mode.startswith("video") or plan.mode == "image_video" else 120
+        _audit("refusal", category="missing-key", mode=snap, **ids)
+        raise ImagineError(MISSING_KEY)
+    if is_owner:
+        # The bot owner is exempt from the caps and uses no slot. Every
+        # safety check below still runs unchanged.
+        return await _run_asset_reserved(plan, key, snap, ids, get_backend, prepare_generation, check_generated_media)
+    from core.asset_safety import video_caps
+
+    # Images and videos have separate hourly slots (asset_limits.STANDARD_CAPS).
+    is_video = "video" in (getattr(plan, "mode", "") or "")
+    extra = video_caps(snap) if is_video else None
+    capped = reserve_use(user_id, guild_id, caps=(snap.user_cap, snap.guild_cap), video_caps=extra)
+    if capped:
+        _audit("refusal", category="video-rate-limit" if "video" in capped else "rate-limit", mode=snap, **ids)
+        raise ImagineError(capped)
+    # A blocked, refused, or failed attempt gives its cap slot back. Only a
+    # finished, checked file keeps it.
+    try:
+        return await _run_asset_reserved(plan, key, snap, ids, get_backend, prepare_generation, check_generated_media)
+    except BaseException:
+        release_use(user_id, guild_id, video=extra is not None)
+        raise
+
+
+async def _run_asset_reserved(plan, key, snap, ids, get_backend, prepare_generation, check_generated_media):
+    from core.asset_safety import require_enabled, _audit
+
+    user_id = ids.get("user_id")
+    guild_id = ids.get("guild_id")
+    channel_id = ids.get("channel_id")
+    prepared = await prepare_generation(
+        getattr(plan, "prompt", "") or "",
+        user_id=user_id,
+        guild_id=guild_id,
+        channel_id=channel_id,
+        mode=snap,
+    )
+    source = getattr(plan, "source", None)
+    if source is not None:
+        # The replied-to file goes through the same hardcoded child checks
+        # as a finished file (Grok vision, local backup, fail closed)
+        # BEFORE anything is sent to the provider.
+        # Eche's own recorded asset outputs already passed those checks when
+        # they were made, so they are not checked again. The edited result
+        # still gets every output check below.
+        from core.asset_safety import check_source_media
+        from core.reply_images import is_eche_post, sha256_hex
+
+        require_enabled(snap, user_id=user_id, guild_id=guild_id, channel_id=channel_id)
+        if is_eche_post(sha256_hex(source.data), getattr(source, "attachment_id", None)):
+            _audit("source-check", category="eche-post-skip", mode=snap, user_id=user_id, guild_id=guild_id, channel_id=channel_id)
+        else:
+            await check_source_media(
+                source.data,
+                source.mime,
+                footer_hash=prepared.footer_hash,
+                user_id=user_id,
+                guild_id=guild_id,
+                channel_id=channel_id,
+                mode=snap,
+            )
+        require_enabled(snap, user_id=user_id, guild_id=guild_id, channel_id=channel_id)
+    elif plan.mode in ("image_edit", "video_edit"):
+        raise ImagineError("Reply to a picture or video to edit it.")
+    backend = get_backend()
+    path, body = request_for(plan, prepared)
+    is_video = "video" in plan.mode
+    timeout = 180 if is_video else 120
+    job_ids: dict[str, str] = {}
 
     def _post():
-        return http_json("POST", API + path, key, body, timeout=timeout)
+        return http_json("POST", backend.api_base() + path, key, body, timeout=timeout)
 
-    _status, payload = await asyncio.to_thread(_post)
-    if plan.mode in ("image", "image_edit"):
-        url = image_url(payload)
-    else:
-        request_id = video_start_id(payload)
-        deadline = asyncio.get_running_loop().time() + VIDEO_WAIT_SECONDS
-        url = ""
-        while True:
-            def _poll(rid=request_id):
-                return http_json("GET", f"{API}/videos/{rid}", key, None, timeout=60)
+    try:
+        posted = await asyncio.to_thread(_post)
+        _status, payload = posted
+        job_ids = posted.ids() if hasattr(posted, "ids") else {}
+        require_enabled(snap, user_id=user_id, guild_id=guild_id, channel_id=channel_id)
+        if not is_video:
+            url = backend.image_url(payload)
+        else:
+            request_id = backend.video_start_id(payload)
+            deadline = asyncio.get_running_loop().time() + VIDEO_WAIT_SECONDS
+            url = ""
+            while True:
+                require_enabled(snap, user_id=user_id, guild_id=guild_id, channel_id=channel_id)
 
-            _status, polled = await asyncio.to_thread(_poll)
-            state, found = video_poll(polled)
-            if state == "done":
-                url = found
-                break
-            if state in ("failed", "expired"):
-                raise ImagineError(found or "Imagine did not finish the video.")
-            if asyncio.get_running_loop().time() >= deadline:
-                raise ImagineError("That video took too long. Try a shorter one.")
-            await asyncio.sleep(_POLL_SECONDS)
-    data, mime = await asyncio.to_thread(http_bytes, url)
+                def _poll(rid=request_id):
+                    return http_json("GET", f"{backend.api_base()}/videos/{rid}", key, None, timeout=60)
+
+                polled_result = await asyncio.to_thread(_poll)
+                _status, polled = polled_result
+                if hasattr(polled_result, "ids"):
+                    extra = polled_result.ids()
+                    if extra:
+                        job_ids = extra
+                state, found = backend.video_poll(polled)
+                if state == "done":
+                    url = found
+                    break
+                if state in ("failed", "expired"):
+                    raise ImagineError(found or "Imagine did not finish the video.")
+                if asyncio.get_running_loop().time() >= deadline:
+                    raise ImagineError("That video took too long. Try a shorter one.")
+                await asyncio.sleep(_POLL_SECONDS)
+        require_enabled(snap, user_id=user_id, guild_id=guild_id, channel_id=channel_id)
+        data, mime = await asyncio.to_thread(http_bytes, url)
+    except ImagineError as exc:
+        moderated = exc.text == _FILTERED
+        if moderated:
+            exc.status = "provider_filtered"
+        _audit(
+            "refusal" if moderated else "error",
+            category="provider-moderation" if moderated else "backend",
+            reason=("" if moderated else exc.text[:120]),
+            footer_hash=prepared.footer_hash,
+            error_type=type(exc).__name__,
+            mode=snap,
+            **ids,
+        )
+        raise
+    except Exception as exc:
+        _audit(
+            "error",
+            category="backend",
+            footer_hash=prepared.footer_hash,
+            error_type=type(exc).__name__,
+            mode=snap,
+            **ids,
+        )
+        raise ImagineError("I couldn't make that.", status="error") from exc
     if not data:
-        return url
+        # A URL we cannot download cannot be classified. Fail closed.
+        _audit("refusal", category="unreadable-output", footer_hash=prepared.footer_hash, mode=snap, **ids)
+        from core.asset_safety import OUTPUT_UNCHECKED
+        raise ImagineError(OUTPUT_UNCHECKED)
     sniffed = _sniff_media_mime(data)
     if sniffed:
         mime = sniffed
@@ -811,4 +1104,25 @@ async def run_asset(plan: AssetPlan, key: str) -> AssetFile | str:
     name = filename_for(mime)
     if name == "asset.bin":
         name = "asset.mp4" if "video" in plan.mode else "asset.jpg"
+    require_enabled(snap, user_id=user_id, guild_id=guild_id, channel_id=channel_id)
+    await check_generated_media(
+        data,
+        mime,
+        footer_hash=prepared.footer_hash,
+        user_id=user_id,
+        guild_id=guild_id,
+        channel_id=channel_id,
+        request_id=job_ids.get("request_id", ""),
+        response_id=job_ids.get("response_id", ""),
+        mode=snap,
+    )
+    require_enabled(snap, user_id=user_id, guild_id=guild_id, channel_id=channel_id)
+    _audit(
+        "success",
+        footer_hash=prepared.footer_hash,
+        request_id=job_ids.get("request_id", ""),
+        response_id=job_ids.get("response_id", ""),
+        mode=snap,
+        **ids,
+    )
     return AssetFile(data=data, filename=name, mime=mime, mode=plan.mode)

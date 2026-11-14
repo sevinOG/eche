@@ -30,6 +30,7 @@ import core.tools_duckduckgo  # noqa: F401  registers duckduckgo
 import core.tools_thread  # noqa: F401  registers thread
 import core.tools_admin  # noqa: F401  registers mute, timeout, kick, ban
 import core.tools_asset  # noqa: F401  registers asset
+from core.tools_asset import declined_turn_system
 from core.admin_tools import admin_injection, admin_tools_enabled, author_is_owner
 from core.tools import (
     ToolContext,
@@ -112,6 +113,27 @@ def _flat_arguments(arguments) -> str:
     return str(arguments) if isinstance(arguments, str) else ""
 
 
+
+COMMAND_PREFIXES = ("?",)
+
+
+def is_prefix_command(bot, message) -> bool:
+    """True when any line of the message starts with a registered ?command.
+
+    Matches command names and aliases after the bot's ``?`` prefix, at the
+    start of the message or of any later line (leading spaces allowed).
+    Unknown words after ``?`` are left to chat.
+    """
+    from core.command_lines import is_command_message
+
+    try:
+        return is_command_message(bot, message)
+    except Exception:
+        # Fail toward the command: never let chat (and its asset tool) run
+        # on a message whose ? check broke.
+        content = getattr(message, "content", None) or ""
+        return any(line.lstrip().startswith("?") for line in content.splitlines())
+
 class OnMessage(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -181,36 +203,20 @@ class OnMessage(commands.Cog):
         actions: list[str] = []
         seen: set[str] = set()
         lookup_quota = False
-        # A thread of pictures or videos posts the files there. The same
-        # turn's asset call would also reply on the channel message.
-        render_in_thread = False
-        try:
-            from core.imagine import asset_thread_request
-
-            asked = {
-                str(call.get("name") or "").casefold()
-                for call in calls[:3]
-                if isinstance(call, dict)
-            }
-            render_in_thread = (
-                "thread" in asked
-                and "asset" in asked
-                and asset_thread_request(getattr(message, "content", "") or "")
-            )
-        except Exception as exc:
-            dprint(f"[on_message] asset thread check failed: {type(exc).__name__}")
+        declined = False
         for call in calls[:3]:
             if not isinstance(call, dict):
                 continue
             name = str(call.get("name") or "")
             if not name or name.casefold() in seen:
                 continue
-            if render_in_thread and name.casefold() == "asset":
-                continue
             seen.add(name.casefold())
             arguments = (call or {}).get("arguments") or {}
             user_id, channel_id = _scope(message)
-            if asks_to_bypass_filter(_flat_arguments(arguments)):
+            # Only the image tool keeps argument checks. Text tools (lookup,
+            # thread, context) are text chat and are not keyword-filtered.
+            image_tool = name.casefold() == "asset"
+            if image_tool and asks_to_bypass_filter(_flat_arguments(arguments)):
                 block_note(f"{name} arguments bypass")
                 try:
                     await _send_reply(message, BYPASS_REFUSAL)
@@ -220,7 +226,7 @@ class OnMessage(commands.Cog):
                 said.append(BYPASS_REFUSAL)
                 ran_any = True
                 break
-            if is_blocked(_flat_arguments(arguments), user_id=user_id, channel_id=channel_id):
+            if image_tool and is_blocked(_flat_arguments(arguments), user_id=user_id, channel_id=channel_id):
                 # The model asked a tool for something on the block list.
                 block_note(f"{name} arguments")
                 try:
@@ -233,6 +239,8 @@ class OnMessage(commands.Cog):
                 break
             result = await execute(name, arguments, ctx)
             if not result.ran:
+                if getattr(result, "declined", False):
+                    declined = True
                 continue
             tools_used.append(name)
             spoken = result.text
@@ -242,10 +250,10 @@ class OnMessage(commands.Cog):
                     "sorry, i'm being rate limited"
                 ):
                     lookup_quota = True
-            if not result.quiet and is_blocked(spoken, user_id=user_id, channel_id=channel_id):
+            if image_tool and not result.quiet and is_blocked(spoken, user_id=user_id, channel_id=channel_id):
                 block_note(f"{name} reply")
                 spoken = BLOCK_REFUSAL
-            elif not result.quiet and coaches_bypass(spoken):
+            elif image_tool and not result.quiet and coaches_bypass(spoken):
                 block_note(f"{name} reply bypass")
                 spoken = BYPASS_REFUSAL
             # A quiet tool already posted everything, including its announcement.
@@ -279,6 +287,7 @@ class OnMessage(commands.Cog):
                         name,
                         (call or {}).get("arguments") or {},
                         posted=(result.text or "") if result.quiet else "",
+                        status=getattr(result, "status", "") or "",
                     )
                 )
             except Exception as exc:
@@ -309,10 +318,15 @@ class OnMessage(commands.Cog):
                     today_day(),
                 )
             )
-        return ran_any, acts, tools_used, said, lookup_quota, actions
+        return ran_any, acts, tools_used, said, lookup_quota, actions, declined
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
+        try:
+            from core.audit import bind_from_message
+            bind_from_message(message)
+        except Exception:
+            pass
 
         # This bot's own posts mention it when the dealer wins a hand.
         # A reply to that post would mention it again, so ignore them here.
@@ -320,10 +334,14 @@ class OnMessage(commands.Cog):
         if self.bot.user and message.author.id == self.bot.user.id:
             return
 
-        # Ignore commands. ?asset posts the file itself, and only when
-        # discord.py will actually dispatch that command.
-        from core.bot import is_asset_command
-        if message.content.startswith("!") or is_asset_command(message.content):
+        # Ignore bang commands. discord.py dispatches those itself.
+        if message.content.startswith("!"):
+            return
+
+        # A prefix command (?asset and every other registered command) is
+        # handled by its command only. It never also starts a chat turn,
+        # even when it is a reply to Eche or mentions it.
+        if is_prefix_command(self.bot, message):
             return
 
         # ⭐ BOO LOGIC — runs for ALL messages, even without mention ⭐
@@ -344,6 +362,17 @@ class OnMessage(commands.Cog):
             await self._record_server_line(message, (message.content or "").strip())
             return
 
+        try:
+            from core.audit import chat as audit_chat
+            audit_chat(
+                kind="reply" if is_reply else "mention",
+                user_id=getattr(getattr(message, "author", None), "id", None),
+                guild_id=getattr(getattr(message, "guild", None), "id", None),
+                channel_id=getattr(getattr(message, "channel", None), "id", None),
+            )
+        except Exception:
+            pass
+
         # Link embeds show up just after the create event. Attachments and
         # forwards are already on the message.
         try:
@@ -354,6 +383,21 @@ class OnMessage(commands.Cog):
             media = DiscordMedia(message=message)
         if media.message is not None:
             message = media.message
+
+        # Replied-to pictures: Eche's own asset posts need no recheck; anyone
+        # else's get the hardcoded image check once (cached by sha256). One
+        # that does not pass is left out (fail closed), with a short note.
+        if getattr(media, "reply_images", None):
+            from core.reply_images import WITHHELD_NOTE, cleared_reply_parts
+
+            try:
+                parts, withheld = await cleared_reply_parts(media, message)
+            except Exception as e:
+                dprint(f"[on_message] reply image check failed: {type(e).__name__}")
+                parts, withheld = [], True
+            media.reply_parts = list(parts)
+            if withheld:
+                media.text = (f"{media.text}\n{WITHHELD_NOTE}" if media.text else WITHHELD_NOTE)
 
         # Clean message
         cleaned = (
@@ -379,21 +423,39 @@ class OnMessage(commands.Cog):
         # Hold this user's memory lock through the reply and the pin writes.
         # The Discord reply is sent before those writes. The fold, when it
         # runs, is the last write on this turn.
-        async with _memory_lock(message.author.id):
-            await self._answer_and_remember(message, guild, cleaned, remembered, media)
+        from core.client import reset_precleared_images, set_precleared_images
+
+        token = set_precleared_images(getattr(media, "reply_parts", None) or [])
+        try:
+            async with _memory_lock(message.author.id):
+                await self._answer_and_remember(message, guild, cleaned, remembered, media)
+        finally:
+            reset_precleared_images(token)
 
     async def _answer_and_remember(self, message, guild, cleaned, remembered, media):
         # Hard block before any prompt is built or model is called. Nothing
         # from this message is remembered or added to the episode.
+        # Text-only chat has no keyword filter; the hardcoded safety footer
+        # is its only guard. A message with pictures takes the image path,
+        # whose checks stay on and cannot be turned off.
         user_id, channel_id = _scope(message)
-        if asks_to_bypass_filter(cleaned) or asks_to_bypass_filter(getattr(media, "text", "") or ""):
+        # Only pictures in the message itself take the image path. Replied-to
+        # pictures were already cleared (core/reply_images); the reply text
+        # gets no text filter.
+        has_images = bool(getattr(media, "images", None))
+        all_images = list(getattr(media, "images", None) or []) + list(getattr(media, "reply_parts", None) or [])
+        if has_images and (
+            asks_to_bypass_filter(cleaned) or asks_to_bypass_filter(getattr(media, "text", "") or "")
+        ):
             block_note("chat message bypass")
             try:
                 await _send_reply(message, BYPASS_REFUSAL)
             except Exception as e:
                 dprint(f"[on_message] refusal send failed: {e}")
             return
-        if is_blocked(cleaned, getattr(media, "text", ""), user_id=user_id, channel_id=channel_id):
+        if has_images and is_blocked(
+            cleaned, getattr(media, "text", ""), user_id=user_id, channel_id=channel_id
+        ):
             block_note("chat message")
             try:
                 await _send_reply(message, BLOCK_REFUSAL)
@@ -410,7 +472,7 @@ class OnMessage(commands.Cog):
             message.author.name,
             cleaned,
             media_note=media.text,
-            image_count=len(media.images),
+            image_count=len(all_images),
             server_id=getattr(message.guild, "id", None),
         )
 
@@ -442,7 +504,7 @@ class OnMessage(commands.Cog):
             max_completion_tokens=completion_tokens,
             tools=offered,
             extra_system=admin_injection(enabled=admin_visible),
-            images=media.images or None,
+            images=all_images or None,
         )
 
         reply = turn.reply or ""
@@ -459,7 +521,7 @@ class OnMessage(commands.Cog):
                 turn,
                 prompt,
                 message.author.id,
-                images=media.images or None,
+                images=all_images or None,
             )
             reply = turn.reply or ""
             quota_reply = turn.quota or reply.strip().lower().startswith(
@@ -471,6 +533,7 @@ class OnMessage(commands.Cog):
         tools_used: list[str] = []
         tool_said: list[str] = []
         tool_actions: list[str] = []
+        tool_declined = False
         if calls:
             try:
                 (
@@ -480,6 +543,7 @@ class OnMessage(commands.Cog):
                     tool_said,
                     lookup_quota,
                     tool_actions,
+                    tool_declined,
                 ) = await self._deliver_tool_calls(
                     message, calls, prompt
                 )
@@ -488,12 +552,33 @@ class OnMessage(commands.Cog):
             except Exception as e:
                 dprint(f"[on_message] tool delivery failed: {e}")
                 ran_tools = False
+        if tool_declined and not ran_tools and not reply.strip() and not quota_reply:
+            # The asset tool was called on a message that asks for nothing.
+            # Answer in chat instead, without offering the asset tool.
+            try:
+                retry_turn = await call_groq_turn(
+                    prompt,
+                    user_id=message.author.id,
+                    max_completion_tokens=completion_tokens,
+                    tools=[
+                        spec for spec in (offered or [])
+                        if str(((spec or {}).get("function") or {}).get("name") or "").casefold() != "asset"
+                    ] or None,
+                    extra_system=declined_turn_system(admin_injection(enabled=admin_visible)),
+                    images=all_images or None,
+                )
+                if not list(retry_turn.tool_calls or []):
+                    reply = retry_turn.reply or ""
+            except Exception as e:
+                dprint(f"[on_message] declined-tool reply failed: {type(e).__name__}")
 
-        if not ran_tools and reply.strip() and is_blocked(reply, user_id=user_id, channel_id=channel_id):
+        if has_images and not ran_tools and reply.strip() and is_blocked(
+            reply, user_id=user_id, channel_id=channel_id
+        ):
             # The model's own reply is checked before it is sent.
             block_note("model reply")
             reply = BLOCK_REFUSAL
-        elif not ran_tools and coaches_bypass(reply):
+        elif has_images and not ran_tools and coaches_bypass(reply):
             block_note("model reply bypass")
             reply = BYPASS_REFUSAL
         elif not ran_tools and part_stub(reply):
@@ -573,9 +658,6 @@ class OnMessage(commands.Cog):
             return
         body = " ".join((text or "").split())
         if not body and not tool_lines and not getattr(message, "attachments", None):
-            return
-        if is_blocked(body):
-            # Blocked text never reaches the episode or its summarizer.
             return
         try:
             from core.episodic import append_episodic, turn_lines

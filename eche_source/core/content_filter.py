@@ -1,6 +1,6 @@
 # core/content_filter.py
 # One place for what must never reach a memory pin, a memory prompt, or an
-# Imagine request: Discord mentions, raw Discord ids, and slurs.
+# LLM request: Discord mentions, raw Discord ids, and slurs.
 #
 # The slur list is small on purpose and maintained here. Add a word to
 # _ANYWHERE when it never shows up inside an innocent word, or to _WORDS when

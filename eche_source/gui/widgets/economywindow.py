@@ -573,6 +573,21 @@ class EconomyWindow(QMainWindow):
 
     def _on_saved(self, ok: bool, message: str, payload):
         self._set_busy(False)
+        try:
+            from core.audit import safe_activity
+            extra = {}
+            if self._user_id:
+                extra["user_id"] = self._user_id
+            if getattr(self, "_home_id", None):
+                extra["guild_id"] = self._home_id
+            safe_activity(
+                "bank-save",
+                action="save-bank",
+                outcome="success" if ok else "error",
+                **extra,
+            )
+        except Exception:
+            pass
         if not ok:
             QMessageBox.warning(self, "Discord", message)
             self._log(message)

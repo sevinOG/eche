@@ -57,6 +57,14 @@ class ToolResult:
     for_model: bool = False
     # When set, the channel gets nothing. The tool already posted, including its announcement.
     quiet: bool = False
+    # Audit outcome for the tool event (success, refusal, error). Empty means success.
+    outcome: str = ""
+    # A short machine status for the chat model's memory (asset: safety_block,
+    # provider_filtered, capped, locked, not_allowed, error). Empty means it worked.
+    status: str = ""
+    # The tool declined before doing anything (no request in the message).
+    # It counts as not run, so the model's own chat reply is used instead.
+    declined: bool = False
 
 
 @dataclass
@@ -115,8 +123,9 @@ PROMPT_TOOLS = (
     ("duckduckgo", "Lookup"),
     ("thread", "Thread"),
     ("context_raw", "Own context"),
-    ("asset", "Asset"),
 )
+# No Asset box: the asset tool follows the Asset switch (asset_enabled), the
+# same switch that decides whether the pictures line tells the model it has it.
 
 
 def tool_prompt_enabled(name: str) -> bool:
@@ -130,22 +139,18 @@ def tool_prompt_enabled(name: str) -> bool:
     return prompt_choice(stored, default=True)
 
 
-def _asset_allowed(speaker_is_owner: bool) -> bool:
-    try:
-        from core.imagine import speaker_allowed
-        return speaker_allowed(speaker_is_owner)
-    except Exception as exc:
-        dprint(f"[tools] asset permission unreadable: {exc}")
-        return False
-
-
 def _offered(tool: Tool, *, public_on: bool, speaker_is_owner: bool, admin_enabled: bool) -> bool:
     if tool.access != ACCESS_OWNER and not public_on:
         return False
-    if tool.access != ACCESS_OWNER and not tool_prompt_enabled(tool.name):
+    if tool.name != "asset" and tool.access != ACCESS_OWNER and not tool_prompt_enabled(tool.name):
         return False
-    if tool.name == "asset" and not _asset_allowed(speaker_is_owner):
-        return False
+    if tool.name == "asset":
+        try:
+            from core.asset_safety import asset_enabled
+            if not asset_enabled():
+                return False
+        except Exception:
+            return False
     return _admin_visible(tool, speaker_is_owner=speaker_is_owner, admin_enabled=admin_enabled)
 
 
@@ -200,24 +205,38 @@ def specs_for(*, speaker_is_owner: bool, admin_enabled: bool = False) -> list[di
     return specs
 
 
+def _audit_tool(name: str, outcome: str, ctx: ToolContext | None, **extra) -> None:
+    try:
+        from core.audit import tool as audit_tool
+        message = getattr(ctx, "message", None) if ctx is not None else None
+        audit_tool(name or "", outcome, ctx=ctx, message=message, **extra)
+    except Exception:
+        pass
+
+
 async def execute(name: str, arguments: dict | None, ctx: ToolContext) -> ToolResult:
     """Run one tool. Unknown tools and owner tools from non-owners do not run."""
     tool = _resolve(name or "")
     if tool is None:
+        _audit_tool(name or "", "error", ctx)
         return ToolResult(name=name or "", ran=False)
 
     if tool.access != ACCESS_OWNER and not default_tools_enabled():
+        _audit_tool(tool.name, "refusal", ctx)
         return ToolResult(name=tool.name, ran=False)
     if tool.access != ACCESS_OWNER and not tool_prompt_enabled(tool.name):
+        _audit_tool(tool.name, "refusal", ctx)
         return ToolResult(name=tool.name, ran=False)
 
     if tool.access == ACCESS_OWNER:
         try:
             from core.admin_tools import admin_tools_enabled
             if not admin_tools_enabled():
+                _audit_tool(tool.name, "refusal", ctx)
                 return ToolResult(name=tool.name, ran=False)
         except Exception as e:
             dprint(f"[tools] admin toggle check failed for {tool.name}: {e}")
+            _audit_tool(tool.name, "error", ctx)
             return ToolResult(name=tool.name, ran=False)
         allowed = False
         try:
@@ -227,30 +246,26 @@ async def execute(name: str, arguments: dict | None, ctx: ToolContext) -> ToolRe
             dprint(f"[tools] owner check failed for {tool.name}: {e}")
             allowed = False
         if not allowed:
+            _audit_tool(tool.name, "refusal", ctx)
             return ToolResult(name=tool.name, ran=False)
-
-    if tool.name == "asset":
-        is_owner = False
-        try:
-            from core.admin_tools import author_is_owner
-            is_owner = await author_is_owner(ctx.bot, getattr(ctx.message, "author", None))
-        except Exception as exc:
-            dprint(f"[tools] asset owner check failed: {exc}")
-            is_owner = False
-        if not _asset_allowed(is_owner):
-            from core.imagine import refusal
-            return ToolResult(name=tool.name, text=refusal(is_owner), fence=False, ran=True)
 
     try:
         result = await tool.handler(ctx, arguments or {})
     except Exception as e:
         dprint(f"[tools] {tool.name} failed: {e}")
+        _audit_tool(tool.name, "error", ctx)
         return ToolResult(name=tool.name, text="I couldn't finish that.", ran=True)
 
     if result is None:
         result = ToolResult(text="")
     result.name = tool.name
+    extra = {"status": result.status} if result.status else {}
+    if result.declined:
+        _audit_tool(tool.name, "declined", ctx, **extra)
+        result.ran = False
+        return result
     result.ran = True
+    _audit_tool(tool.name, result.outcome or "success", ctx, **extra)
     return result
 
 
@@ -290,10 +305,6 @@ def tool_call_note(name: str, arguments: dict | None, body: str = "") -> str:
         query = " ".join(str(args.get("query") or "").split())
         if query:
             extra = f' query "{query[:120]}"'
-    elif label == "asset":
-        made = " ".join(str(args.get("prompt") or "").split())
-        if made:
-            extra = f' prompt "{made[:120]}"'
     head = f"Called tool {label}{extra}."
     text = "" if label == "context_raw" else (body or "").strip()
     if text:

@@ -148,6 +148,15 @@ def _is_bad_llm_output(text: str) -> bool:
     t = (text or "").strip()
     if not t:
         return True
+    try:
+        from core.blocklist import REFUSAL
+        from core.guardrails import is_refusal_text
+
+        if t == REFUSAL or is_refusal_text(t):
+            return True
+    except Exception:
+        if t == "Nope. Not going there.":
+            return True
     if t.upper().startswith("ERROR"):
         return True
     low = t.lower()
@@ -265,6 +274,16 @@ async def summarize_context(
     New:
     <last few USER/bot lines verbatim>
     """
+    try:
+        from core.audit import safe_activity
+        safe_activity(
+            "summarizer",
+            outcome="success",
+            user_id=user_id,
+            guild_id=getattr(guild, "id", None),
+        )
+    except Exception:
+        pass
 
     if override_header:
         from core.bot_memory import ensure_bot_memory_channel

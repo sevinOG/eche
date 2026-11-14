@@ -999,7 +999,21 @@ async def write_pinned(parent, header: str, content: str):
     if parent is None or not header:
         return None, "missing-parent"
     async with _layout_lock:
-        return await _write_pinned_unlocked(parent, header, content)
+        result = await _write_pinned_unlocked(parent, header, content)
+    try:
+        from core.audit import safe_activity
+        written, note = result
+        safe_activity(
+            "memory-pin",
+            outcome="success" if written is not None else "error",
+            header=str(header)[:80],
+            note=note,
+            channel_id=getattr(parent, "id", None),
+            guild_id=getattr(getattr(parent, "guild", None), "id", None),
+        )
+    except Exception:
+        pass
+    return result
 
 
 async def lookup_record(parent, header: str, allow_history: bool = False):
