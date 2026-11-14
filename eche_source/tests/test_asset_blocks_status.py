@@ -464,3 +464,51 @@ class ProviderModerationAuditTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AgePromptAsksTheQuestionFirstTests(unittest.TestCase):
+    """08:21-08:24 ET Nov 14: every image of an adult came back 'YES / adult'.
+
+    The prompt said 'Line 1: answer YES or NO.' with no question, right
+    before the no-people rule, so Grok answered 'are there people?'. The
+    question now comes first and line 1 is tied to it. Mock-only.
+    """
+
+    def test_question_comes_before_line_1(self):
+        for p in (C.AGE_VISION_PROMPT, C.AGE_VISION_ADULT_PROMPT):
+            q = p.index("Question:")
+            line1 = p.index("Line 1:")
+            self.assertLess(q, line1)
+            self.assertIn("answer that question with only YES or NO", p)
+            self.assertIn("Use adult or no people only with NO", p)
+            # Every safety criterion is still there.
+            self.assertIn("If unsure, answer YES", p)
+            self.assertIn("no people, characters, or human-like figures at all", p)
+        self.assertIn("under 21", C.AGE_VISION_PROMPT[:C.AGE_VISION_PROMPT.index("Line 1:")])
+        self.assertIn("Always answer YES for anime, manga, chibi", C.AGE_VISION_PROMPT)
+        self.assertIn("real or identifiable person", C.AGE_VISION_ADULT_PROMPT)
+
+    def test_yes_still_blocks_whatever_the_label(self):
+        # A YES is never overridden by its label: fail closed.
+        for label in ("adult", "no people", "apparent minor", "other"):
+            self.assertEqual(C.parse_age_reply(f"YES\n{label}")[0], "age-vision-yes", label)
+        self.assertEqual(C.parse_age_reply("NO\nadult"), ("", "adult"))
+        self.assertEqual(C.parse_age_reply("NO\napparent minor")[0], "age-vision-error")
+
+    def test_grok_yes_adult_blocks_and_grok_no_adult_passes(self):
+        img = [{"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}]
+        audits = []
+        prev = C.tests_are_allowing()
+        C.allow_in_tests(False)
+        try:
+            for reply, want in (("YES\nadult", "age-vision-yes"), ("NO\nadult", "")):
+                with mock.patch.object(C, "_xai_key", return_value="k"), \
+                     mock.patch.object(C, "_age_vision_post", return_value=reply) as post, \
+                     mock.patch.object(C, "_age_vision_post_ollama", side_effect=AssertionError("no fallback")), \
+                     mock.patch("core.audit.api", side_effect=lambda s, **f: audits.append((s, f))):
+                    self.assertEqual(C._age_vision_sync(img), want, reply)
+                post.assert_called_once()
+        finally:
+            C.allow_in_tests(prev)
+        rows = [f for s, f in audits if s == "age-check"]
+        self.assertEqual([(r["outcome"], r["reason"]) for r in rows], [("block", "adult"), ("pass", "adult")])
