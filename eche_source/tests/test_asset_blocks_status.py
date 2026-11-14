@@ -1,4 +1,4 @@
-# tests/test_asset_blocks_strikes_status.py
+# tests/test_asset_blocks_status.py
 # Live test 2026-11-13 22:40-23:18 ET in #official-usa-account-btw:
 #  - SFW cartoon jet videos were blocked by the normal-channel age prompt
 #    ("anthropomorphic character that could be read as under 21", style-driven).
@@ -10,6 +10,9 @@
 #  - 00:04 ET: the SFW dancing jet video was blocked on frame 1/49 with the
 #    label "sexualized stylized"; that clause left the normal-channel age
 #    prompt (the image content check still blocks sexual content there).
+#  - 00:43 ET: the same request passed frames 1-15 ("no people") and was
+#    blocked on frame 16/49 as "apparent minor"; character prompts in normal
+#    channels now carry an explicit adult-age hint for the generator.
 # Mocked checker replies only. No image is generated, and no child-like image
 # is used anywhere: every "image" here is a few placeholder bytes.
 from __future__ import annotations
@@ -41,6 +44,61 @@ FRAME = b"\xff\xd8\xff\xe0" + b"\x00" * 16  # placeholder bytes, not a picture
 FOOTER = "f" * 64
 SFW = AssetMode(enabled=True, adult=False, approval=False, owner_only=False, user_cap=10, guild_cap=40,
                 video=True, video_user_cap=5, video_guild_cap=15)
+
+
+class CharacterAdultHintTests(unittest.TestCase):
+    JET = "a video of a female f35 fighter jet but anthropomorphized and dancing around"
+
+    def test_character_prompts_get_the_adult_hint(self):
+        self.assertIn("clearly mature adult woman in her 30s", S.character_adult_hint(self.JET))
+        self.assertIn("adult face and adult body proportions", S.character_adult_hint(self.JET))
+        self.assertIn("adult man in his 30s", S.character_adult_hint("turn my cat into a man"))
+        self.assertIn("adult person in their 30s", S.character_adult_hint("a toaster mascot"))
+        for plain in ("a sunset over mountains", "a jet dancing", "a pink cockpit", ""):
+            self.assertEqual(S.character_adult_hint(plain), "", plain)
+
+    def test_hint_does_not_force_photoreal(self):
+        hint = S.character_adult_hint(self.JET).casefold()
+        for word in ("photo", "realistic", "non-stylized"):
+            self.assertNotIn(word, hint)
+
+    def test_normal_sent_prompt_has_hint_before_footer_last(self):
+        sent, _ = S.build_sent_prompt(self.JET)
+        self.assertTrue(sent.startswith(S.ADULT_RULE))
+        self.assertIn(self.JET + "\n\n" + S.character_adult_hint(self.JET), sent)
+        self.assertTrue(S.footer_is_last(sent))
+        plain, _ = S.build_sent_prompt("a sunset over mountains")
+        self.assertNotIn("Depict every character", plain)
+
+    def test_adult_channels_keep_the_strict_rule_only(self):
+        sent, _ = S.build_sent_prompt(self.JET, adult=True)
+        self.assertTrue(sent.startswith(S.ADULT_RULE_STRICT))
+        self.assertNotIn("Depict every character", sent)
+
+    def test_prepare_generation_sends_and_audits_the_hint_and_still_checks_the_raw_prompt(self):
+        seen, audits = [], []
+        async def classify(text, **_k):
+            seen.append(text)
+            return ""
+        with mock.patch("core.classifier.classify_async", new=classify), \
+                mock.patch("core.blocklist.is_blocked", return_value=False), \
+                mock.patch("core.guardrails.asks_to_bypass_filter", return_value=False), \
+                mock.patch("core.asset_filter.media_prompt_blocked", return_value=False), \
+                mock.patch("core.audit.record", side_effect=lambda ev, **f: audits.append((ev, f))):
+            prepared = asyncio.run(S.prepare_generation(self.JET, user_id=5, guild_id=1, channel_id=1, mode=SFW))
+        self.assertEqual(seen, [self.JET])
+        self.assertEqual(prepared.user_prompt, self.JET)
+        self.assertIn(S.character_adult_hint(self.JET), prepared.sent_prompt)
+        self.assertTrue(S.footer_is_last(prepared.sent_prompt))
+        self.assertIn(("asset", "success", "adult-hint"),
+                      [(ev, f.get("outcome"), f.get("reason")) for ev, f in audits])
+
+    def test_hinted_output_is_still_age_checked_and_blocked_fail_closed(self):
+        with mock.patch("core.classifier.classify_media_async", new=mock.AsyncMock(return_value="")), \
+                mock.patch("core.classifier.age_vision_async", new=mock.AsyncMock(return_value="age-vision-yes")):
+            with self.assertRaises(ImagineError) as err:
+                asyncio.run(S.check_generated_media(FRAME, "image/jpeg", footer_hash=FOOTER, user_id=6, mode=SFW))
+        self.assertEqual(err.exception.status, "safety_block")
 
 
 class AgePromptTests(unittest.TestCase):

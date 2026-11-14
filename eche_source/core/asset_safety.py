@@ -20,6 +20,7 @@ from __future__ import annotations
 import base64
 import math
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -35,6 +36,39 @@ ADULT_RULE_STRICT = (
     "Do not depict children, minors, anyone who looks under 21, stylized, "
     "illustrated, anime, cartoon, or identifiable people."
 )
+# Normal channels: character prompts (anthropomorphic objects, mascots,
+# personified things) get an explicit adult-age hint for the generator.
+# 2026-11-14 00:43 ET: "a female f35 fighter jet but anthropomorphized and
+# dancing around" came back with a figure the age check read as an
+# apparent minor (frame 16/49). The hint does not force photoreal and does
+# not loosen any check: every frame is still age-checked, fail closed.
+_CHARACTER_RE = re.compile(
+    r"\b(?:anthropomorph\w*|personif\w*|humani[sz]\w*|humanoid\w*|gijinka|mascots?|"
+    r"characters?|(?:as|into) an? (?:woman|girl|lady|man|guy|boy|person|human))\b",
+    re.IGNORECASE,
+)
+_FEMALE_RE = re.compile(r"\b(?:female|woman|women|girls?|lady|ladies|she|her|feminine)\b", re.IGNORECASE)
+_MALE_RE = re.compile(r"\b(?:male|man|men|guys?|boys?|he|him|his|masculine)\b", re.IGNORECASE)
+_ADULT_HINT = (
+    "Depict every character as a clearly mature adult {who} in {their} 30s, "
+    "with an adult face and adult body proportions."
+)
+
+
+def character_adult_hint(prompt: str) -> str:
+    """Adult-age hint for character prompts, or "" when the prompt has none."""
+    text = prompt or ""
+    if not _CHARACTER_RE.search(text):
+        return ""
+    female = bool(_FEMALE_RE.search(text))
+    male = bool(_MALE_RE.search(text))
+    if female and not male:
+        return _ADULT_HINT.format(who="woman", their="her")
+    if male and not female:
+        return _ADULT_HINT.format(who="man", their="his")
+    return _ADULT_HINT.format(who="person", their="their")
+
+
 MODE_CHANGED_REFUSAL = (
     "The asset safety settings changed during this request, so it was not posted."
 )
@@ -458,6 +492,9 @@ def build_sent_prompt(user_prompt: str, *, adult: bool = False) -> tuple[str, st
     if len(body) > 2000:
         body = body[:2000].rstrip()
     rule = ADULT_RULE_STRICT if adult else ADULT_RULE
+    hint = "" if adult else character_adult_hint(body)
+    if hint:
+        body = f"{body}\n\n{hint}"
     sent = f"{rule}\n\n{body}\n\n{SAFETY_FOOTER}"
     return sent, footer_sha256()
 
@@ -554,7 +591,8 @@ async def prepare_generation(
     if not footer_is_last(sent):
         _audit("error", category="footer-order", footer_hash=digest, mode=snap, **ids)
         raise ImagineError("Safety rules could not be applied, so nothing was generated.")
-    _audit("success", footer_hash=digest, mode=snap, **ids)
+    hinted = not snap.adult and bool(character_adult_hint(raw))
+    _audit("success", footer_hash=digest, mode=snap, reason="adult-hint" if hinted else "", **ids)
     return PreparedPrompt(
         user_prompt=raw,
         sent_prompt=sent,
