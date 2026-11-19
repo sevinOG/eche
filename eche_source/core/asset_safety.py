@@ -579,6 +579,7 @@ def _audit(
     term: str = "",
     rule: str = "",
     prompt: str = "",
+    snippet: str = "",
 ) -> None:
     try:
         from core.audit import record
@@ -587,8 +588,8 @@ def _audit(
         digest = footer_hash or footer_sha256()
         safety = outcome in {"refusal", "error", "blocked"} or bool(category)
         snap = mode
-        # The prompt text is included only on refusals (term/rule/prompt),
-        # cut to 500 characters, in the local audit log.
+        # The prompt text is included only on refusals (term/rule/prompt/
+        # snippet), cut to 1500 characters, in the local audit log.
         fields = dict(
             outcome=outcome,
             category=category,
@@ -611,9 +612,12 @@ def _audit(
         if rule:
             fields["rule"] = rule
         if prompt:
-            from core.blocklist import excerpt
+            from core.blocklist import excerpt, match_snippet
 
             fields["prompt"] = excerpt(prompt)
+            snippet = snippet or (match_snippet(prompt, term) if term else "")
+        if snippet:
+            fields["snippet"] = snippet
         if snap is not None:
             fields["adult"] = "1" if snap.adult else "0"
             fields["approval"] = "1" if snap.approval else "0"

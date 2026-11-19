@@ -251,3 +251,139 @@ def rewrite_adult_girls(text: str) -> tuple[str, bool]:
 
     out = _GIRL_WORD.sub(_swap, raw)
     return out, out != raw
+
+
+# ---------------------------------------------------------------------------
+# Negated minor exclusions the chat model appends to its own asset prompt
+# (live 2026-11-19 10:24 ET: a long, clearly adult prompt ended with safety
+# boilerplate such as "no children" and was refused as llm-output).
+#
+# Only a whole clause that is nothing but the exclusion is removed: the
+# negation must open the clause and govern the youth word directly, with
+# only a few fixed filler words around it ("no children", "without any
+# minors", "children not present", "no one under 18", "not for children",
+# "all characters are adults, no kids"). Anything else stays and is checked
+# as written ("no adults, only children", "children with no parents",
+# "no clothes children", "no children's toys"). If the text still has any
+# minors-list hit after the strip, nothing is removed, so the original is
+# blocked and logged. Model-written prompts only; never the user's text.
+# ---------------------------------------------------------------------------
+_YOUTH_NOUN = (
+    r"(?:children|child|kids|kid|kiddos?|minors|minor|teens|teen|teenagers|teenager|"
+    r"underage(?:\s+(?:people|persons|characters|individuals|subjects|figures|anyone))?|"
+    r"young\s+children|little\s+ones|youngsters?)"
+)
+_YOUTH_LIST = _YOUTH_NOUN + r"(?:\s*(?:,|/|\bor\b|\band\b|\bnor\b)\s*(?:or\s+|and\s+|nor\s+)?" + _YOUTH_NOUN + r")*"
+_EXCL_TAIL = (
+    r"(?:\s+(?:are\s+|is\s+|being\s+)?(?:present|shown|depicted|included|allowed|pictured|visible|involved|"
+    r"in\s+(?:the\s+)?(?:scene|image|picture|frame|shot|background|artwork|illustration|video)|"
+    r"anywhere|at\s+all|whatsoever|of\s+any\s+kind))*"
+)
+_LEAD = r"(?:(?:and|but|with|also|strictly|absolutely|definitely|important|note|please)\s*[:\-]?\s+)*"
+_NEGATED_EXCLUSION_RES = (
+    # no children / without any minors / zero kids / excluding teens / free of children
+    re.compile(
+        r"(?is)^\s*" + _LEAD
+        + r"(?:no|zero|without|never|excluding|exclude|free\s+of|not\s+any|no\s+depictions?\s+of)\s+"
+        r"(?:any\s+|other\s+|real\s+|actual\s+|visible\s+)?" + _YOUTH_LIST + _EXCL_TAIL + r"\s*$"
+    ),
+    # children not present / kids are not shown / minors are not depicted
+    re.compile(
+        r"(?is)^\s*" + _LEAD + r"(?:the\s+)?" + _YOUTH_LIST
+        + r"\s+(?:are\s+|is\s+)?(?:not|never)\s+(?:present|shown|depicted|included|allowed|pictured|visible|involved)"
+        + _EXCL_TAIL + r"\s*$"
+    ),
+    # not for children / not suitable for kids
+    re.compile(
+        r"(?is)^\s*" + _LEAD + r"(?:this\s+is\s+|it\s+is\s+)?not\s+(?:suitable\s+|intended\s+|meant\s+|appropriate\s+)?"
+        r"for\s+" + _YOUTH_LIST + r"\s*$"
+    ),
+    # no one under 18 / nobody below the age of 18 / no characters under eighteen
+    re.compile(
+        r"(?is)^\s*" + _LEAD
+        + r"(?:no\s*(?:one|body)|nobody|no\s+(?:people|persons|person|characters?|figures?|subjects?|individuals?))\s+"
+        r"(?:who\s+(?:is|are)\s+|aged\s+)?(?:under|below|younger\s+than)\s+(?:the\s+age\s+of\s+)?(?:18|eighteen)"
+        r"(?:\s+(?:years?\s+old|present|shown|depicted|included))?\s*$"
+    ),
+)
+# Clause boundaries. Commas are handled inside a clause, below.
+_CLAUSE_SPLIT_RE = re.compile(r"([.;:!?\n()\[\]{}]|\s[\u2013\u2014-]\s|\u2014)")
+# A comma segment that only continues a negated list ("no kids, teens, or minors").
+_LIST_TAIL_RE = re.compile(r"(?is)^\s*(?:or|and|nor)?\s*" + _YOUTH_NOUN + _EXCL_TAIL + r"\s*$")
+NEGATED_EXCLUSION_RULE = "negated-minor-exclusion"
+
+
+def _is_negated_exclusion(segment: str) -> bool:
+    return any(rx.match(segment or "") for rx in _NEGATED_EXCLUSION_RES)
+
+
+def _strip_clause(clause: str, removed: list[str]) -> str:
+    if clause.strip() and _is_negated_exclusion(clause):
+        removed.append(" ".join(clause.split()))
+        return ""
+    parts = clause.split(",")
+    kept: list[str] = []
+    in_list = False
+    for part in parts:
+        if part.strip() and _is_negated_exclusion(part):
+            removed.append(" ".join(part.split()))
+            in_list = True
+            continue
+        if in_list and part.strip() and _LIST_TAIL_RE.match(part):
+            removed.append(" ".join(part.split()))
+            continue
+        in_list = False
+        kept.append(part)
+    return ",".join(kept)
+
+
+def strip_negated_minor_exclusions(text: str) -> tuple[str, list[str]]:
+    """(text, removed clauses) with model-added "no children"-style exclusions removed.
+
+    Returns the text unchanged with [] when nothing qualifies, when the
+    result would be empty, or when the result still has a minors-list hit
+    (any non-negated youth term elsewhere keeps the whole prompt blocked).
+    """
+    raw = str(text or "")
+    if not raw.strip():
+        return raw, []
+    removed: list[str] = []
+    pieces = _CLAUSE_SPLIT_RE.split(raw)
+    out_pieces = [
+        piece if i % 2 else _strip_clause(piece, removed)
+        for i, piece in enumerate(pieces)
+    ]
+    if not removed:
+        return raw, []
+    out = "".join(out_pieces)
+    # Tidy what the removal left behind: empty brackets, doubled punctuation.
+    out = re.sub(r"\(\s*[,.;:]*\s*\)|\[\s*[,.;:]*\s*\]", " ", out)
+    out = re.sub(r"\s+([,.;:!?])", r"\1", out)
+    out = re.sub(r"([,;:])(?:\s*[,;:])+", r"\1", out)
+    out = re.sub(r"([.!?])(?:\s*[,;:.])+", r"\1", out)
+    out = re.sub(r"[,;:]\s*([.!?])", r"\1", out)
+    out = " ".join(out.split()).strip(" ,;:")
+    if not out:
+        return raw, []
+    try:
+        from core.blocklist import match
+
+        if match(out):
+            return raw, []
+    except Exception:
+        return raw, []
+    return out, removed
+
+
+def strip_model_exclusions_logged(text: str, *, where: str, ids: dict | None = None) -> str:
+    """strip_negated_minor_exclusions plus one audit row when something was removed."""
+    out, removed = strip_negated_minor_exclusions(text)
+    if removed:
+        try:
+            from core.audit import record
+
+            record("asset-strip", source=where, rule=NEGATED_EXCLUSION_RULE,
+                   removed=" | ".join(removed)[:300], safety=True, **(ids or {}))
+        except Exception:
+            pass
+    return out

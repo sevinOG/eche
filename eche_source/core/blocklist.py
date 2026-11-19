@@ -1853,7 +1853,32 @@ def note_reason(where: str) -> str:
     return ""
 
 
-def excerpt(text, limit: int = 500) -> str:
+LOG_PROMPT_CHARS = 1500
+LOG_SNIPPET_RADIUS = 80
+
+
+def match_snippet(text, term: str, radius: int = LOG_SNIPPET_RADIUS) -> str:
+    """About +-radius characters of text around where term matched, or ''.
+
+    The term comes from a normalized variant, so it is looked up in the
+    one-line text first, then in normalize(text) (same length as most
+    inputs). Lets a hit deep in a long prompt show in the log.
+    """
+    flat = " ".join(str(text or "").split())
+    needle = str(term or "").strip()
+    if not flat or not needle:
+        return ""
+    for hay in (flat, " ".join(normalize(flat).split())):
+        pattern = r"[\s\-_.]*".join(re.escape(part) for part in needle.split()) or re.escape(needle)
+        hit = re.search(r"(?<![\w])" + pattern + r"(?![\w])", hay, re.IGNORECASE) or re.search(pattern, hay, re.IGNORECASE)
+        if hit:
+            start = max(0, hit.start() - radius)
+            end = min(len(hay), hit.end() + radius)
+            return ("\u2026" if start else "") + hay[start:end] + ("\u2026" if end < len(hay) else "")
+    return ""
+
+
+def excerpt(text, limit: int = LOG_PROMPT_CHARS) -> str:
     """One-line copy of a blocked text for the local audit log, cut to limit."""
     flat = " ".join(str(text or "").split())
     if len(flat) > limit:
@@ -1866,7 +1891,7 @@ def block_detail(*texts, user_id=None, channel_id=None) -> dict:
 
     rule is the match_info check (always, age, context, extra) or
     "close-variant" for the retry catch. prompt is the offending text, cut to
-    500 characters. Read-only: nothing is remembered, so calling it after a
+    1500 characters; snippet is about 80 characters either side of the hit. Read-only: nothing is remembered, so calling it after a
     block does not change later results. Local audit log only.
     """
     close = None
@@ -1876,7 +1901,11 @@ def block_detail(*texts, user_id=None, channel_id=None) -> dict:
             continue
         term, check = match_info(raw)
         if term:
-            return {"term": term, "rule": check, "prompt": excerpt(raw)}
+            detail = {"term": term, "rule": check, "prompt": excerpt(raw)}
+            snippet = match_snippet(raw, term)
+            if snippet:
+                detail["snippet"] = snippet
+            return detail
         if close is None and user_id is not None:
             tokens = _tokens(raw)
             now = time.monotonic()
@@ -1893,11 +1922,11 @@ def block_detail(*texts, user_id=None, channel_id=None) -> dict:
     return close or {}
 
 
-def note(where: str, *, term: str = "", rule: str = "", prompt: str = "") -> None:
+def note(where: str, *, term: str = "", rule: str = "", prompt: str = "", snippet: str = "") -> None:
     """One log line with the footer hash.
 
-    term / rule / prompt name what matched and the offending text (cut to 500
-    characters). They go only to the local audit log and the desktop log.
+    term / rule / prompt / snippet name what matched, the offending text
+    (cut to 1500 characters) and the text around the hit. They go only to the local audit log and the desktop log.
     """
     digest = ""
     try:
@@ -1909,8 +1938,12 @@ def note(where: str, *, term: str = "", rule: str = "", prompt: str = "") -> Non
     extra = f", footer sha256={digest}" if digest else ""
     reason = note_reason(where)
     why = f", reason={reason}" if reason else ""
-    detail = {k: v for k, v in (("term", term), ("rule", rule), ("prompt", excerpt(prompt) if prompt else "")) if v}
-    shown = "".join(f", {k}={v!r}" if k == "prompt" else f", {k}={v}" for k, v in detail.items())
+    if term and prompt and not snippet:
+        snippet = match_snippet(prompt, term)
+    detail = {k: v for k, v in (
+        ("term", term), ("rule", rule), ("snippet", snippet), ("prompt", excerpt(prompt) if prompt else ""),
+    ) if v}
+    shown = "".join(f", {k}={v!r}" if k in ("prompt", "snippet") else f", {k}={v}" for k, v in detail.items())
     line = f"Blocked ({where}){why}{shown}{extra}."
     try:
         from core.audit import block as audit_block
