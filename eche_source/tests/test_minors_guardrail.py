@@ -331,7 +331,9 @@ class OutputCheckTests(unittest.TestCase):
         turn = self._turn(logs)
         self.assertEqual(turn.reply, "The 12 year old smiled and waved.")
 
-    def test_output_block_on_the_image_path_replaces_the_reply_and_does_not_log_content(self):
+    def test_output_block_on_the_image_path_replaces_the_reply_and_logs_what_matched(self):
+        # Owner request 2026-11-19: the local log names the term, the rule
+        # and the offending text.
         logs = []
         turn = self._turn(logs, images=_IMG)
         self.assertEqual(turn.reply, bl.REFUSAL)
@@ -339,8 +341,9 @@ class OutputCheckTests(unittest.TestCase):
         joined = "\n".join(line for line, _ch in logs)
         self.assertIn("llm-output", joined)
         self.assertIn(sf.footer_sha256(), joined)
-        self.assertNotIn("12 year old", joined)
-        self.assertNotIn("smiled and waved", joined)
+        self.assertIn("term=12 year old", joined)
+        self.assertIn("rule=age", joined)
+        self.assertIn("smiled and waved", joined)
 
 
 class LogTests(unittest.TestCase):

@@ -224,14 +224,14 @@ def check_prompt(text: str, *, user_id=None, channel_id=None) -> None:
     request for help getting around a filter. Crude or offensive prompts
     still go through.
     """
-    from core.blocklist import REFUSAL, is_blocked, note
+    from core.blocklist import REFUSAL, block_detail, is_blocked, note
     from core.guardrails import BYPASS_REFUSAL, asks_to_bypass_filter
 
     if asks_to_bypass_filter(text):
-        note("asset prompt bypass")
+        note("asset prompt bypass", rule="bypass", prompt=text)
         raise ImagineError(BYPASS_REFUSAL)
     if is_blocked(text, user_id=user_id, channel_id=channel_id):
-        note("asset prompt")
+        note("asset prompt", **block_detail(text, user_id=user_id, channel_id=channel_id))
         raise ImagineError(REFUSAL)
 
 
@@ -287,11 +287,11 @@ def _strip_footer(text: str) -> str:
 
 def check_payload(payload) -> None:
     """Refuse a finished file whose caption or rewritten prompt is blocked."""
-    from core.blocklist import REFUSAL, is_blocked, note
+    from core.blocklist import REFUSAL, block_detail, is_blocked, note
 
     for text in _payload_texts(payload):
         if is_blocked(_strip_footer(text)):
-            note("asset reply")
+            note("asset reply", **block_detail(_strip_footer(text)))
             raise ImagineError(REFUSAL)
 
 

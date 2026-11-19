@@ -668,6 +668,17 @@ def record(event: str, *, safety: bool = False, **fields) -> dict:
             bits.append(f"outcome={rec['outcome']}")
         if rec.get("category") and event != "block":
             bits.append(f"category={rec['category']}")
+        # What a block or decline matched and the offending text (local log only).
+        shows_detail = event == "block" or str(rec.get("outcome") or "").lower() in {"refusal", "declined", "block"}
+        if shows_detail:
+            if rec.get("reason") and event != "block":
+                bits.append(f"reason={rec['reason']}")
+            if rec.get("rule"):
+                bits.append(f"rule={rec['rule']}")
+            if rec.get("term"):
+                bits.append(f"term={rec['term']}")
+            if rec.get("prompt"):
+                bits.append(f"prompt={str(rec['prompt'])[:500]!r}")
         if rec.get("footer_hash"):
             bits.append(f"footer sha256={rec['footer_hash']}")
         if rec.get("request_id") or rec.get("response_id"):

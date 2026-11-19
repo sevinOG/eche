@@ -197,6 +197,51 @@ def _replied_text(message) -> str:
     return str(getattr(resolved, "content", "") or "")
 
 
+# Recent conversation a short request may point at ("make the shirt" after
+# Eche offered a shirt design). Eche's own turns and this user's turns only.
+CONTEXT_SCAN = 8
+CONTEXT_MAX_AGE_S = 30 * 60
+CONTEXT_MAX_CHARS = 4000
+
+
+async def _conversation_context(message, bot=None) -> str:
+    """The replied-to message plus Eche's and this user's recent turns here.
+
+    Used only by the prompt-overlap gate. Best effort: any error gives ''.
+    """
+    parts: list[str] = []
+    replied = _replied_text(message)
+    if replied.strip():
+        parts.append(replied)
+    channel = getattr(message, "channel", None)
+    author_id = getattr(getattr(message, "author", None), "id", None)
+    me_id = getattr(getattr(bot, "user", None), "id", None)
+    if me_id is None:
+        me_id = getattr(getattr(getattr(message, "guild", None), "me", None), "id", None)
+    created = getattr(message, "created_at", None)
+    if channel is not None and hasattr(channel, "history"):
+        try:
+            async for item in channel.history(limit=CONTEXT_SCAN, before=message):
+                when = getattr(item, "created_at", None)
+                if created is not None and when is not None:
+                    try:
+                        if (created - when).total_seconds() > CONTEXT_MAX_AGE_S:
+                            break
+                    except Exception:
+                        pass
+                who = getattr(getattr(item, "author", None), "id", None)
+                if who is None or who not in {me_id, author_id}:
+                    continue
+                text = str(getattr(item, "content", "") or "")
+                for embed in getattr(item, "embeds", None) or []:
+                    text += " " + str(getattr(embed, "title", "") or "") + " " + str(getattr(embed, "description", "") or "")
+                if text.strip():
+                    parts.append(text)
+        except Exception as exc:
+            dprint(f"[asset] context history failed: {type(exc).__name__}")
+    return "\n".join(parts)[:CONTEXT_MAX_CHARS]
+
+
 def _strip_added_cues(prompt: str, user_text: str, message) -> str:
     """Drop school cues and youth-emphasis phrases the chat model added.
 
@@ -232,9 +277,23 @@ async def make_asset(ctx, arguments: dict) -> ToolResult:
     raw_prompt = " ".join(str((arguments or {}).get("prompt") or "").split())
     # Only a message that itself asks for something runs the tool. This uses
     # no cap slot and posts nothing; the model's chat reply is used instead.
-    from core.asset_intent import decline_reason, strip_added_youthful_styles
+    from core.asset_intent import DECLINE_NO_OVERLAP, decline_reason, strip_added_youthful_styles
 
     declined = decline_reason(raw_prompt, user_text)
+    context_used = False
+    if declined == DECLINE_NO_OVERLAP:
+        context = await _conversation_context(message, getattr(ctx, "bot", None))
+        if context and not decline_reason(raw_prompt, user_text, context):
+            declined = ""
+            context_used = True
+    if context_used:
+        try:
+            from core.audit import record
+
+            record("asset-request", source="chat", outcome="context-overlap",
+                   reason="prompt-from-conversation", **_ids(message))
+        except Exception:
+            pass
     if declined:
         try:
             from core.audit import record

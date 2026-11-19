@@ -49,11 +49,13 @@ def _clean(text: str) -> str:
 
 
 def _words(text: str) -> set[str]:
-    folded = _clean(text).casefold()
-    # f-35 and f35 are the same word.
-    folded = re.sub(r"(?<=\w)[-'’](?=\w)", "", folded)
+    cleaned = _clean(text).casefold()
+    # f-35 and f35 are the same word. The hyphen's parts count too, so
+    # "t-shirt" and "t shirt" share "shirt" (live 2026-11-19 09:54 ET).
+    folded = re.sub(r"(?<=\w)[-'’](?=\w)", "", cleaned)
+    split = re.sub(r"(?<=\w)-(?=\w)", " ", cleaned)
     out: set[str] = set()
-    for word in re.findall(r"[^\W_]+", folded):
+    for word in re.findall(r"[^\W_]+", folded) + re.findall(r"[^\W_]+", split):
         if len(word) < 3 and not any(ch.isdigit() for ch in word):
             continue
         if word in _STOP:
@@ -116,8 +118,17 @@ def asks_about_media(text: str) -> bool:
     return bool(_ABOUT_RE.search(clean)) and not _MAKE_VERB_RE.search(clean)
 
 
-def decline_reason(prompt: str, message_text: str) -> str:
-    """'' when the tool may run, else a short fixed reason for the audit log."""
+def decline_reason(prompt: str, message_text: str, context_text: str = "") -> str:
+    """'' when the tool may run, else a short fixed reason for the audit log.
+
+    context_text is the recent conversation the message follows: the
+    replied-to message and Eche's and this user's recent turns in the
+    channel. A short request such as "make the shirt" that follows Eche's own
+    offer passes when the tool prompt overlaps that context (live 2026-11-19
+    09:54 / 09:55 ET: "Generate the t shirt" and "Make the shirt man" were
+    declined). A prompt that overlaps neither the message nor the context is
+    still declined. The message itself must still ask for something.
+    """
     text = _clean(message_text)
     if not has_request_wording(text):
         return DECLINE_NO_REQUEST
@@ -127,9 +138,11 @@ def decline_reason(prompt: str, message_text: str) -> str:
         return ""
     if not (prompt or "").strip():
         return ""
-    if not shares_meaningful_word(prompt, text):
-        return DECLINE_NO_OVERLAP
-    return ""
+    if shares_meaningful_word(prompt, text):
+        return ""
+    if context_text and shares_meaningful_word(prompt, context_text):
+        return ""
+    return DECLINE_NO_OVERLAP
 
 
 # Youthful styles the chat model may add on its own. Only these are stripped,
