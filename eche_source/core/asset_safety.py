@@ -609,6 +609,27 @@ def _audit(
         pass
 
 
+def _rewrite_girls(raw: str, user_text: str, model_prompt: str, ids: dict) -> tuple[str, str, str]:
+    from core.asset_intent import GIRL_REWRITE_RULE, rewrite_adult_girls
+
+    out = []
+    changed_in = []
+    for label, text in (("prompt", raw), ("user", user_text), ("model", model_prompt)):
+        new, changed = rewrite_adult_girls(text or "")
+        out.append(new if changed else text)
+        if changed:
+            changed_in.append(label)
+    if changed_in:
+        try:
+            from core.audit import record
+
+            record("asset-strip", source="prepare", rule=GIRL_REWRITE_RULE,
+                   removed=f"{GIRL_REWRITE_RULE}:{','.join(changed_in)}", safety=True, **ids)
+        except Exception:
+            pass
+    return out[0], out[1], out[2]
+
+
 async def prepare_generation(
     prompt: str,
     *,
@@ -637,6 +658,10 @@ async def prepare_generation(
     raw = (prompt or "").strip()
     snap = mode if mode is not None else read_asset_mode()
     ids = dict(user_id=user_id, guild_id=guild_id, channel_id=channel_id)
+
+    # "girl(s)" -> "woman/women" when no youth or school cue is present
+    # (owner-approved 2026-11-19). All checks below run on the result.
+    raw, user_text, model_prompt = _rewrite_girls(raw, user_text, model_prompt, ids)
 
     if asks_to_bypass_filter(raw):
         note("asset prompt bypass")

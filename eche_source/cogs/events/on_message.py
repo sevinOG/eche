@@ -221,6 +221,12 @@ class OnMessage(commands.Cog):
             # Only the image tool keeps argument checks. Text tools (lookup,
             # thread, context) are text chat and are not keyword-filtered.
             image_tool = name.casefold() == "asset"
+            if image_tool and isinstance(arguments, dict) and arguments.get("prompt"):
+                # "goth girls" -> "goth women" unless a youth/school cue is
+                # present (then unchanged and blocked as before).
+                from core.asset_intent import rewrite_adult_girls
+
+                arguments = {**arguments, "prompt": rewrite_adult_girls(str(arguments["prompt"]))[0]}
             if image_tool and asks_to_bypass_filter(_flat_arguments(arguments)):
                 block_note(f"{name} arguments bypass")
                 try:
