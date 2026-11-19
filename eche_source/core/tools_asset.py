@@ -35,6 +35,9 @@ _DESCRIPTION = (
     "file is used as the source automatically, and prompt is the change. "
     "When they only ask about the replied-to file, answer in chat instead. "
     "prompt is their wording, copied through — do not soften, sanitize, or rewrite for filters. "
+    "Describe every person in prompt as an adult. Never mention age, youth, or anyone under 18 "
+    "in prompt, not even to exclude them (no exclusion lines about age or youth); Eche adds its "
+    "own adult rule. "
     "kind is image or video when they named one for a new file. Leave kind empty to decide from the prompt. "
     "A thread of files is the thread tool."
 )
@@ -274,6 +277,12 @@ def _strip_added_cues(prompt: str, user_text: str, message) -> str:
 async def make_asset(ctx, arguments: dict) -> ToolResult:
     message = getattr(ctx, "message", None)
     user_text = getattr(message, "content", "") or ""
+    if isinstance(arguments, dict) and arguments.get("prompt"):
+        # The model's own "no children"-style exclusions (never the user's text).
+        from core.asset_intent import strip_model_exclusions_logged
+
+        arguments = {**arguments, "prompt": strip_model_exclusions_logged(
+            str(arguments["prompt"]), where="chat-tool", ids=_ids(message))}
     raw_prompt = " ".join(str((arguments or {}).get("prompt") or "").split())
     # Only a message that itself asks for something runs the tool. This uses
     # no cap slot and posts nothing; the model's chat reply is used instead.
@@ -304,7 +313,7 @@ async def make_asset(ctx, arguments: dict) -> ToolResult:
             # The tool prompt the model wrote, so an over-decline can be
             # reproduced (prompts are logged on runs too).
             record("asset-request", source="chat", outcome="declined", reason=declined,
-                   message=excerpt, prompt=raw_prompt[:500], **_ids(message))
+                   message=excerpt, prompt=raw_prompt[:1500], **_ids(message))
         except Exception:
             pass
         return ToolResult(text=NO_REQUEST_DECLINED, fence=False, declined=True, outcome="declined")

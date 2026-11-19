@@ -677,8 +677,10 @@ def record(event: str, *, safety: bool = False, **fields) -> dict:
                 bits.append(f"rule={rec['rule']}")
             if rec.get("term"):
                 bits.append(f"term={rec['term']}")
+            if rec.get("snippet"):
+                bits.append(f"snippet={str(rec['snippet'])[:400]!r}")
             if rec.get("prompt"):
-                bits.append(f"prompt={str(rec['prompt'])[:500]!r}")
+                bits.append(f"prompt={str(rec['prompt'])[:1500]!r}")
         if rec.get("footer_hash"):
             bits.append(f"footer sha256={rec['footer_hash']}")
         if rec.get("request_id") or rec.get("response_id"):

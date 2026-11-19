@@ -1,7 +1,7 @@
 # tests/test_asset_block_logging_and_overlap.py
 # Owner request 2026-11-19 (after live 09:54 / 09:55 / 10:00 ET):
 # 1. Asset-path refusals log the matched term, the rule and the offending
-#    prompt (cut to 500 chars) in the local audit log and desktop log.
+#    prompt (cut to 1500 chars since #26) in the local audit log and desktop log.
 # 2. A short request that follows Eche's own offer ("make the shirt") passes
 #    the prompt-overlap gate when the tool prompt overlaps the recent
 #    conversation. Unrelated prompts are still declined.
@@ -55,9 +55,9 @@ class BlockLoggingTests(unittest.TestCase):
         self.assertEqual(d["prompt"], "a cheerful teen holding a flag")
         self.assertEqual(B.block_detail("a lighthouse at dusk"), {})
 
-    def test_block_detail_truncates_to_500_chars(self):
-        d = B.block_detail("a child " + "x" * 2000)
-        self.assertLessEqual(len(d["prompt"]), 500)
+    def test_block_detail_truncates_to_1500_chars(self):
+        d = B.block_detail("a child " + "x" * 4000)
+        self.assertLessEqual(len(d["prompt"]), 1500)
 
     def test_block_detail_reports_close_variant_without_remembering(self):
         B.clear_recent_blocks()

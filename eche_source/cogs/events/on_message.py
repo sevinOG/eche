@@ -224,9 +224,15 @@ class OnMessage(commands.Cog):
             if image_tool and isinstance(arguments, dict) and arguments.get("prompt"):
                 # "goth girls" -> "goth women" unless a youth/school cue is
                 # present (then unchanged and blocked as before).
-                from core.asset_intent import rewrite_adult_girls
+                from core.asset_intent import rewrite_adult_girls, strip_model_exclusions_logged
 
-                arguments = {**arguments, "prompt": rewrite_adult_girls(str(arguments["prompt"]))[0]}
+                # Model-added "no children"-style exclusions are removed so the
+                # youth word never reaches the checks or the image model.
+                prompt = strip_model_exclusions_logged(
+                    str(arguments["prompt"]), where="tool-args",
+                    ids={"user_id": user_id, "channel_id": channel_id},
+                )
+                arguments = {**arguments, "prompt": rewrite_adult_girls(prompt)[0]}
             if image_tool and asks_to_bypass_filter(_flat_arguments(arguments)):
                 block_note(f"{name} arguments bypass", rule="bypass", prompt=_flat_arguments(arguments))
                 try:

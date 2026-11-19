@@ -100,7 +100,7 @@ class HardenedAssetTests(unittest.TestCase):
 
     def test_prepare_generation_blocks_incident_and_logs_term_and_prompt(self):
         # Owner request 2026-11-19: refusal rows carry the matched term, the
-        # rule and the offending prompt (cut to 500 chars), local log only.
+        # rule and the offending prompt (cut to 1500 chars), local log only.
         with tempfile.TemporaryDirectory(prefix="eche-asset-audit-") as raw:
             audit = Path(raw) / "logs"
             audit.mkdir()
@@ -119,7 +119,7 @@ class HardenedAssetTests(unittest.TestCase):
                 row = [r for r in rows if r.get("event") == "asset" and r.get("category") == "matcher"][-1]
                 self.assertEqual((row["term"], row["rule"]), ("boy", "always"))
                 self.assertIn("twig boy", row["prompt"])
-                self.assertLessEqual(len(row["prompt"]), 500)
+                self.assertLessEqual(len(row["prompt"]), 1500)
 
     def test_sent_prompt_has_footer_last(self):
         sent, digest = build_sent_prompt("a red paper boat")

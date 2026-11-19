@@ -29,7 +29,9 @@ TOOL_LINES = {
     "asset": (
         "asset: make a picture or a video when they ask for one, or edit the picture or video "
         "their message replies to when they ask for a change to it (the replied-to file is the source). "
-        "prompt is their wording, copied through. kind is image or video when they named one."
+        "prompt is their wording, copied through. kind is image or video when they named one. "
+        "Describe people in prompt as adults. Never mention age, youth, or anyone under 18 in "
+        "prompt, not even to exclude them."
     ),
 }
 
@@ -73,7 +75,10 @@ _PICTURES_ON = (
     "When they only ask about it, answer in chat. "
     "If you have no asset tool in your tools, tell them to send ?asset with what they want "
     "(as a reply to a picture or video to edit it). "
-    "If a request was refused, say so. Do not claim you made one unless the tool ran.\n"
+    "If a request was refused, say so. Do not claim you made one unless the tool ran. "
+    "In an asset prompt, describe every person as an adult, and never mention age, youth, or "
+    "anyone under 18, not even to exclude them (no \"no one under 18\" or \"all adults, none "
+    "younger\" lines). Eche adds its own adult rule.\n"
 )
 
 

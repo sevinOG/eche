@@ -992,6 +992,8 @@ async def _classify_outgoing(prepared: list) -> list:
 def _asset_args_for_check(args) -> str:
     """The asset tool call's arguments as the output check sees them.
 
+    Clearly negated exclusions the model added ("no children", "all adults,
+    no minors") are removed first; see asset_intent.strip_negated_minor_exclusions.
     The prompt gets the same owner-approved girl(s) -> woman/women rewrite
     (2026-11-19) the asset tool applies before it runs (on_message and
     prepare_generation). Without it a prompt such as "USA girl vs UK girl"
@@ -1013,9 +1015,12 @@ def _asset_args_for_check(args) -> str:
         return ""
     if isinstance(args, dict) and args.get("prompt"):
         try:
-            from core.asset_intent import rewrite_adult_girls
+            from core.asset_intent import rewrite_adult_girls, strip_model_exclusions_logged
 
-            args = {**args, "prompt": rewrite_adult_girls(str(args["prompt"]))[0]}
+            # Model-written "no children"-style exclusions are removed first
+            # (2026-11-19); any other youth term keeps the prompt as written.
+            prompt = strip_model_exclusions_logged(str(args["prompt"]), where="llm-output")
+            args = {**args, "prompt": rewrite_adult_girls(prompt)[0]}
         except Exception:
             pass
     try:
