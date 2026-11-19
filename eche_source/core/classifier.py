@@ -1691,8 +1691,8 @@ async def asset_prompt_check_async(text: str) -> str:
     """Asset (image/video) prompt check: the narrow prompt child check. '' allows.
 
     Fail closed: any error, timeout, or unreadable verdict refuses. The prompt
-    minors filter, media filter, and the every-frame output age check are
-    separate and unchanged.
+    minors filter and the every-frame output age check are separate and
+    unchanged.
     """
     if tests_are_allowing():
         return ""

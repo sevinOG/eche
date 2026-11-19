@@ -201,16 +201,15 @@ def _strip_added_cues(prompt: str, user_text: str, message) -> str:
     """Drop school cues and youth-emphasis phrases the chat model added.
 
     Phrases in the user's message or the replied-to message stay. A prompt the
-    minors matcher or the media filter already blocks is left unchanged, so
-    the strip can never turn a blocked prompt into an allowed one. The strip
-    is audited (removed phrases only).
+    minors matcher already blocks is left unchanged, so the strip can never
+    turn a blocked prompt into an allowed one. The strip is audited (removed
+    phrases only).
     """
-    from core.asset_filter import media_prompt_blocked
     from core.asset_intent import strip_added_school_and_youth_cues
     from core.blocklist import match
 
     try:
-        if match(prompt) or media_prompt_blocked(prompt, adult=False):
+        if match(prompt):
             return prompt
     except Exception:
         return prompt

@@ -76,7 +76,7 @@ FIELD_HELP: dict[str, tuple[str, str]] = {
         "Off by default, set only in Settings. When it is on, any user in a Discord age-restricted channel can use 18+ ?asset, not just the owner, and never in DMs. "
         "While 18+ is on, ?asset in a non-NSFW channel runs under the normal SFW rules "
         "(no 18+ relaxing). "
-        "Owner approval is separate and can be on or off. Every minors check stays, including the matcher, media filter, "
+        "Owner approval is separate and can be on or off. Every minors check stays, including the matcher, "
         "child check, age vision, incident rule, and the safety footer (the footer text does not change). "
         "The age check is stricter: anything short of clearly adult is blocked, and so are anime, "
         "cartoon, chibi, doll, stylized, and real or identifiable people. The only relaxation is "

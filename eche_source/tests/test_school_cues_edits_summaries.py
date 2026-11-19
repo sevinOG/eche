@@ -67,7 +67,6 @@ class SchoolSexualFilterTests(unittest.TestCase):
         with mock.patch("core.classifier.asset_prompt_check_async", new=child), \
                 mock.patch("core.blocklist.is_blocked", return_value=False), \
                 mock.patch("core.guardrails.asks_to_bypass_filter", return_value=False), \
-                mock.patch("core.asset_filter.media_prompt_blocked", return_value=False), \
                 mock.patch("core.audit.record", side_effect=lambda ev, **f: audits.append((ev, f))):
             try:
                 prepared = asyncio.run(S.prepare_generation(prompt, user_id=5, guild_id=1, channel_id=1,
