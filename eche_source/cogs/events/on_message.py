@@ -358,6 +358,16 @@ class OnMessage(commands.Cog):
         if is_prefix_command(self.bot, message):
             return
 
+        # 18+ servers only: a member who says they are a minor is banned
+        # (no lecture). Off when 18+ content is disabled. core/minor_claims.
+        try:
+            from core.minor_claims import enforce as enforce_minor_claim
+
+            if await enforce_minor_claim(self.bot, message):
+                return
+        except Exception as e:
+            dprint(f"[on_message] minor-claim check failed: {type(e).__name__}")
+
         # ⭐ BOO LOGIC — runs for ALL messages, even without mention ⭐
         if await maybe_boo(message):
             await self._record_server_line(message, (message.content or "").strip())
@@ -398,20 +408,15 @@ class OnMessage(commands.Cog):
         if media.message is not None:
             message = media.message
 
-        # Replied-to pictures: Eche's own asset posts need no recheck; anyone
-        # else's get the hardcoded image check once (cached by sha256). One
-        # that does not pass is left out (fail closed), with a short note.
-        if getattr(media, "reply_images", None):
-            from core.reply_images import WITHHELD_NOTE, cleared_reply_parts
+        # Media Eche only views for this chat reply (own attachments, the
+        # replied-to message, forwards, and sampled video/GIF frames) goes to
+        # the chat model with no child/age check (owner decision 2026-11-18).
+        # ?asset keeps every check, including check_source_media on edits.
+        # A safety audit row records what was viewed; if it can't be written,
+        # the media is dropped (no missing logs).
+        from core.chat_media import prepare_viewed
 
-            try:
-                parts, withheld = await cleared_reply_parts(media, message)
-            except Exception as e:
-                dprint(f"[on_message] reply image check failed: {type(e).__name__}")
-                parts, withheld = [], True
-            media.reply_parts = list(parts)
-            if withheld:
-                media.text = (f"{media.text}\n{WITHHELD_NOTE}" if media.text else WITHHELD_NOTE)
+        prepare_viewed(media, message)
 
         # Clean message
         cleaned = (
@@ -439,7 +444,11 @@ class OnMessage(commands.Cog):
         # runs, is the last write on this turn.
         from core.client import reset_precleared_images, set_precleared_images
 
-        token = set_precleared_images(getattr(media, "reply_parts", None) or [])
+        token = set_precleared_images(
+            list(getattr(media, "images", None) or [])
+            + list(getattr(media, "reply_parts", None) or [])
+            + list(getattr(media, "video_parts", None) or [])
+        )
         try:
             async with _memory_lock(message.author.id):
                 await self._answer_and_remember(message, guild, cleaned, remembered, media)
@@ -457,7 +466,11 @@ class OnMessage(commands.Cog):
         # pictures were already cleared (core/reply_images); the reply text
         # gets no text filter.
         has_images = bool(getattr(media, "images", None))
-        all_images = list(getattr(media, "images", None) or []) + list(getattr(media, "reply_parts", None) or [])
+        all_images = (
+            list(getattr(media, "images", None) or [])
+            + list(getattr(media, "reply_parts", None) or [])
+            + list(getattr(media, "video_parts", None) or [])
+        )
         if has_images and (
             asks_to_bypass_filter(cleaned) or asks_to_bypass_filter(getattr(media, "text", "") or "")
         ):

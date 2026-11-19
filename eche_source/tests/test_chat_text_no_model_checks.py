@@ -96,3 +96,19 @@ class ChatTextHasNoModelChecksTests(unittest.TestCase):
         ui = Path(settings_help.__file__).resolve().parents[0].joinpath("settingswindow.py").read_text(encoding="utf-8")
         self.assertIn("cannot be", ui.lower())
         self.assertIn("image and asset", ui.lower())
+
+
+# These checks cover the chat footer with 18+ content enabled, where the
+# minors rule is included. The 18+-off footer is tested in
+# test_minor_rule_and_ban.py.
+from unittest import mock as _adult_mock
+
+_ADULT_ON = _adult_mock.patch("core.safety.adult_content_enabled", return_value=True)
+
+
+def setUpModule():
+    _ADULT_ON.start()
+
+
+def tearDownModule():
+    _ADULT_ON.stop()

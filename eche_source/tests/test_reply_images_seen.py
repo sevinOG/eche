@@ -171,7 +171,11 @@ class OtherUserTests(_Base):
         self.assertTrue(withheld)
 
     def test_size_limit_still_applies(self):
-        big = b"\xff\xd8\xff" + b"\x00" * (mm._MAX_IMAGE_BYTES + 10)
+        from core.chat_media import MAX_IMAGE_DOWNLOAD
+
+        # Viewed pictures may be up to 20 MB (shrunk before use); beyond that
+        # they are left out with the too-large note.
+        big = b"\xff\xd8\xff" + b"\x00" * (MAX_IMAGE_DOWNLOAD + 10)
         media = asyncio.run(mm.collect_discord_media(_reply("hm", _post(big, author_id=77, att_id=954))))
         self.assertEqual(media.reply_images, [])
 

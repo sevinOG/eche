@@ -293,6 +293,93 @@ async def ban_member(ctx: ToolContext, arguments: dict) -> ToolResult:
     return ToolResult(text=f"Banned {_label(member)}.")
 
 
+async def ban_declared_minor(bot, message) -> bool:
+    """Ban the author of `message` for saying they are a minor (18+ servers).
+
+    Same bot checks as the ban tool: Ban Members permission, never the bot,
+    an owner, the server owner, or a member whose role is not below Eche's.
+    A safety audit row is written before the ban; if that write fails,
+    nothing happens. Returns True when the member was banned.
+    """
+    from core.minor_claims import CATEGORY, NEUTRAL_LINE
+
+    guild = getattr(message, "guild", None)
+    author = getattr(message, "author", None)
+    channel = getattr(message, "channel", None)
+    ids = dict(
+        user_id=getattr(author, "id", None),
+        guild_id=getattr(guild, "id", None),
+        channel_id=getattr(channel, "id", None),
+    )
+
+    def _log(outcome: str, **extra) -> None:
+        from core.audit import record
+
+        record("moderation", action="ban", category=CATEGORY, outcome=outcome, safety=True, **ids, **extra)
+
+    if guild is None or author is None:
+        return False
+    target_id = getattr(author, "id", None)
+    try:
+        from core.admin_tools import configured_owner_ids
+        owner_ids = set(configured_owner_ids())
+    except Exception:
+        owner_ids = set()
+    is_owner = target_id in owner_ids
+    if not is_owner:
+        try:
+            is_owner = bool(await bot.is_owner(author))
+        except Exception:
+            is_owner = True  # can't tell: never risk banning the owner
+    skip = ""
+    if is_owner:
+        skip = "owner"
+    elif target_id == getattr(getattr(bot, "user", None), "id", None):
+        skip = "bot"
+    elif getattr(guild, "owner_id", None) == target_id:
+        skip = "server-owner"
+    elif _missing_perm(guild, "ban_members", "Ban Members"):
+        skip = "missing-permission"
+    else:
+        me = getattr(guild, "me", None)
+        if me is None:
+            skip = "no-member-record"
+        elif getattr(guild, "owner_id", None) != getattr(me, "id", None):
+            try:
+                if author.top_role >= me.top_role:
+                    skip = "role-not-below"
+            except Exception:
+                pass
+    if skip:
+        try:
+            _log("skipped", reason=skip)
+        except Exception:
+            pass
+        return False
+    try:
+        _log("attempt")
+    except Exception:
+        return False  # no unlogged ban
+    try:
+        await guild.ban(author, reason=f"Eche: {CATEGORY} (18+ server)", delete_message_seconds=0)
+    except (discord.Forbidden, discord.HTTPException) as exc:
+        dprint(f"[tools] auto-ban failed: {type(exc).__name__}")
+        try:
+            _log("error", error_type=type(exc).__name__)
+        except Exception:
+            pass
+        return False
+    try:
+        _log("success")
+    except Exception:
+        pass
+    try:
+        await channel.send(NEUTRAL_LINE, allowed_mentions=discord.AllowedMentions.none())
+    except Exception:
+        pass
+    return True
+
+
 async def timeout_member(ctx: ToolContext, arguments: dict) -> ToolResult:
     guild, member, reason = await _member_action(
         ctx, arguments, perm="moderate_members", perm_label="Moderate Members"
