@@ -299,35 +299,32 @@ class HardenedAssetTests(unittest.TestCase):
     def test_prepare_generation_fails_closed_on_classifier_error(self):
         with mock.patch("core.blocklist.is_blocked", return_value=False), \
              mock.patch("core.guardrails.asks_to_bypass_filter", return_value=False), \
-             mock.patch("core.asset_filter.media_prompt_blocked", return_value=False), \
              mock.patch("core.classifier.asset_prompt_check_async", new=mock.AsyncMock(side_effect=TimeoutError("deadline"))):
             with self.assertRaises(ImagineError) as raised:
                 asyncio.run(prepare_generation("a red paper boat"))
             self.assertEqual(raised.exception.text, REFUSAL)
 
-    def test_media_filter_blocks_age_ambiguous_and_non_english(self):
-        blocked = [
+    def test_age_ambiguous_prompts_go_to_the_child_check_not_a_keyword_filter(self):
+        # The keyword media filter no longer gates asset prompts. Prompts it
+        # used to refuse reach the model child check, which still refuses.
+        prompts = [
             "a tiny character sitting on a match",
             "her son in the bath",
             "a newborn in a crib",
             "a little sister in a nightgown",
-            "at six, bathtime",
-            "pigtails, lollipop, knee socks, innocent",
             "petite fille dans un jardin",
             "少女 制服",
-            "小女孩在花园里",
-            "어린이 교복",
             "küçük kız",
-            "एक बच्ची",
         ]
-        for text in blocked:
-            self.assertTrue(media_prompt_blocked(text), text)
+        for text in prompts:
+            check = mock.AsyncMock(return_value="child-check-unsafe")
             with mock.patch("core.blocklist.is_blocked", return_value=False), \
-                 mock.patch("core.guardrails.asks_to_bypass_filter", return_value=False):
-                with self.assertRaises(ImagineError):
+                 mock.patch("core.guardrails.asks_to_bypass_filter", return_value=False), \
+                 mock.patch("core.classifier.asset_prompt_check_async", new=check):
+                with self.assertRaises(ImagineError) as raised:
                     asyncio.run(prepare_generation(text))
-        self.assertFalse(media_prompt_blocked("a small red paper boat"))
-        self.assertFalse(media_prompt_blocked("a tiny house on a hill"))
+            self.assertEqual(raised.exception.text, REFUSAL, text)
+            check.assert_awaited_once()
 
     def test_frame_check_blocks_and_fails_closed_when_unreadable(self):
         frame = b"\xff\xd8\xff" + b"\x00" * 16
@@ -397,7 +394,6 @@ class HardenedAssetTests(unittest.TestCase):
         with mock.patch("core.asset_safety.asset_enabled", return_value=True), \
              mock.patch("core.blocklist.is_blocked", return_value=False), \
              mock.patch("core.guardrails.asks_to_bypass_filter", return_value=False), \
-             mock.patch("core.asset_filter.media_prompt_blocked", return_value=False), \
              mock.patch("core.classifier.asset_prompt_check_async", new=mock.AsyncMock(return_value="")), \
              mock.patch("core.imagine.http_json", side_effect=_http), \
              mock.patch("core.asset_safety.check_generated_media", new=mock.AsyncMock()), \
@@ -542,8 +538,7 @@ class OfficialImagineHashTests(unittest.TestCase):
             with mock.patch("core.secrets._user_root", return_value=raw), \
                  mock.patch("core.classifier.asset_prompt_check_async", new=mock.AsyncMock(side_effect=RuntimeError("down"))), \
                  mock.patch("core.blocklist.is_blocked", return_value=False), \
-                 mock.patch("core.guardrails.asks_to_bypass_filter", return_value=False), \
-                 mock.patch("core.asset_filter.media_prompt_blocked", return_value=False):
+                 mock.patch("core.guardrails.asks_to_bypass_filter", return_value=False):
                 with self.assertRaises(ImagineError):
                     asyncio.run(
                         prepare_generation("a red paper boat", user_id=44, guild_id=55, channel_id=66)

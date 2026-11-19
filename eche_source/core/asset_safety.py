@@ -641,15 +641,17 @@ async def prepare_generation(
     model_prompt: str = "",
     edit: bool = False,
 ) -> PreparedPrompt:
-    """Bypass, matcher, media filter, school+sexual rule, model child check,
-    footer-last. Fail closed.
+    """Bypass, matcher, school+sexual rule, model child check, footer-last.
+    Fail closed.
 
     The prompt sent is checked. For the chat tool, the user's own message and
     the model's prompt before any cue was stripped are checked too (matcher,
-    media filter, school+sexual rule) and go to the child check with it.
+    school+sexual rule) and go to the child check with it. The keyword media
+    filter (media_prompt_blocked) no longer gates asset prompts; it was
+    almost all false positives next to the matcher and the model child check.
     No Llama Guard; see classifier.asset_prompt_check_async.
     """
-    from core.asset_filter import media_prompt_blocked, school_sexual_blocked
+    from core.asset_filter import school_sexual_blocked
     from core.blocklist import REFUSAL, is_blocked, note
     from core.classifier import asset_prompt_check_async
     from core.guardrails import BYPASS_REFUSAL, asks_to_bypass_filter
@@ -671,10 +673,6 @@ async def prepare_generation(
         note("asset prompt")
         _audit("refusal", category="matcher", mode=snap, **ids)
         raise ImagineError(REFUSAL)
-    if media_prompt_blocked(raw, adult=snap.adult):
-        note("asset prompt media-filter")
-        _audit("refusal", category="media-filter", mode=snap, **ids)
-        raise ImagineError(REFUSAL)
     extras = []
     for label, text in (("user", user_text), ("model", model_prompt)):
         text = (text or "").strip()
@@ -684,10 +682,6 @@ async def prepare_generation(
         if is_blocked(text, user_id=user_id, channel_id=channel_id):
             note(f"asset {label} text")
             _audit("refusal", category="matcher", reason=f"in={label}", mode=snap, **ids)
-            raise ImagineError(REFUSAL)
-        if media_prompt_blocked(text, adult=snap.adult):
-            note(f"asset {label} text media-filter")
-            _audit("refusal", category="media-filter", reason=f"in={label}", mode=snap, **ids)
             raise ImagineError(REFUSAL)
     # School cues next to sexual or fetish wording: every channel, 18+ too.
     for label, text in (("prompt", raw), *extras):

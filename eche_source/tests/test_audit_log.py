@@ -2105,7 +2105,6 @@ class AuditCompletenessTests(AuditLogTests):
             with mock.patch("core.asset_safety.asset_enabled", return_value=True), \
                  mock.patch("core.blocklist.is_blocked", return_value=False), \
                  mock.patch("core.guardrails.asks_to_bypass_filter", return_value=False), \
-                 mock.patch("core.asset_filter.media_prompt_blocked", return_value=False), \
                  mock.patch("core.classifier.classify_async", new=mock.AsyncMock(return_value="")), \
                  mock.patch("core.imagine.http_json", return_value=(200, payload)), \
                  mock.patch("core.asset_safety.check_generated_media", new=mock.AsyncMock()), \

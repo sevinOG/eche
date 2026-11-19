@@ -97,7 +97,6 @@ class CharacterAdultHintTests(unittest.TestCase):
         with mock.patch("core.classifier.asset_prompt_check_async", new=classify), \
                 mock.patch("core.blocklist.is_blocked", return_value=False), \
                 mock.patch("core.guardrails.asks_to_bypass_filter", return_value=False), \
-                mock.patch("core.asset_filter.media_prompt_blocked", return_value=False), \
                 mock.patch("core.audit.record", side_effect=lambda ev, **f: audits.append((ev, f))):
             prepared = asyncio.run(S.prepare_generation(self.JET, user_id=5, guild_id=1, channel_id=1, mode=SFW))
         self.assertEqual(seen, [self.JET])
@@ -114,7 +113,6 @@ class CharacterAdultHintTests(unittest.TestCase):
         with mock.patch("core.classifier.asset_prompt_check_async", new=mock.AsyncMock(return_value="")), \
                 mock.patch("core.blocklist.is_blocked", return_value=False), \
                 mock.patch("core.guardrails.asks_to_bypass_filter", return_value=False), \
-                mock.patch("core.asset_filter.media_prompt_blocked", return_value=False), \
                 mock.patch("core.audit.record", side_effect=lambda ev, **f: audits.append((ev, f))):
             prepared = asyncio.run(S.prepare_generation(self.JET, user_id=5, guild_id=1, channel_id=1, mode=adult))
         self.assertTrue(prepared.sent_prompt.startswith(S.ADULT_RULE_STRICT))
@@ -151,7 +149,6 @@ class NoLlamaGuardOnAssetPromptsTests(unittest.TestCase):
                 mock.patch("core.blocklist.is_blocked", return_value=False), \
                 mock.patch("core.blocklist.note", side_effect=notes.append), \
                 mock.patch("core.guardrails.asks_to_bypass_filter", return_value=False), \
-                mock.patch("core.asset_filter.media_prompt_blocked", return_value=False), \
                 mock.patch("core.audit.record", side_effect=lambda ev, **f: audits.append((ev, f))):
             with self.assertRaises(ImagineError) as err:
                 asyncio.run(S.prepare_generation("a prompt", user_id=5, guild_id=1, channel_id=1, mode=SFW))
@@ -163,8 +160,7 @@ class NoLlamaGuardOnAssetPromptsTests(unittest.TestCase):
     def test_checker_exception_blocks(self):
         with mock.patch("core.classifier.asset_prompt_check_async", new=mock.AsyncMock(side_effect=RuntimeError("down"))), \
                 mock.patch("core.blocklist.is_blocked", return_value=False), \
-                mock.patch("core.guardrails.asks_to_bypass_filter", return_value=False), \
-                mock.patch("core.asset_filter.media_prompt_blocked", return_value=False):
+                mock.patch("core.guardrails.asks_to_bypass_filter", return_value=False):
             with self.assertRaises(ImagineError):
                 asyncio.run(S.prepare_generation("a prompt", user_id=5, guild_id=1, channel_id=1, mode=SFW))
 
@@ -254,14 +250,13 @@ class NoStrikeSystemTests(unittest.TestCase):
         for name in ("_lock_on_block", "STRIKE_RULES", "_age_strike", "prompt_is_sexual"):
             self.assertFalse(hasattr(S, name), name)
 
-    def _prepare(self, raw, prompt, *, verdict="", categories=(), blocked=False, bypass=False, media=False):
+    def _prepare(self, raw, prompt, *, verdict="", categories=(), blocked=False, bypass=False):
         notes = []
         with mock.patch("core.secrets._user_root", return_value=raw), \
                 mock.patch("core.classifier.asset_prompt_check_async", new=_Sink(verdict, categories)), \
                 mock.patch("core.blocklist.is_blocked", return_value=blocked), \
                 mock.patch("core.blocklist.note", side_effect=notes.append), \
-                mock.patch("core.guardrails.asks_to_bypass_filter", return_value=bypass), \
-                mock.patch("core.asset_filter.media_prompt_blocked", return_value=media):
+                mock.patch("core.guardrails.asks_to_bypass_filter", return_value=bypass):
             with self.assertRaises(ImagineError) as err:
                 asyncio.run(S.prepare_generation(prompt, user_id=5, guild_id=1, channel_id=1, mode=SFW))
         self.assertTrue(notes)  # the block is still logged
@@ -274,7 +269,6 @@ class NoStrikeSystemTests(unittest.TestCase):
                 dict(verdict="child-check-unsafe"),
                 dict(blocked=True),
                 dict(bypass=True),
-                dict(media=True),
             )
             for kw in cases:
                 exc = self._prepare(raw, "a prompt with huge tits", **kw)

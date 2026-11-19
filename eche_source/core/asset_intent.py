@@ -154,9 +154,9 @@ def strip_added_youthful_styles(prompt: str, user_text: str) -> str:
 # School cues and youth-emphasis phrases the chat model adds on its own
 # (owner-approved 2026-11-14 10:34 ET, after a model-written prompt at 10:01 ET
 # added "young adult", a school jacket and "at school"). Only phrases the user
-# did not write are removed. A prompt the minors matcher or the media filter
-# already blocks is left unchanged by the caller, so stripping never turns a
-# blocked prompt into an allowed one.
+# did not write are removed. A prompt the minors matcher already blocks is
+# left unchanged by the caller, so stripping never turns a blocked prompt into
+# an allowed one.
 _ADDED_CUES = (
     ("youth", re.compile(
         r"(?i)\b(?:young[\s-]+adult|barely[\s-]+(?:legal|18|eighteen)|just[\s-]+(?:turned[\s-]+)?(?:18|eighteen)|"
