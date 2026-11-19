@@ -204,6 +204,24 @@ async def video_frames(data: bytes, mime: str) -> tuple[list[dict], str]:
     return out, note
 
 
+def _part_sha(part) -> str:
+    """sha256 of an image content part's bytes (data URL), else of its URL."""
+    try:
+        url = part.get("image_url") if isinstance(part, dict) else None
+        if isinstance(url, dict):
+            url = url.get("url")
+        url = str(url or "")
+        if not url:
+            return "-"
+        if url.startswith("data:") and "," in url:
+            import base64
+
+            return sha256_hex(base64.b64decode(url.split(",", 1)[1]))
+        return sha256_hex(url.encode("utf-8"))
+    except Exception:
+        return "-"
+
+
 def record_viewed(ids: dict, *, source: str, items: list[dict], kinds: list[str]) -> bool:
     """Safety audit row for viewed media passed to chat. False if it failed."""
     if not items:
@@ -248,7 +266,7 @@ def prepare_viewed(media, message) -> None:
         channel_id=getattr(getattr(message, "channel", None), "id", None),
     )
     items = [{"sha256": r.get("sha256") or "-"} for r in reply_raw]
-    items += [{"sha256": "-"} for _ in own + frames]
+    items += [{"sha256": _part_sha(part)} for part in own + frames]
     kinds = list(getattr(media, "kinds", None) or []) or ["image"]
     if not record_viewed(ids, source="chat", items=items, kinds=kinds):
         media.images = []

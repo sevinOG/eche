@@ -222,10 +222,10 @@ class AnnounceTests(unittest.TestCase):
         note = retry_notifier(ch, "video")
         run(note("started"))
         run(note("retrying"))
-        self.assertEqual(ch.sent, ["Eche used *asset*!", "Making that video!", "That one didn't pass, trying again..."])
+        self.assertEqual(ch.sent, ["Eche used *asset*!", "That one didn't pass, trying again..."])
         ch2 = FakeChannel(9)
         run(retry_notifier(ch2, "image")("started"))
-        self.assertEqual(ch2.sent, ["Making that!"])
+        self.assertEqual(ch2.sent, [])  # "Making that!" removed 2026-11-18
         self.assertNotIn("Eche used", asset_text("a caption"))
 
 

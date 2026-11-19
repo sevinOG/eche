@@ -89,7 +89,7 @@ _MALE_RE = re.compile(
 _ADULT_HINT = (
     "Every person or character shown must be unmistakably and unambiguously an "
     "adult, with no possible question about it: a clearly mature adult {who} in "
-    "{their} 30s, 40s, or older, with a fully adult face, a defined adult jawline "
+    "{their} adult years, aged 25 to 30, with a fully adult face, a defined adult jawline "
     "and mature adult facial structure, adult body proportions, adult stature, "
     "adult height in proportion to the surroundings, vehicles, and objects, and "
     "clearly adult features, and with no youthful, childlike, or teen-like traits "
@@ -103,9 +103,11 @@ _ADULT_HINT = (
 # gets this line, people words or not (videos of burgers and kittens had no
 # hint and the model sometimes added kids). Media with no people is fine.
 # The stronger person hint above still follows when people are present.
+# Owner 2026-11-18 22:06 ET: age wording is "aged 25 to 30" (was "30s, 40s
+# or older") for quality and acceptance; the checks are unchanged.
 ALWAYS_ADULT_LINE = (
-    "If any people or characters appear, they are clearly adults (30s, 40s or "
-    "older); scenes with no people are fine."
+    "If any people or characters appear, they are clearly adults aged 25 to "
+    "30; scenes with no people are fine."
 )
 ART_STYLE_LINE = "Keep the requested art style."
 
