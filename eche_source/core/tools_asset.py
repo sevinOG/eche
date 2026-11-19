@@ -207,20 +207,28 @@ CONTEXT_MAX_AGE_S = 30 * 60
 CONTEXT_MAX_CHARS = 4000
 
 
-async def _conversation_context(message, bot=None) -> str:
-    """The replied-to message plus Eche's and this user's recent turns here.
+async def _conversation(message, bot=None) -> tuple[str, bool]:
+    """(context text, whether Eche itself spoke in it).
 
-    Used only by the prompt-overlap gate. Best effort: any error gives ''.
+    The replied-to message plus Eche's and this user's recent turns here
+    (last CONTEXT_SCAN messages, no older than CONTEXT_MAX_AGE_S). Best
+    effort: any error gives what was read so far.
     """
     parts: list[str] = []
-    replied = _replied_text(message)
-    if replied.strip():
-        parts.append(replied)
     channel = getattr(message, "channel", None)
     author_id = getattr(getattr(message, "author", None), "id", None)
     me_id = getattr(getattr(bot, "user", None), "id", None)
     if me_id is None:
         me_id = getattr(getattr(getattr(message, "guild", None), "me", None), "id", None)
+    eche_spoke = False
+    replied = _replied_text(message)
+    if replied.strip():
+        parts.append(replied)
+        ref = getattr(message, "reference", None)
+        resolved = getattr(ref, "resolved", None) if ref is not None else None
+        replied_author = getattr(getattr(resolved, "author", None), "id", None)
+        if me_id is not None and replied_author == me_id:
+            eche_spoke = True
     created = getattr(message, "created_at", None)
     if channel is not None and hasattr(channel, "history"):
         try:
@@ -240,9 +248,20 @@ async def _conversation_context(message, bot=None) -> str:
                     text += " " + str(getattr(embed, "title", "") or "") + " " + str(getattr(embed, "description", "") or "")
                 if text.strip():
                     parts.append(text)
+                    if me_id is not None and who == me_id:
+                        eche_spoke = True
         except Exception as exc:
             dprint(f"[asset] context history failed: {type(exc).__name__}")
-    return "\n".join(parts)[:CONTEXT_MAX_CHARS]
+    return "\n".join(parts)[:CONTEXT_MAX_CHARS], eche_spoke
+
+
+async def _conversation_context(message, bot=None) -> str:
+    """The replied-to message plus Eche's and this user's recent turns here.
+
+    Used only by the prompt-overlap gate. Best effort: any error gives ''.
+    """
+    text, _eche = await _conversation(message, bot)
+    return text
 
 
 def _strip_added_cues(prompt: str, user_text: str, message) -> str:
@@ -286,21 +305,38 @@ async def make_asset(ctx, arguments: dict) -> ToolResult:
     raw_prompt = " ".join(str((arguments or {}).get("prompt") or "").split())
     # Only a message that itself asks for something runs the tool. This uses
     # no cap slot and posts nothing; the model's chat reply is used instead.
-    from core.asset_intent import DECLINE_NO_OVERLAP, decline_reason, strip_added_youthful_styles
+    from core.asset_intent import (
+        DECLINE_NO_OVERLAP,
+        DECLINE_NO_REQUEST,
+        decline_reason,
+        is_short_followup,
+        shares_meaningful_word,
+        strip_added_youthful_styles,
+    )
 
     declined = decline_reason(raw_prompt, user_text)
-    context_used = False
+    context_used = ""
     if declined == DECLINE_NO_OVERLAP:
         context = await _conversation_context(message, getattr(ctx, "bot", None))
         if context and not decline_reason(raw_prompt, user_text, context):
             declined = ""
-            context_used = True
+            context_used = "prompt-from-conversation"
+    elif declined == DECLINE_NO_REQUEST and is_short_followup(user_text):
+        # "yes it is" / "try a safer prompt" right after Eche's own offer or a
+        # refused try (owner 2026-11-19). Eche must have spoken in the recent
+        # conversation and the tool prompt must come from it.
+        context, eche_spoke = await _conversation(message, getattr(ctx, "bot", None))
+        if eche_spoke and raw_prompt.strip() and shares_meaningful_word(raw_prompt, context):
+            declined = ""
+            context_used = "follow-up-to-eche"
     if context_used:
         try:
             from core.audit import record
 
-            record("asset-request", source="chat", outcome="context-overlap",
-                   reason="prompt-from-conversation", **_ids(message))
+            record("asset-request", source="chat",
+                   outcome="followup" if context_used == "follow-up-to-eche" else "context-overlap",
+                   reason=context_used, message=" ".join(str(user_text or "").split())[:200],
+                   **_ids(message))
         except Exception:
             pass
     if declined:

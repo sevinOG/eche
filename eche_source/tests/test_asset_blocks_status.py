@@ -53,16 +53,13 @@ class CharacterAdultHintTests(unittest.TestCase):
 
     def test_character_prompts_get_the_adult_hint(self):
         hint = S.character_adult_hint(self.JET)
-        for part in ("unmistakably and unambiguously an adult", "no possible question",
-                     "clearly mature adult woman in her adult years, aged 25 to 30", "fully adult face",
-                     "defined adult jawline", "mature adult facial structure",
-                     "adult height in proportion to the surroundings, vehicles, and objects",
-                     "in every frame throughout the whole clip",
-                     "adult body proportions", "clearly adult features",
-                     "no youthful, childlike, or teen-like traits"):
+        # Owner 2026-11-19 wording: no youth words, no body-focused wording.
+        for part in ("a mature adult woman aged 25 or older",
+                     "mature adult facial features and adult proportions",
+                     "in every frame throughout the whole clip", "Keep the requested art style."):
             self.assertIn(part, hint)
-        self.assertIn("adult man in his adult years, aged 25 to 30", S.character_adult_hint("turn my cat into a man"))
-        self.assertIn("adult person in their adult years, aged 25 to 30", S.character_adult_hint("a toaster mascot"))
+        self.assertIn("mature adult man aged 25 or older", S.character_adult_hint("turn my cat into a man"))
+        self.assertIn("mature adult person aged 25 or older", S.character_adult_hint("a toaster mascot"))
         for people in ("a chef cooking pasta", "two people at a cafe", "a jet dancing", "a cute toaster",
                        "portrait of a knight", "a sexy robot", "she is surfing"):
             self.assertTrue(S.character_adult_hint(people), people)

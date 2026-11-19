@@ -12,10 +12,10 @@ from core import client as C
 
 class WordingTests(unittest.TestCase):
     def test_adult_lines(self):
-        self.assertIn("clearly adults aged 25 to 30", S.ALWAYS_ADULT_LINE)
+        self.assertIn("adults aged 25 or older", S.ALWAYS_ADULT_LINE)
         self.assertIn("scenes with no people are fine", S.ALWAYS_ADULT_LINE)
         hint = S.character_adult_hint("a woman on a bike")
-        for needle in ("aged 25 to 30", "unmistakably", "adult jawline", "adult height",
+        for needle in ("aged 25 or older", "mature adult facial features", "adult proportions",
                        "Keep the requested art style."):
             self.assertIn(needle, hint)
         self.assertNotIn("40s", hint + S.ALWAYS_ADULT_LINE)
@@ -24,7 +24,7 @@ class WordingTests(unittest.TestCase):
         from core.safety import SAFETY_FOOTER
         sent, _ = S.build_sent_prompt("a red boat")
         self.assertTrue(sent.endswith(SAFETY_FOOTER))
-        self.assertIn("aged 25 to 30", sent)
+        self.assertIn("aged 25 or older", sent)
 
     def test_no_making_constants(self):
         import core.announce as A

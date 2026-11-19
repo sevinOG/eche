@@ -39,7 +39,7 @@ class SelfPortraitHintTests(unittest.TestCase):
 
     def test_sent_prompt_keeps_footer_last(self):
         sent, _ = S.build_sent_prompt("generate what you think I look like eche")
-        self.assertIn("aged 25 to 30", sent)
+        self.assertIn("aged 25 or older", sent)
         self.assertTrue(S.footer_is_last(sent))
 
 
