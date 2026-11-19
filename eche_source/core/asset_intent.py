@@ -197,3 +197,44 @@ def strip_added_school_and_youth_cues(prompt: str, user_text: str) -> tuple[str,
     out = re.sub(r"\s+([,.;:!?])", r"\1", " ".join(out.split()))
     out = re.sub(r"(?:,\s*){2,}", ", ", out).strip(" ,")
     return out, removed
+
+
+# Owner-approved 2026-11-19 00:29 ET: "girl"/"girls" in an asset prompt
+# ("goth girls") means adult women. It is rewritten to "woman"/"women" before
+# the checks, in every channel, unless the text has any youth or school cue;
+# then nothing is rewritten and the existing minors block applies. Every
+# other check still runs on the rewritten text.
+GIRL_REWRITE_RULE = "girl-to-woman"
+_GIRL_WORD = re.compile(
+    r"(?<![\w'’-])(girl)(s)?(?=['’]s\b|\b)(?![-\w])(?!['’]?s?\s+(?:nights?|scouts?)\b)", re.I
+)
+_YOUTH_CUE = re.compile(
+    r"(?i)(?:\b(?:teen\w*|tween\w*|preteen\w*|school\w*|uniform\w*|student\w*|pupil\w*|class\s*mates?|"
+    r"petite|child\w*|kid\w*|kiddo|young\w*|youth\w*|loli\w*|shota\w*|little|lil|tiny|small|smol|baby|babies|"
+    r"under\s*-?\s*age\w*|minors?|jail\s*bait|innocent|barely|daughter\w*|niece\w*|sister\w*|"
+    r"juvenile|adolescen\w*|pubescent|prepubescent|junior|chibi|kawaii|moe|tot|toddler\w*|infant\w*|"
+    r"grade\s*\w+|freshm[ae]n|sophomore\w*|girlish|innocence|cute|cutie\w*)\b"
+    r"|\b(?:1[0-7]|[1-9])\s*(?:yo|y/o|yrs?|years?)\b|\b(?:1[0-7]|[1-9])\b)"
+)
+
+
+def has_youth_cue(text: str) -> bool:
+    return bool(_YOUTH_CUE.search(_clean(text or "")))
+
+
+def rewrite_adult_girls(text: str) -> tuple[str, bool]:
+    """('goth women', True) for 'goth girls'. Unchanged when any youth cue is present."""
+    raw = str(text or "")
+    if not _GIRL_WORD.search(raw) or has_youth_cue(raw):
+        return raw, False
+
+    def _swap(m: re.Match) -> str:
+        word = "women" if m.group(2) else "woman"
+        if m.group(1).isupper():
+            return word.upper()
+        if m.group(1)[0].isupper():
+            return word.capitalize()
+        return word
+
+    out = _GIRL_WORD.sub(_swap, raw)
+    return out, out != raw

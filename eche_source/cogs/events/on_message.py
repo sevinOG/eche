@@ -134,6 +134,11 @@ def is_prefix_command(bot, message) -> bool:
         content = getattr(message, "content", None) or ""
         return any(line.lstrip().startswith("?") for line in content.splitlines())
 
+
+# Tools that decline when the message didn't ask for them. After a decline
+# the chat retry is offered neither, so it answers in plain text.
+DECLINE_GATED_TOOLS = frozenset({"asset", "thread"})
+
 class OnMessage(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -216,6 +221,12 @@ class OnMessage(commands.Cog):
             # Only the image tool keeps argument checks. Text tools (lookup,
             # thread, context) are text chat and are not keyword-filtered.
             image_tool = name.casefold() == "asset"
+            if image_tool and isinstance(arguments, dict) and arguments.get("prompt"):
+                # "goth girls" -> "goth women" unless a youth/school cue is
+                # present (then unchanged and blocked as before).
+                from core.asset_intent import rewrite_adult_girls
+
+                arguments = {**arguments, "prompt": rewrite_adult_girls(str(arguments["prompt"]))[0]}
             if image_tool and asks_to_bypass_filter(_flat_arguments(arguments)):
                 block_note(f"{name} arguments bypass")
                 try:
@@ -589,7 +600,8 @@ class OnMessage(commands.Cog):
                     max_completion_tokens=completion_tokens,
                     tools=[
                         spec for spec in (offered or [])
-                        if str(((spec or {}).get("function") or {}).get("name") or "").casefold() != "asset"
+                        if str(((spec or {}).get("function") or {}).get("name") or "").casefold()
+                        not in DECLINE_GATED_TOOLS
                     ] or None,
                     extra_system=declined_turn_system(admin_injection(enabled=admin_visible)),
                     images=all_images or None,
