@@ -1181,8 +1181,69 @@ def _ollama_think_rejected(error: str) -> bool:
     return any(bit in low for bit in ("not support", "unsupported", "unknown", "invalid", "does not"))
 
 
+# Live 2026-11-18 23:37 ET: eriktonon/qwen3.8-uncensored:9b's chat template
+# raises "System message must be at the beginning" because the safety footer
+# is a system message both first and last. Those models get the leading
+# system messages merged and any later system message sent as a user-role
+# "[System instruction]" message in the same place, so the footer is still
+# last. Remembered per model so later calls don't fail first.
+_SYSTEM_FIRST_MODELS: set[tuple[str, str]] = set()
+_SYSTEM_FIRST_RE = re.compile(r"system message(?:s)? must be at the begin", re.I)
+SYSTEM_NOTE_PREFIX = "[System instruction]\n"
+
+
+def _system_first_required(error: str) -> bool:
+    return bool(_SYSTEM_FIRST_RE.search(str(error or "")))
+
+
+def _system_first_messages(messages: list) -> list:
+    """One leading system message; later system messages become user-role notes."""
+    out: list = []
+    lead: list[str] = []
+    started = False
+    for msg in messages or []:
+        if not isinstance(msg, dict):
+            out.append(msg)
+            started = True
+            continue
+        role = str(msg.get("role") or "")
+        if role == "system" and not started:
+            lead.append(str(msg.get("content") or ""))
+            continue
+        started = True
+        if role == "system":
+            content = msg.get("content")
+            if isinstance(content, list):
+                content = "\n".join(
+                    str(p.get("text") or "") for p in content if isinstance(p, dict) and p.get("type") == "text"
+                )
+            out.append({**msg, "role": "user", "content": SYSTEM_NOTE_PREFIX + str(content or "")})
+        else:
+            out.append(msg)
+    if lead:
+        out.insert(0, {"role": "system", "content": "\n\n".join(x for x in lead if x)})
+    return out
+
+
+def _wants_system_first(url: str, payload: dict) -> bool:
+    return bool(payload.get("_system_first")) or (
+        (url or "", str(payload.get("model") or "")) in _SYSTEM_FIRST_MODELS
+    )
+
+
 def _after_http_error(payload: dict, visible: int, stage: int, error: str) -> int | None:
     """Next attempt stage, or None when this error should be returned."""
+    if (
+        _provider_backend() == "ollama"
+        and not payload.get("_system_first")
+        and _system_first_required(error)
+    ):
+        payload["_system_first"] = True
+        try:
+            _SYSTEM_FIRST_MODELS.add((_api_url(), str(payload.get("model") or "")))
+        except Exception:
+            pass
+        return stage
     if (
         _provider_backend() == "ollama"
         and stage == 0
@@ -1361,9 +1422,13 @@ def _ollama_request(url: str, payload: dict) -> tuple[str, dict]:
     think = _ollama_think_value(url, payload)
     payload["_ollama_sent_think"] = think
     native_url = None if payload.get("_ollama_api") == "v1" else _ollama_native_url(url)
+    messages = [m for m in (payload.get("messages") or [])]
+    if _wants_system_first(url, payload):
+        messages = _system_first_messages(messages)
     if native_url is None:
         # OpenAI-style fallback. No num_ctx here; think is reasoning_effort.
         body = _request_body(payload)
+        body["messages"] = messages
         body.pop("reasoning", None)
         if think is None:
             body.pop("reasoning_effort", None)
@@ -1382,7 +1447,7 @@ def _ollama_request(url: str, payload: dict) -> tuple[str, dict]:
         "model": payload.get("model") or "",
         "messages": [
             _native_message(msg)
-            for msg in (payload.get("messages") or [])
+            for msg in messages
             if isinstance(msg, dict)
         ],
         "stream": False,
