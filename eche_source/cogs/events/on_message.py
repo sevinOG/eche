@@ -134,6 +134,11 @@ def is_prefix_command(bot, message) -> bool:
         content = getattr(message, "content", None) or ""
         return any(line.lstrip().startswith("?") for line in content.splitlines())
 
+
+# Tools that decline when the message didn't ask for them. After a decline
+# the chat retry is offered neither, so it answers in plain text.
+DECLINE_GATED_TOOLS = frozenset({"asset", "thread"})
+
 class OnMessage(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -589,7 +594,8 @@ class OnMessage(commands.Cog):
                     max_completion_tokens=completion_tokens,
                     tools=[
                         spec for spec in (offered or [])
-                        if str(((spec or {}).get("function") or {}).get("name") or "").casefold() != "asset"
+                        if str(((spec or {}).get("function") or {}).get("name") or "").casefold()
+                        not in DECLINE_GATED_TOOLS
                     ] or None,
                     extra_system=declined_turn_system(admin_injection(enabled=admin_visible)),
                     images=all_images or None,

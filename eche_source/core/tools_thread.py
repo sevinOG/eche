@@ -962,10 +962,42 @@ async def _execute(
     return "\n\n".join(posted)
 
 
+# Live 2026-11-19 00:19 and 00:24 ET (GLM-4.6V): the model added a bare
+# thread call ({}) next to an asset call, and a thread opened that nobody
+# asked for. The tool now runs only when the message mentions a thread, or
+# agrees ("yes", "sure", "do it") to a replied-to Eche message offering one.
+_THREAD_WORD = re.compile(r"\bthreads?\b", re.IGNORECASE)
+_AGREE = re.compile(
+    r"^(?:y(?:es|eah|ep|up|ah)?|sure|ok(?:ay)?|please|pls|go\s+(?:ahead|for\s+it)|do\s+it|"
+    r"let'?s\s+(?:do\s+it|go)|bet|alright|sounds\s+good)\b",
+    re.IGNORECASE,
+)
+THREAD_NOT_ASKED = "thread-not-asked"
+
+
+def _replied_text(message) -> str:
+    ref = getattr(message, "reference", None)
+    resolved = getattr(ref, "resolved", None) if ref is not None else None
+    return str(getattr(resolved, "content", "") or "")
+
+
+def thread_requested(message) -> bool:
+    """True when this message mentions a thread, or agrees to a thread Eche offered."""
+    text = " ".join(str(getattr(message, "content", "") or "").replace("\u2019", "'").split())
+    if _THREAD_REFUSAL.search(text):
+        return False
+    if _THREAD_WORD.search(text):
+        return True
+    return bool(_AGREE.match(text)) and bool(_THREAD_WORD.search(_replied_text(message)))
+
+
 async def open_thread(ctx: ToolContext, arguments: dict) -> ToolResult:
     message = ctx.message
     channel = getattr(message, "channel", None)
     arguments = arguments if isinstance(arguments, dict) else {}
+    if not thread_requested(message):
+        dprint(f"[tools] thread declined: {THREAD_NOT_ASKED}")
+        return ToolResult(text="", fence=False, declined=True, outcome="declined", status=THREAD_NOT_ASKED)
     asking = _plain_line(getattr(message, "content", None) or "") or "(no text)"
     # Two-way check before any naming or research. A direct ask never sees
     # the previous message. A more-room follow-up uses that message only.
