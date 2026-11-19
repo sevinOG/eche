@@ -92,3 +92,19 @@ class StaleAndWindow(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# These checks cover the chat footer with 18+ content enabled, where the
+# minors rule is included. The 18+-off footer is tested in
+# test_minor_rule_and_ban.py.
+from unittest import mock as _adult_mock
+
+_ADULT_ON = _adult_mock.patch("core.safety.adult_content_enabled", return_value=True)
+
+
+def setUpModule():
+    _ADULT_ON.start()
+
+
+def tearDownModule():
+    _ADULT_ON.stop()

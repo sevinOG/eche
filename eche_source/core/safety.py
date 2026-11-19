@@ -88,6 +88,31 @@ def render_safety_footer(categories=SAFETY_CATEGORIES) -> str:
 
 SAFETY_FOOTER = render_safety_footer()
 
+# Owner request 2026-11-18 21:42 ET: the minors rule is in the chat model's
+# view only when 18+ content is enabled; without it the bot lectured people
+# for joking about their age. SAFETY_FOOTER itself (and its pinned sha256)
+# is unchanged and still ends every asset prompt.
+CHAT_FOOTER_NO_MINORS = render_safety_footer(
+    tuple(item for item in SAFETY_CATEGORIES if item[0] != "minors")
+)
+_ENABLE = {"1", "true", "yes", "on"}
+
+
+def adult_content_enabled() -> bool:
+    """The 18+ setting (asset_adult_enabled). On a read error: True, so the
+    minors rule stays in the chat footer (fail toward the stricter view)."""
+    try:
+        from core.secrets import load_all
+
+        value = (load_all() or {}).get("asset_adult_enabled")
+    except Exception:
+        return True
+    return str(value if value is not None else "").strip().lower() in _ENABLE
+
+
+def chat_footer() -> str:
+    return SAFETY_FOOTER if adult_content_enabled() else CHAT_FOOTER_NO_MINORS
+
 
 def footer_sha256() -> str:
     return hashlib.sha256(SAFETY_FOOTER.encode("utf-8")).hexdigest()
@@ -116,7 +141,7 @@ def is_footer_message(message) -> bool:
         return False
     if (message.get("role") or "") != "system":
         return False
-    return message_text(message) == SAFETY_FOOTER
+    return message_text(message) in (SAFETY_FOOTER, CHAT_FOOTER_NO_MINORS)
 
 
 def is_user_guard(message) -> bool:
@@ -171,7 +196,7 @@ def prepare_llm_messages(messages) -> list:
         rows.pop()
     while rows and is_user_guard(rows[-1]):
         rows.pop()
-    footer = {"role": "system", "content": SAFETY_FOOTER}
+    footer = {"role": "system", "content": chat_footer()}
     guard = {"role": "user", "content": USER_GUARD}
     return [dict(footer), *rows, dict(guard), dict(footer)]
 

@@ -358,6 +358,16 @@ class OnMessage(commands.Cog):
         if is_prefix_command(self.bot, message):
             return
 
+        # 18+ servers only: a member who says they are a minor is banned
+        # (no lecture). Off when 18+ content is disabled. core/minor_claims.
+        try:
+            from core.minor_claims import enforce as enforce_minor_claim
+
+            if await enforce_minor_claim(self.bot, message):
+                return
+        except Exception as e:
+            dprint(f"[on_message] minor-claim check failed: {type(e).__name__}")
+
         # ⭐ BOO LOGIC — runs for ALL messages, even without mention ⭐
         if await maybe_boo(message):
             await self._record_server_line(message, (message.content or "").strip())
