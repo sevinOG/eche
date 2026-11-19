@@ -516,7 +516,8 @@ class AdultRuleTests(unittest.TestCase):
         self.assertIn(ADULT_RULE, default_sent)
         self.assertNotIn(ADULT_RULE_STRICT, default_sent)
         self.assertIn(ADULT_RULE_STRICT, adult_sent)
-        self.assertIn("25 years or older", adult_sent)
+        self.assertIn("aged 25 or older", adult_sent)
+        self.assertIn("non-stylized, non-identifiable", adult_sent)
         from core.safety import SAFETY_FOOTER
         self.assertTrue(adult_sent.endswith(SAFETY_FOOTER))
         self.assertEqual(footer_sha256(), FOOTER_HASH)

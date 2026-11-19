@@ -93,6 +93,37 @@ _OPEN_RE = re.compile(
 )
 
 
+# A short go-ahead to something Eche just offered or a try that was refused
+# ("yes it is", "do it", "try a safer prompt"). Passes the request-wording
+# gate only when Eche itself spoke in the recent conversation and the tool
+# prompt comes from that conversation (checked in the asset tool). Live
+# 2026-11-19 10:39 / 10:40 ET: "Try a safer prompt" and "Yes it is" were
+# declined as no-request-wording.
+_FOLLOWUP_CORE = (
+    r"(?:yes|yeah|yea|yep|yup|ya|sure|ok|okay|k|go|go\s+for\s+it|go\s+ahead|do\s+it|"
+    r"please|pls|yes\s+please|yes\s+it\s+is|it\s+is|that'?s\s+it|absolutely|definitely|"
+    r"of\s+course|send\s+it|make\s+it|make\s+that|let'?s\s+(?:do\s+it|go|see\s+it|see)|"
+    r"try\s+again|try\s+(?:a|it|another|one)?\s*(?:safer|different|other|new|cleaner|tamer)?\s*"
+    r"(?:prompt|one|way|version|wording|take|time)|try\s+it|"
+    r"that\s+one|this\s+one|the\s+(?:first|second|third|last|other)\s+one|both|either)"
+)
+_FOLLOWUP_RE = re.compile(
+    r"(?i)^\s*(?:(?:ok(?:ay)?|yes|yeah|sure|alright|then|so|and|now|just)[\s,!.]+)*"
+    + _FOLLOWUP_CORE
+    + r"(?:[\s,!.]+(?:then|now|man|bro|dude|eche|please|pls|lol|lmao|haha|again|it|that|"
+    r"thanks|thx|ty|yes|yeah|sure))*[\s!.?]*$"
+)
+FOLLOWUP_MAX_WORDS = 8
+
+
+def is_short_followup(text: str) -> bool:
+    """True for a short go-ahead such as "yes it is", "do it", "try a safer prompt"."""
+    clean = " ".join(_clean(text).split())
+    if not clean or len(clean.split()) > FOLLOWUP_MAX_WORDS:
+        return False
+    return bool(_FOLLOWUP_RE.match(clean))
+
+
 DECLINE_NO_REQUEST = "no-request-wording"
 DECLINE_NO_OVERLAP = "prompt-not-from-message"
 DECLINE_ASKS_ABOUT = "asks-about-media"

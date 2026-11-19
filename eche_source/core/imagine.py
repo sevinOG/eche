@@ -1180,6 +1180,15 @@ async def _run_asset_reserved(plan, key, snap, ids, get_backend, prepare_generat
             # The blocked output is never returned or posted; its verdict rows
             # are already logged. The retry row is a safety record, so a failed
             # write stops here and the block stands.
+            # The retry carries stronger adult cues instead of the same prompt
+            # (owner 2026-11-19). The output checks are unchanged. If the cues
+            # cannot be added with the footer still last, there is no retry.
+            try:
+                from core.asset_safety import RETRY_ADULT_CUES, strengthen_for_retry
+
+                prepared = strengthen_for_retry(prepared)
+            except Exception:
+                raise exc from None
             try:
                 from core.audit import record
 
@@ -1189,6 +1198,8 @@ async def _run_asset_reserved(plan, key, snap, ids, get_backend, prepare_generat
                     category="output-block-retry",
                     attempt=str(attempt + 1),
                     footer_hash=prepared.footer_hash,
+                    reason="retry-adult-cues",
+                    added=RETRY_ADULT_CUES,
                     safety=True,
                     **ids,
                 )

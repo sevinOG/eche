@@ -143,10 +143,10 @@ class StripAddedCuesTests(unittest.TestCase):
 class EditHintTests(unittest.TestCase):
     def test_every_edit_gets_the_hint(self):
         sent, _ = S.build_sent_prompt("add a red hat", edit=True)
-        self.assertIn("adult years, aged 25 to 30", sent)
+        self.assertIn("Every person or character shown is a mature adult", sent)
         self.assertTrue(S.footer_is_last(sent))
         plain, _ = S.build_sent_prompt("add a red hat")
-        self.assertNotIn("adult years, aged 25 to 30", plain)
+        self.assertNotIn("Every person or character shown is a mature adult", plain)
 
     def test_run_asset_passes_edit_for_reply_sources(self):
         from core import imagine as IM

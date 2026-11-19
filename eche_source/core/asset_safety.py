@@ -28,15 +28,17 @@ import subprocess
 import tempfile
 from dataclasses import dataclass, replace as _dc_replace
 
-ADULT_RULE = (
-    "All characters are adults 21 years or older. "
-    "Do not depict children, minors, or anyone who looks under 21."
+# Owner 2026-11-19: one adult wording for every image/video prompt and edit.
+# No youth words (they would trip the minors list on a returned revised
+# prompt) and no body-focused wording ("fully developed" was rejected).
+ADULT_WORDING = (
+    "All characters are adults aged 25 or older, with mature adult facial "
+    "features and adult proportions."
 )
+ADULT_RULE = ADULT_WORDING
 ADULT_RULE_STRICT = (
-    "All characters are clearly mature adults, 25 years or older, with adult "
-    "proportions, and look like a non-stylized, non-identifiable person. "
-    "Do not depict children, minors, anyone who looks under 21, stylized, "
-    "illustrated, anime, cartoon, or identifiable people."
+    ADULT_WORDING + " They look like non-stylized, non-identifiable people; "
+    "no stylized, illustrated, anime, cartoon, or identifiable people."
 )
 # Generator-side adult hint for any prompt that could show a person or
 # character, in normal AND 18+ channels (18+ also keeps ADULT_RULE_STRICT).
@@ -87,14 +89,9 @@ _MALE_RE = re.compile(
 # minor. The hint now asks for explicit mature-adult visual cues that stay
 # visible in every frame. Strengthen only; the checks are unchanged.
 _ADULT_HINT = (
-    "Every person or character shown must be unmistakably and unambiguously an "
-    "adult, with no possible question about it: a clearly mature adult {who} in "
-    "{their} adult years, aged 25 to 30, with a fully adult face, a defined adult jawline "
-    "and mature adult facial structure, adult body proportions, adult stature, "
-    "adult height in proportion to the surroundings, vehicles, and objects, and "
-    "clearly adult features, and with no youthful, childlike, or teen-like traits "
-    "of any kind. These mature adult features stay clearly visible in every view "
-    "and, for a video, in every frame throughout the whole clip. "
+    "Every person or character shown is a mature adult {who} aged 25 or older, "
+    "with mature adult facial features and adult proportions, clearly visible in "
+    "every view and, for a video, in every frame throughout the whole clip. "
     "Keep the requested art style."
 )
 
@@ -103,11 +100,12 @@ _ADULT_HINT = (
 # gets this line, people words or not (videos of burgers and kittens had no
 # hint and the model sometimes added kids). Media with no people is fine.
 # The stronger person hint above still follows when people are present.
-# Owner 2026-11-18 22:06 ET: age wording is "aged 25 to 30" (was "30s, 40s
-# or older") for quality and acceptance; the checks are unchanged.
+# Owner 2026-11-18 22:06 ET: "aged 25 to 30"; owner 2026-11-19: "aged 25 or
+# older, with mature adult facial features and adult proportions". The checks
+# are unchanged.
 ALWAYS_ADULT_LINE = (
-    "If any people or characters appear, they are clearly adults aged 25 to "
-    "30; scenes with no people are fine."
+    "If any people or characters appear, they are adults aged 25 or older, with "
+    "mature adult facial features and adult proportions; scenes with no people are fine."
 )
 ART_STYLE_LINE = "Keep the requested art style."
 
@@ -527,6 +525,38 @@ def require_enabled(mode: AssetMode | None = None, **ids) -> None:
             response_id=ids.get("response_id") or "",
         )
         raise ImagineError(KILL_SWITCH_OFF)
+
+
+# Owner 2026-11-19: after the output age check flags a file, the one retry
+# adds stronger adult cues instead of re-rolling the same prompt. The output
+# checks themselves are unchanged ("uncertain" still blocks). No youth words.
+RETRY_ADULT_LINE = (
+    "Retry note: the previous attempt did not read clearly as adults. Show every "
+    "person or character as an adult in their mid-30s, with mature adult faces "
+    "and realistic adult proportions rather than exaggerated cartoon or doll-like "
+    "proportions, while keeping the requested art style."
+)
+RETRY_ADULT_CUES = "mid-30s,mature adult faces,realistic adult proportions,no cartoon or doll-like proportions"
+
+
+def strengthen_for_retry(prepared: "PreparedPrompt") -> "PreparedPrompt":
+    """The same prepared prompt with RETRY_ADULT_LINE just before the footer.
+
+    The footer stays last and unchanged (same footer hash). Raises when the
+    footer order cannot be kept, so the caller does not retry.
+    """
+    from core.safety import SAFETY_FOOTER
+
+    sent = prepared.sent_prompt or ""
+    if not footer_is_last(sent):
+        raise ValueError("footer is not last")
+    if RETRY_ADULT_LINE in sent:
+        return prepared
+    head = sent[: -len(SAFETY_FOOTER)].rstrip()
+    stronger = f"{head}\n\n{RETRY_ADULT_LINE}\n\n{SAFETY_FOOTER}"
+    if not footer_is_last(stronger):
+        raise ValueError("footer is not last")
+    return _dc_replace(prepared, sent_prompt=stronger)
 
 
 def footer_is_last(sent: str) -> bool:

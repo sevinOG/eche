@@ -36,7 +36,7 @@ class AdultsLineTests(unittest.TestCase):
     def test_edit_gets_line_and_hint(self):
         sent, _ = S.build_sent_prompt("make it blue", edit=True)
         self.assertIn(S.ALWAYS_ADULT_LINE, sent)
-        self.assertIn("unmistakably and unambiguously an adult", sent)
+        self.assertIn("mature adult facial features and adult proportions", sent)
 
     def test_adult_mode_too(self):
         sent, _ = S.build_sent_prompt("a sunset over the sea", adult=True)
@@ -95,7 +95,9 @@ class RetryTests(unittest.TestCase):
         from core import imagine as I
 
         plan = SimpleNamespace(prompt=prompt, user_text=prompt, model_prompt=prompt, mode="image", source=None)
-        prepared = SimpleNamespace(footer_hash="h")
+        prepared = S.PreparedPrompt(
+            user_prompt=prompt, sent_prompt=S.build_sent_prompt(prompt)[0], footer_hash="h")
+        self.sent_prompts = []
         seq = list(outcomes)
 
         async def check(*a, **k):
@@ -119,7 +121,11 @@ class RetryTests(unittest.TestCase):
 
         posted = mock.Mock()
         posted.__iter__ = lambda self: iter((200, {}))
-        with mock.patch.object(I, "request_for", return_value=("/p", {})), \
+        def request_for(_plan, prep):
+            self.sent_prompts.append(prep.sent_prompt)
+            return "/p", {}
+
+        with mock.patch.object(I, "request_for", side_effect=request_for), \
              mock.patch.object(I, "http_json", return_value=(200, {})), \
              mock.patch.object(I, "http_bytes", return_value=(b"\xff\xd8\xffdata", "image/jpeg")), \
              mock.patch("core.asset_safety.require_enabled"), \
@@ -143,6 +149,15 @@ class RetryTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertTrue(rows[0]["safety"])
         self.assertEqual(rows[0]["category"], "output-block-retry")
+        # The retry carries stronger adult cues; the footer stays last.
+        from core.safety import SAFETY_FOOTER
+        self.assertEqual(rows[0]["reason"], "retry-adult-cues")
+        self.assertEqual(rows[0]["added"], S.RETRY_ADULT_CUES)
+        first, second = self.sent_prompts
+        self.assertNotIn(S.RETRY_ADULT_LINE, first)
+        self.assertIn(S.RETRY_ADULT_LINE, second)
+        self.assertTrue(second.endswith(SAFETY_FOOTER))
+        self.assertEqual(second.count(SAFETY_FOOTER), 1)
 
     def test_second_block_refuses(self):
         out, exc, notes, _, seq = self._run(["block", "block", "pass"])
