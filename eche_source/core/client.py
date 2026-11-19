@@ -989,6 +989,41 @@ async def _classify_outgoing(prepared: list) -> list:
     return prepared
 
 
+def _asset_args_for_check(args) -> str:
+    """The asset tool call's arguments as the output check sees them.
+
+    The prompt gets the same owner-approved girl(s) -> woman/women rewrite
+    (2026-11-19) the asset tool applies before it runs (on_message and
+    prepare_generation). Without it a prompt such as "USA girl vs UK girl"
+    was refused here as llm-output even though the tool itself would have
+    run it as "USA woman vs UK woman". The rewrite is skipped whenever a
+    youth or school cue is present, so those prompts still block.
+    """
+    import json as _json
+
+    if isinstance(args, str):
+        try:
+            parsed = _json.loads(args)
+        except Exception:
+            parsed = None
+        if not isinstance(parsed, dict):
+            return args
+        args = parsed
+    if not args:
+        return ""
+    if isinstance(args, dict) and args.get("prompt"):
+        try:
+            from core.asset_intent import rewrite_adult_girls
+
+            args = {**args, "prompt": rewrite_adult_girls(str(args["prompt"]))[0]}
+        except Exception:
+            pass
+    try:
+        return _json.dumps(args, ensure_ascii=False)
+    except Exception:
+        return str(args)
+
+
 async def _output_blocked(*texts, tool_calls=None) -> bool:
     """True when a model reply or tool call depicts or sexualizes a minor.
 
@@ -996,7 +1031,7 @@ async def _output_blocked(*texts, tool_calls=None) -> bool:
     context so school or young cues in the scene are not missed.
     Replies are classified as an assistant turn against the latest user text.
     """
-    from core.blocklist import is_blocked, match_info, note
+    from core.blocklist import block_detail, excerpt, is_blocked, match_info, note
     import json as _json
 
     parts = [str(t) for t in texts if t]
@@ -1016,27 +1051,25 @@ async def _output_blocked(*texts, tool_calls=None) -> bool:
     if not _request_images.get(False):
         # Text-only chat: no keyword filter on the reply. Only an image tool
         # call keeps its argument check; the asset command keeps its own checks too.
-        image_parts: list[str] = []
-        for call in tool_calls or []:
-            if isinstance(call, dict) and str(call.get("name") or "").casefold() == "asset":
-                args = call.get("arguments")
-                if isinstance(args, str):
-                    image_parts.append(args)
-                elif args:
-                    try:
-                        image_parts.append(_json.dumps(args, ensure_ascii=False))
-                    except Exception:
-                        image_parts.append(str(args))
+        image_parts = [_asset_args_for_check(call.get("arguments"))
+                       for call in tool_calls or []
+                       if isinstance(call, dict) and str(call.get("name") or "").casefold() == "asset"]
+        image_parts = [part for part in image_parts if part]
         if image_parts and is_blocked(*image_parts):
-            note("llm-output")
+            note("llm-output", **block_detail(*image_parts))
             return True
         return False
     reply = "\n".join(parts)
     context = _output_context.get("")
     combined = (context + "\n" + reply).strip() if context else reply
-    if is_blocked(*parts) or (combined and match_info(combined, force_context=True)[1]):
-        note("llm-output")
+    if is_blocked(*parts):
+        note("llm-output", **block_detail(*parts))
         return True
+    if combined:
+        term, check = match_info(combined, force_context=True)
+        if check:
+            note("llm-output", term=term, rule=f"{check}+context", prompt=excerpt(reply))
+            return True
     # Chat text replies do not run the model child check. Generated-image
     # and asset outputs are checked on the image path, which stays on.
     return False

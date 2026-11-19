@@ -576,6 +576,9 @@ def _audit(
     mode: AssetMode | None = None,
     frame: str = "",
     reason: str = "",
+    term: str = "",
+    rule: str = "",
+    prompt: str = "",
 ) -> None:
     try:
         from core.audit import record
@@ -584,7 +587,8 @@ def _audit(
         digest = footer_hash or footer_sha256()
         safety = outcome in {"refusal", "error", "blocked"} or bool(category)
         snap = mode
-        # Never include the prompt text, especially on blocks.
+        # The prompt text is included only on refusals (term/rule/prompt),
+        # cut to 500 characters, in the local audit log.
         fields = dict(
             outcome=outcome,
             category=category,
@@ -601,6 +605,15 @@ def _audit(
             fields["frame"] = frame
         if reason:
             fields["reason"] = reason
+        # What matched and the offending text, on refusals only (local log).
+        if term:
+            fields["term"] = term
+        if rule:
+            fields["rule"] = rule
+        if prompt:
+            from core.blocklist import excerpt
+
+            fields["prompt"] = excerpt(prompt)
         if snap is not None:
             fields["adult"] = "1" if snap.adult else "0"
             fields["approval"] = "1" if snap.approval else "0"
@@ -652,7 +665,7 @@ async def prepare_generation(
     No Llama Guard; see classifier.asset_prompt_check_async.
     """
     from core.asset_filter import school_sexual_blocked
-    from core.blocklist import REFUSAL, is_blocked, note
+    from core.blocklist import REFUSAL, block_detail, is_blocked, note
     from core.classifier import asset_prompt_check_async
     from core.guardrails import BYPASS_REFUSAL, asks_to_bypass_filter
     from core.imagine import ImagineError
@@ -667,11 +680,11 @@ async def prepare_generation(
 
     if asks_to_bypass_filter(raw):
         note("asset prompt bypass")
-        _audit("refusal", category="bypass", mode=snap, **ids)
+        _audit("refusal", category="bypass", rule="bypass", prompt=raw, mode=snap, **ids)
         raise ImagineError(BYPASS_REFUSAL)
     if is_blocked(raw, user_id=user_id, channel_id=channel_id):
         note("asset prompt")
-        _audit("refusal", category="matcher", mode=snap, **ids)
+        _audit("refusal", category="matcher", mode=snap, **block_detail(raw, user_id=user_id, channel_id=channel_id), **ids)
         raise ImagineError(REFUSAL)
     extras = []
     for label, text in (("user", user_text), ("model", model_prompt)):
@@ -681,14 +694,16 @@ async def prepare_generation(
     for label, text in extras:
         if is_blocked(text, user_id=user_id, channel_id=channel_id):
             note(f"asset {label} text")
-            _audit("refusal", category="matcher", reason=f"in={label}", mode=snap, **ids)
+            _audit("refusal", category="matcher", reason=f"in={label}", mode=snap,
+                   **block_detail(text, user_id=user_id, channel_id=channel_id), **ids)
             raise ImagineError(REFUSAL)
     # School cues next to sexual or fetish wording: every channel, 18+ too.
     for label, text in (("prompt", raw), *extras):
         hit, why = school_sexual_blocked(text)
         if hit:
             note(f"asset {label} school-sexual")
-            _audit("refusal", category="school-sexual", reason=f"in={label};{why}", mode=snap, **ids)
+            _audit("refusal", category="school-sexual", reason=f"in={label};{why}", rule="school-sexual",
+                   prompt=text, mode=snap, **ids)
             raise ImagineError(REFUSAL)
 
     # The child check sees the prompt plus the user's words and the model's
@@ -702,7 +717,7 @@ async def prepare_generation(
         verdict = "child-check-error"
     if verdict:
         note(f"asset-input-{verdict}")
-        _audit("refusal", category=verdict, mode=snap, **ids)
+        _audit("refusal", category=verdict, rule="child-check", prompt=checked, mode=snap, **ids)
         raise ImagineError(REFUSAL)
 
     sent, digest = build_sent_prompt(raw, adult=snap.adult, edit=edit)

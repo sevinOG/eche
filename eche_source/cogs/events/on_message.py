@@ -45,7 +45,7 @@ from core.tools import (
 from core.bot_memory import remember_bot
 
 # --- HARD BLOCK (minors) ---
-from core.blocklist import REFUSAL as BLOCK_REFUSAL, is_blocked, note as block_note
+from core.blocklist import REFUSAL as BLOCK_REFUSAL, block_detail, is_blocked, note as block_note
 from core.guardrails import (
     BYPASS_REFUSAL,
     PART_DECLINE,
@@ -228,7 +228,7 @@ class OnMessage(commands.Cog):
 
                 arguments = {**arguments, "prompt": rewrite_adult_girls(str(arguments["prompt"]))[0]}
             if image_tool and asks_to_bypass_filter(_flat_arguments(arguments)):
-                block_note(f"{name} arguments bypass")
+                block_note(f"{name} arguments bypass", rule="bypass", prompt=_flat_arguments(arguments))
                 try:
                     await _send_reply(message, BYPASS_REFUSAL)
                 except Exception as e:
@@ -239,7 +239,7 @@ class OnMessage(commands.Cog):
                 break
             if image_tool and is_blocked(_flat_arguments(arguments), user_id=user_id, channel_id=channel_id):
                 # The model asked a tool for something on the block list.
-                block_note(f"{name} arguments")
+                block_note(f"{name} arguments", **block_detail(_flat_arguments(arguments)))
                 try:
                     await _send_reply(message, BLOCK_REFUSAL)
                 except Exception as e:
@@ -262,7 +262,7 @@ class OnMessage(commands.Cog):
                 ):
                     lookup_quota = True
             if image_tool and not result.quiet and is_blocked(spoken, user_id=user_id, channel_id=channel_id):
-                block_note(f"{name} reply")
+                block_note(f"{name} reply", **block_detail(spoken))
                 spoken = BLOCK_REFUSAL
             elif image_tool and not result.quiet and coaches_bypass(spoken):
                 block_note(f"{name} reply bypass")

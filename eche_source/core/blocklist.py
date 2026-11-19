@@ -54,7 +54,8 @@
 #   "she's 17 minutes late" and similar unit phrases are allowed.
 #   Bare "thirteen" / "seventeen" without age phrasing stays allowed.
 #   "kidney", "kidding", "childhood", "childish", "minority", "canteen",
-#   "teeny", "baby shark", and stated 18+ ages stay allowed.
+#   "teeny", "baby shark", "kid gloves" / "kid leather" / "kidskin"
+#   (goat leather), and stated 18+ ages stay allowed.
 #   Allowed on purpose (not a hit): "young woman" alone, "girls night",
 #   "oh boy", "boy band", "my boyfriend" in casual chat.
 #   Possible remaining false positives in media/RP wording: "draw a boy
@@ -1117,6 +1118,12 @@ _CUB_EXCEPT_RE = re.compile(
     r"(?<![\w])(?:cub\s+scouts?|ice\s+cubes?|chicago\s+cubs|the\s+cubs)(?![\w])",
     re.IGNORECASE,
 )
+# "kid gloves" / "kid leather" / "kidskin" are young-goat leather, not a person.
+# Only the leather phrases are masked; "kid", "kids" and "kid's" still block.
+_KID_LEATHER_RE = re.compile(
+    r"(?<![\w])(?:kid[\s\-]*gloves?|kid[\s\-]*gloved|kid[\s\-]*leather|kid[\s\-]*skin)(?![\w])",
+    re.IGNORECASE,
+)
 
 _LATEST_MARKER_RE = re.compile(
     r"(?:=+\s*MOST RECENT MESSAGE\s*=+|MOST RECENT MESSAGE\s*:)",
@@ -1351,6 +1358,7 @@ def _young_girl_hit(candidates) -> str:
 def _masked_for_always(text: str) -> str:
     masked = _mask_spans(text, _TECHNICAL_RE)
     masked = _mask_spans(masked, _CUB_EXCEPT_RE)
+    masked = _mask_spans(masked, _KID_LEATHER_RE)
     return masked
 
 
@@ -1822,7 +1830,8 @@ def match(text: str) -> str:
     return term
 
 
-# Short reasons for keyword-rule blocks. The matched text is never logged.
+# Short reasons for keyword-rule blocks. The matched term and the offending
+# text go only to the local audit/desktop log, via note(term=, rule=, prompt=).
 _NOTE_REASONS = (
     ("-age-vision-yes", "vision: flagged"),
     ("-age-vision-unsure", "vision: uncertain"),
@@ -1844,8 +1853,52 @@ def note_reason(where: str) -> str:
     return ""
 
 
-def note(where: str) -> None:
-    """One log line. The blocked text itself is not logged. Includes the footer hash."""
+def excerpt(text, limit: int = 500) -> str:
+    """One-line copy of a blocked text for the local audit log, cut to limit."""
+    flat = " ".join(str(text or "").split())
+    if len(flat) > limit:
+        flat = flat[: max(0, limit - 1)].rstrip() + "\u2026"
+    return flat
+
+
+def block_detail(*texts, user_id=None, channel_id=None) -> dict:
+    """What made is_blocked() refuse: {"term", "rule", "prompt"}, or {}.
+
+    rule is the match_info check (always, age, context, extra) or
+    "close-variant" for the retry catch. prompt is the offending text, cut to
+    500 characters. Read-only: nothing is remembered, so calling it after a
+    block does not change later results. Local audit log only.
+    """
+    close = None
+    for text in texts:
+        raw = scrub_discord_media_urls(str(text or ""))
+        if not raw.strip():
+            continue
+        term, check = match_info(raw)
+        if term:
+            return {"term": term, "rule": check, "prompt": excerpt(raw)}
+        if close is None and user_id is not None:
+            tokens = _tokens(raw)
+            now = time.monotonic()
+            with _recent_lock:
+                rows = [row for row in _recent.get((user_id, channel_id), []) if row[0] > now]
+            for _expires, prior in rows:
+                if prior and len(tokens) >= 2 and len(tokens & prior) / len(prior) >= _OVERLAP:
+                    close = {
+                        "term": ",".join(sorted(tokens & prior))[:200],
+                        "rule": "close-variant",
+                        "prompt": excerpt(raw),
+                    }
+                    break
+    return close or {}
+
+
+def note(where: str, *, term: str = "", rule: str = "", prompt: str = "") -> None:
+    """One log line with the footer hash.
+
+    term / rule / prompt name what matched and the offending text (cut to 500
+    characters). They go only to the local audit log and the desktop log.
+    """
     digest = ""
     try:
         from core.safety import footer_sha256
@@ -1856,14 +1909,16 @@ def note(where: str) -> None:
     extra = f", footer sha256={digest}" if digest else ""
     reason = note_reason(where)
     why = f", reason={reason}" if reason else ""
-    line = f"Blocked ({where}){why}{extra}."
+    detail = {k: v for k, v in (("term", term), ("rule", rule), ("prompt", excerpt(prompt) if prompt else "")) if v}
+    shown = "".join(f", {k}={v!r}" if k == "prompt" else f", {k}={v}" for k, v in detail.items())
+    line = f"Blocked ({where}){why}{shown}{extra}."
     try:
         from core.audit import block as audit_block
 
         if reason:
-            audit_block(where, footer_hash=digest, reason=reason)
+            audit_block(where, footer_hash=digest, reason=reason, **detail)
         else:
-            audit_block(where, footer_hash=digest)
+            audit_block(where, footer_hash=digest, **detail)
         return
     except Exception:
         pass

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import math
 import os
 import shutil
@@ -97,7 +98,9 @@ class HardenedAssetTests(unittest.TestCase):
         self.assertTrue(is_blocked(INCIDENT))
         self.assertTrue(is_blocked(INCIDENT_COMMAND))
 
-    def test_prepare_generation_blocks_incident_and_does_not_log_prompt(self):
+    def test_prepare_generation_blocks_incident_and_logs_term_and_prompt(self):
+        # Owner request 2026-11-19: refusal rows carry the matched term, the
+        # rule and the offending prompt (cut to 500 chars), local log only.
         with tempfile.TemporaryDirectory(prefix="eche-asset-audit-") as raw:
             audit = Path(raw) / "logs"
             audit.mkdir()
@@ -111,9 +114,12 @@ class HardenedAssetTests(unittest.TestCase):
                 except Exception:
                     pass
                 lines = (audit / "audit.jsonl").read_text(encoding="utf-8") if (audit / "audit.jsonl").is_file() else ""
-                self.assertNotIn("twig boy", lines)
-                self.assertNotIn(INCIDENT, lines)
                 self.assertIn("matcher", lines)
+                rows = [json.loads(line) for line in lines.splitlines() if line.strip()]
+                row = [r for r in rows if r.get("event") == "asset" and r.get("category") == "matcher"][-1]
+                self.assertEqual((row["term"], row["rule"]), ("boy", "always"))
+                self.assertIn("twig boy", row["prompt"])
+                self.assertLessEqual(len(row["prompt"]), 500)
 
     def test_sent_prompt_has_footer_last(self):
         sent, digest = build_sent_prompt("a red paper boat")
