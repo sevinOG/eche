@@ -276,3 +276,17 @@ async def cleared_reply_parts(media, message) -> tuple[list, bool]:
     from core.message_media import fit_images
 
     return fit_images(passed), withheld
+
+
+def chat_video_frames(data: bytes, mime: str) -> list[bytes]:
+    """Frames for a video or GIF Eche only views in chat (core/chat_media).
+
+    Same ffmpeg extraction as the asset checks; no check is run here (owner
+    decision 2026-11-18). Empty list on any failure.
+    """
+    from core.asset_safety import extract_video_frames
+
+    try:
+        return extract_video_frames(data, mime)
+    except Exception:
+        return []
