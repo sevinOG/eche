@@ -57,7 +57,7 @@ class Asset(commands.Cog):
                 api_key(),
                 asset_mode=mode,
                 is_owner=bool(gate.get("owner")),
-                notify=retry_notifier(channel),
+                notify=retry_notifier(channel, getattr(plan, "mode", "")),
                 **ids,
             )
             result = await require_owner_review(

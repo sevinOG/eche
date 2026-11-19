@@ -218,12 +218,47 @@ class AnnounceTests(unittest.TestCase):
         from core.tools_asset import announce_start, retry_notifier, asset_text
         ch = FakeChannel()
         run(announce_start(ch, "video"))
-        run(retry_notifier(ch)("retrying"))
+        self.assertEqual(ch.sent, ["Eche used *asset*!"])
+        note = retry_notifier(ch, "video")
+        run(note("started"))
+        run(note("retrying"))
         self.assertEqual(ch.sent, ["Eche used *asset*!", "Making that video!", "That one didn't pass, trying again..."])
         ch2 = FakeChannel(9)
-        run(announce_start(ch2, "image"))
-        self.assertEqual(ch2.sent[1], "Making that!")
+        run(retry_notifier(ch2, "image")("started"))
+        self.assertEqual(ch2.sent, ["Making that!"])
         self.assertNotIn("Eche used", asset_text("a caption"))
+
+
+class MakingAfterCapTests(unittest.TestCase):
+    def _run(self, capped, *, owner=False):
+        from core import imagine as I
+
+        events = []
+
+        async def notify(event):
+            events.append(event)
+
+        snap = mock.Mock(enabled=True, user_cap=1, guild_cap=1)
+        plan = SimpleNamespace(mode="image")
+        with mock.patch("core.asset_limits.reserve_use", return_value="capped text" if capped else ""), \
+             mock.patch("core.asset_limits.release_use"), \
+             mock.patch("core.asset_safety._audit"), \
+             mock.patch("core.asset_safety.video_caps", return_value=None), \
+             mock.patch.object(I, "_run_asset_reserved", new=mock.AsyncMock(return_value="file")):
+            try:
+                run(I.run_asset(plan, "k", asset_mode=snap, is_owner=owner, notify=notify, user_id=1, guild_id=2))
+            except I.ImagineError:
+                pass
+        return events
+
+    def test_capped_request_gets_no_making_line(self):
+        self.assertEqual(self._run(True), [])
+
+    def test_started_after_cap_passes(self):
+        self.assertEqual(self._run(False), ["started"])
+
+    def test_owner_started(self):
+        self.assertEqual(self._run(True, owner=True), ["started"])
 
 
 if __name__ == "__main__":

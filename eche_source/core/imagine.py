@@ -1002,6 +1002,7 @@ async def run_asset(
     if is_owner:
         # The bot owner is exempt from the caps and uses no slot. Every
         # safety check below still runs unchanged.
+        await _notify(notify, "started")
         return await _run_asset_reserved(
             plan, key, snap, ids, get_backend, prepare_generation, check_generated_media, notify=notify
         )
@@ -1017,6 +1018,8 @@ async def run_asset(
     # A blocked, refused, or failed attempt gives its cap slot back. Only a
     # finished, checked file keeps it.
     try:
+        # "Making that!" only goes out once the cap check has passed.
+        await _notify(notify, "started")
         return await _run_asset_reserved(
             plan, key, snap, ids, get_backend, prepare_generation, check_generated_media, notify=notify
         )

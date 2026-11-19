@@ -147,20 +147,23 @@ def asset_text(message: str) -> str:
     return body
 
 
-async def announce_start(channel, mode: str) -> None:
-    """Eche used *asset*!, then Making that! as separate messages."""
-    from core.announce import announce_tool, making_line, post_line
+async def announce_start(channel, mode: str = "") -> None:
+    """Eche used *asset*! as its own message. "Making that!" waits for the
+    cap check (run_asset notifies "started" once a slot is reserved)."""
+    from core.announce import announce_tool
 
     await announce_tool(channel, "asset")
-    await post_line(channel, making_line(mode), kind="making", tool="asset")
 
 
-def retry_notifier(channel):
-    """Posts the retry line when an output failed a check and is regenerated."""
-    from core.announce import RETRYING, post_line
+def retry_notifier(channel, mode: str = ""):
+    """Progress lines from run_asset: "started" (after the cap check passed)
+    posts Making that!/Making that video!, "retrying" posts the retry line."""
+    from core.announce import RETRYING, making_line, post_line
 
     async def _notify(event: str) -> None:
-        if event == "retrying":
+        if event == "started":
+            await post_line(channel, making_line(mode), kind="making", tool="asset")
+        elif event == "retrying":
             await post_line(channel, RETRYING, kind="retry", tool="asset")
 
     return _notify
@@ -291,7 +294,7 @@ async def make_asset(ctx, arguments: dict) -> ToolResult:
             api_key(),
             asset_mode=mode,
             is_owner=bool(getattr(ctx, "_asset_owner", False)),
-            notify=retry_notifier(channel),
+            notify=retry_notifier(channel, getattr(plan, "mode", "")),
             **ids,
         )
         if not isinstance(result, AssetFile):
