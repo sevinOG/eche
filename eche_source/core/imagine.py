@@ -928,6 +928,35 @@ def refuse_speaker(
     return None
 
 
+def output_retry_allowed(plan) -> bool:
+    """One regenerate after an output block: only for prompts with no sexual
+    or school cues in the prompt, the user's words, or the model's prompt.
+    Owner-approved 2026-11-18 21:20 ET. Any error here means no retry."""
+    try:
+        from core.asset_filter import school_sexual_cues
+
+        for text in (
+            getattr(plan, "prompt", "") or "",
+            getattr(plan, "user_text", "") or "",
+            getattr(plan, "model_prompt", "") or "",
+        ):
+            school, sexual = school_sexual_cues(text)
+            if school or sexual:
+                return False
+        return True
+    except Exception:
+        return False
+
+
+async def _notify(notify, event: str) -> None:
+    if notify is None:
+        return
+    try:
+        await notify(event)
+    except Exception:
+        pass
+
+
 async def run_asset(
     plan: AssetPlan,
     key: str,
@@ -937,11 +966,15 @@ async def run_asset(
     channel_id=None,
     asset_mode=None,
     is_owner: bool = False,
+    notify=None,
 ) -> AssetFile:
     """Make one asset through the fail-closed choke point.
 
     Always returns a classified file, or raises. A blocked prompt is not
-    retried. A blocked or unchecked file is not returned, and a download
+    retried. An output blocked by the output check is regenerated once and
+    fully re-checked, only when the prompt passed every input check and has
+    no sexual or school cues (output_retry_allowed). `notify` is an optional
+    async callback for user-facing progress ("retrying"). A blocked or unchecked file is not returned, and a download
     URL is never handed to the caller in place of bytes. Callers must still
     wait for owner review before posting.
     """
@@ -969,7 +1002,9 @@ async def run_asset(
     if is_owner:
         # The bot owner is exempt from the caps and uses no slot. Every
         # safety check below still runs unchanged.
-        return await _run_asset_reserved(plan, key, snap, ids, get_backend, prepare_generation, check_generated_media)
+        return await _run_asset_reserved(
+            plan, key, snap, ids, get_backend, prepare_generation, check_generated_media, notify=notify
+        )
     from core.asset_safety import video_caps
 
     # Images and videos have separate hourly slots (asset_limits.STANDARD_CAPS).
@@ -982,13 +1017,15 @@ async def run_asset(
     # A blocked, refused, or failed attempt gives its cap slot back. Only a
     # finished, checked file keeps it.
     try:
-        return await _run_asset_reserved(plan, key, snap, ids, get_backend, prepare_generation, check_generated_media)
+        return await _run_asset_reserved(
+            plan, key, snap, ids, get_backend, prepare_generation, check_generated_media, notify=notify
+        )
     except BaseException:
         release_use(user_id, guild_id, video=extra is not None)
         raise
 
 
-async def _run_asset_reserved(plan, key, snap, ids, get_backend, prepare_generation, check_generated_media):
+async def _run_asset_reserved(plan, key, snap, ids, get_backend, prepare_generation, check_generated_media, *, notify=None):
     from core.asset_safety import require_enabled, _audit
 
     user_id = ids.get("user_id")
@@ -1032,98 +1069,130 @@ async def _run_asset_reserved(plan, key, snap, ids, get_backend, prepare_generat
         require_enabled(snap, user_id=user_id, guild_id=guild_id, channel_id=channel_id)
     elif plan.mode in ("image_edit", "video_edit"):
         raise ImagineError("Reply to a picture or video to edit it.")
-    backend = get_backend()
-    path, body = request_for(plan, prepared)
-    is_video = "video" in plan.mode
-    timeout = 180 if is_video else 120
-    job_ids: dict[str, str] = {}
+    async def _attempt_once():
+        backend = get_backend()
+        path, body = request_for(plan, prepared)
+        is_video = "video" in plan.mode
+        timeout = 180 if is_video else 120
+        job_ids = {}
 
-    def _post():
-        return http_json("POST", backend.api_base() + path, key, body, timeout=timeout)
+        def _post():
+            return http_json("POST", backend.api_base() + path, key, body, timeout=timeout)
 
-    try:
-        posted = await asyncio.to_thread(_post)
-        _status, payload = posted
-        job_ids = posted.ids() if hasattr(posted, "ids") else {}
+        try:
+            posted = await asyncio.to_thread(_post)
+            _status, payload = posted
+            job_ids = posted.ids() if hasattr(posted, "ids") else {}
+            require_enabled(snap, user_id=user_id, guild_id=guild_id, channel_id=channel_id)
+            if not is_video:
+                url = backend.image_url(payload)
+            else:
+                request_id = backend.video_start_id(payload)
+                deadline = asyncio.get_running_loop().time() + VIDEO_WAIT_SECONDS
+                url = ""
+                while True:
+                    require_enabled(snap, user_id=user_id, guild_id=guild_id, channel_id=channel_id)
+
+                    def _poll(rid=request_id):
+                        return http_json("GET", f"{backend.api_base()}/videos/{rid}", key, None, timeout=60)
+
+                    polled_result = await asyncio.to_thread(_poll)
+                    _status, polled = polled_result
+                    if hasattr(polled_result, "ids"):
+                        extra = polled_result.ids()
+                        if extra:
+                            job_ids = extra
+                    state, found = backend.video_poll(polled)
+                    if state == "done":
+                        url = found
+                        break
+                    if state in ("failed", "expired"):
+                        raise ImagineError(found or "Imagine did not finish the video.")
+                    if asyncio.get_running_loop().time() >= deadline:
+                        raise ImagineError("That video took too long. Try a shorter one.")
+                    await asyncio.sleep(_POLL_SECONDS)
+            require_enabled(snap, user_id=user_id, guild_id=guild_id, channel_id=channel_id)
+            data, mime = await asyncio.to_thread(http_bytes, url)
+        except ImagineError as exc:
+            moderated = exc.text == _FILTERED
+            if moderated:
+                exc.status = "provider_filtered"
+            _audit(
+                "refusal" if moderated else "error",
+                category="provider-moderation" if moderated else "backend",
+                reason=("" if moderated else exc.text[:120]),
+                footer_hash=prepared.footer_hash,
+                error_type=type(exc).__name__,
+                mode=snap,
+                **ids,
+            )
+            raise
+        except Exception as exc:
+            _audit(
+                "error",
+                category="backend",
+                footer_hash=prepared.footer_hash,
+                error_type=type(exc).__name__,
+                mode=snap,
+                **ids,
+            )
+            raise ImagineError("I couldn't make that.", status="error") from exc
+        if not data:
+            # A URL we cannot download cannot be classified. Fail closed.
+            _audit("refusal", category="unreadable-output", footer_hash=prepared.footer_hash, mode=snap, **ids)
+            from core.asset_safety import OUTPUT_UNCHECKED
+            raise ImagineError(OUTPUT_UNCHECKED)
+        sniffed = _sniff_media_mime(data)
+        if sniffed:
+            mime = sniffed
+        elif not mime or mime == "application/octet-stream":
+            mime = "video/mp4" if "video" in plan.mode else "image/jpeg"
+        name = filename_for(mime)
+        if name == "asset.bin":
+            name = "asset.mp4" if "video" in plan.mode else "asset.jpg"
         require_enabled(snap, user_id=user_id, guild_id=guild_id, channel_id=channel_id)
-        if not is_video:
-            url = backend.image_url(payload)
-        else:
-            request_id = backend.video_start_id(payload)
-            deadline = asyncio.get_running_loop().time() + VIDEO_WAIT_SECONDS
-            url = ""
-            while True:
-                require_enabled(snap, user_id=user_id, guild_id=guild_id, channel_id=channel_id)
-
-                def _poll(rid=request_id):
-                    return http_json("GET", f"{backend.api_base()}/videos/{rid}", key, None, timeout=60)
-
-                polled_result = await asyncio.to_thread(_poll)
-                _status, polled = polled_result
-                if hasattr(polled_result, "ids"):
-                    extra = polled_result.ids()
-                    if extra:
-                        job_ids = extra
-                state, found = backend.video_poll(polled)
-                if state == "done":
-                    url = found
-                    break
-                if state in ("failed", "expired"):
-                    raise ImagineError(found or "Imagine did not finish the video.")
-                if asyncio.get_running_loop().time() >= deadline:
-                    raise ImagineError("That video took too long. Try a shorter one.")
-                await asyncio.sleep(_POLL_SECONDS)
-        require_enabled(snap, user_id=user_id, guild_id=guild_id, channel_id=channel_id)
-        data, mime = await asyncio.to_thread(http_bytes, url)
-    except ImagineError as exc:
-        moderated = exc.text == _FILTERED
-        if moderated:
-            exc.status = "provider_filtered"
-        _audit(
-            "refusal" if moderated else "error",
-            category="provider-moderation" if moderated else "backend",
-            reason=("" if moderated else exc.text[:120]),
+        await check_generated_media(
+            data,
+            mime,
             footer_hash=prepared.footer_hash,
-            error_type=type(exc).__name__,
+            user_id=user_id,
+            guild_id=guild_id,
+            channel_id=channel_id,
+            request_id=job_ids.get("request_id", ""),
+            response_id=job_ids.get("response_id", ""),
             mode=snap,
-            **ids,
         )
-        raise
-    except Exception as exc:
-        _audit(
-            "error",
-            category="backend",
-            footer_hash=prepared.footer_hash,
-            error_type=type(exc).__name__,
-            mode=snap,
-            **ids,
-        )
-        raise ImagineError("I couldn't make that.", status="error") from exc
-    if not data:
-        # A URL we cannot download cannot be classified. Fail closed.
-        _audit("refusal", category="unreadable-output", footer_hash=prepared.footer_hash, mode=snap, **ids)
-        from core.asset_safety import OUTPUT_UNCHECKED
-        raise ImagineError(OUTPUT_UNCHECKED)
-    sniffed = _sniff_media_mime(data)
-    if sniffed:
-        mime = sniffed
-    elif not mime or mime == "application/octet-stream":
-        mime = "video/mp4" if "video" in plan.mode else "image/jpeg"
-    name = filename_for(mime)
-    if name == "asset.bin":
-        name = "asset.mp4" if "video" in plan.mode else "asset.jpg"
-    require_enabled(snap, user_id=user_id, guild_id=guild_id, channel_id=channel_id)
-    await check_generated_media(
-        data,
-        mime,
-        footer_hash=prepared.footer_hash,
-        user_id=user_id,
-        guild_id=guild_id,
-        channel_id=channel_id,
-        request_id=job_ids.get("request_id", ""),
-        response_id=job_ids.get("response_id", ""),
-        mode=snap,
-    )
+        return data, mime, name, job_ids
+
+    retry_ok = output_retry_allowed(plan)
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            data, mime, name, job_ids = await _attempt_once()
+            break
+        except ImagineError as exc:
+            if attempt > 1 or not retry_ok or getattr(exc, "status", "") != "safety_block":
+                raise
+            # The blocked output is never returned or posted; its verdict rows
+            # are already logged. The retry row is a safety record, so a failed
+            # write stops here and the block stands.
+            try:
+                from core.audit import record
+
+                record(
+                    "asset",
+                    outcome="retry",
+                    category="output-block-retry",
+                    attempt=str(attempt + 1),
+                    footer_hash=prepared.footer_hash,
+                    safety=True,
+                    **ids,
+                )
+            except Exception:
+                raise exc from None
+            await _notify(notify, "retrying")
+            require_enabled(snap, user_id=user_id, guild_id=guild_id, channel_id=channel_id)
     require_enabled(snap, user_id=user_id, guild_id=guild_id, channel_id=channel_id)
     _audit(
         "success",

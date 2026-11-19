@@ -832,6 +832,9 @@ class Music(commands.Cog):
 
         if not await self.ensure_vc(ctx):
             return
+        from core.announce import announce_tool
+
+        await announce_tool(getattr(ctx, "channel", None), "play")
 
         # Record the song before the slow lookup. Several ?play commands can
         # then all show up in the music-queue thread while the first one resolves.

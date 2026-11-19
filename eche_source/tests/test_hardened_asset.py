@@ -131,7 +131,10 @@ class HardenedAssetTests(unittest.TestCase):
         self.assertTrue(footer_is_last(sent))
         self.assertTrue(sent.endswith(SAFETY_FOOTER))
         self.assertIn(ADULT_RULE, sent)
-        self.assertLessEqual(len(sent) - len(ADULT_RULE) - len(SAFETY_FOOTER) - 4, 2000)
+        from core.asset_safety import ALWAYS_ADULT_LINE, ART_STYLE_LINE
+
+        added = len(ALWAYS_ADULT_LINE) + len(ART_STYLE_LINE) + 3
+        self.assertLessEqual(len(sent) - len(ADULT_RULE) - len(SAFETY_FOOTER) - 4 - added, 2000)
 
     def test_request_for_uses_prepared_sent_prompt_and_requires_choke_point(self):
         from core.asset_safety import PreparedPrompt

@@ -20,7 +20,7 @@ from core.imagine import (
     refuse_speaker,
     run_asset,
 )
-from core.tools import ACCESS_ANYONE, Tool, ToolResult, announcement, register
+from core.tools import ACCESS_ANYONE, Tool, ToolResult, register
 
 
 _DESCRIPTION = (
@@ -141,12 +141,29 @@ def asset_prompt(arguments: dict | None, message_text: str) -> str:
 
 
 def asset_text(message: str) -> str:
-    """Eche used *asset*! and then the line that goes with the file."""
+    """The line that goes with the file. "Eche used *asset*!" is now its own
+    message, sent when the generation starts (core.announce)."""
     body = (message or "").strip()
-    line = announcement("asset")
-    if not body:
-        return line
-    return f"{line}\n{body}"
+    return body
+
+
+async def announce_start(channel, mode: str) -> None:
+    """Eche used *asset*!, then Making that! as separate messages."""
+    from core.announce import announce_tool, making_line, post_line
+
+    await announce_tool(channel, "asset")
+    await post_line(channel, making_line(mode), kind="making", tool="asset")
+
+
+def retry_notifier(channel):
+    """Posts the retry line when an output failed a check and is regenerated."""
+    from core.announce import RETRYING, post_line
+
+    async def _notify(event: str) -> None:
+        if event == "retrying":
+            await post_line(channel, RETRYING, kind="retry", tool="asset")
+
+    return _notify
 
 
 async def _post(message, result: AssetFile, caption: str) -> None:
@@ -267,8 +284,15 @@ async def make_asset(ctx, arguments: dict) -> ToolResult:
         # prompt before any cue was stripped.
         plan.user_text = user_text
         plan.model_prompt = model_prompt
+        ctx._asset_announced = True
+        await announce_start(channel, getattr(plan, "mode", ""))
         result = await run_asset(
-            plan, api_key(), asset_mode=mode, is_owner=bool(getattr(ctx, "_asset_owner", False)), **ids
+            plan,
+            api_key(),
+            asset_mode=mode,
+            is_owner=bool(getattr(ctx, "_asset_owner", False)),
+            notify=retry_notifier(channel),
+            **ids,
         )
         if not isinstance(result, AssetFile):
             raise ImagineError("I couldn't make that.")

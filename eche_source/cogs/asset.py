@@ -49,7 +49,17 @@ class Asset(commands.Cog):
             source = await source_from_reply(getattr(ctx, "message", None))
             audit_request(prompt=prompt, kind="", source="?asset", has_media=source is not None, ids=ids)
             plan = plan_asset(prompt, asset_mode=mode, source=source)
-            result = await run_asset(plan, api_key(), asset_mode=mode, is_owner=bool(gate.get("owner")), **ids)
+            from core.tools_asset import announce_start, retry_notifier
+
+            await announce_start(channel, getattr(plan, "mode", ""))
+            result = await run_asset(
+                plan,
+                api_key(),
+                asset_mode=mode,
+                is_owner=bool(gate.get("owner")),
+                notify=retry_notifier(channel),
+                **ids,
+            )
             result = await require_owner_review(
                 result,
                 bot=self.bot,
