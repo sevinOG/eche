@@ -226,6 +226,9 @@ class ImageSearch(commands.Cog):
     @commands.command(name="image")
     async def image(self, ctx, *, query: str = None):
         dprint(f">>> [image] Triggered by {ctx.author} | Query: {query}")
+        from core.announce import announce_tool
+
+        await announce_tool(getattr(ctx, "channel", None), "image")
 
         if query:
             try:

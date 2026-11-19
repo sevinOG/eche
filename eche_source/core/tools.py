@@ -65,6 +65,8 @@ class ToolResult:
     # The tool declined before doing anything (no request in the message).
     # It counts as not run, so the model's own chat reply is used instead.
     declined: bool = False
+    # The tool already posted its own "Eche used" line.
+    announced: bool = False
 
 
 @dataclass
@@ -289,7 +291,9 @@ def log_detail(arguments: dict | None, result: ToolResult) -> str:
 
 def announcement(name: str) -> str:
     """The only tool-use line shown in chat. Not a raw tool trace."""
-    return f"Eche used *{name}*!"
+    from core.announce import tool_line
+
+    return tool_line(name)
 
 
 def tool_call_note(name: str, arguments: dict | None, body: str = "") -> str:
@@ -316,33 +320,25 @@ def tool_call_note(name: str, arguments: dict | None, body: str = "") -> str:
     return head
 
 
-def format_tool_messages(name: str, body: str, *, fence: bool = True) -> list[str]:
-    """
-    Announcement, then the tool body.
+def format_tool_messages(name: str, body: str, *, fence: bool = True, with_line: bool = False) -> list[str]:
+    """The tool body only, split to fit Discord.
 
-    A fenced body is shown verbatim and does not ping anyone mentioned inside
-    it. An unfenced body is the answer itself. Each returned string fits in
-    one message.
+    "Eche used <tool>!" is never part of these messages: it goes out as its
+    own Discord message (core.announce, owner request 2026-11-18), so the
+    monospace block holds only the tool output. `with_line` is accepted for
+    old callers and ignored. A fenced body is shown verbatim and does not
+    ping anyone mentioned inside it. An unfenced body is the answer itself.
     """
     from core.client import REPLY_MAX_CHARS, discord_chunks
 
-    line = announcement(name)
     text = (body or "").strip()
     if not text:
-        return [line]
+        return []
     if not fence:
-        combined = f"{line}\n{text}"
-        return discord_chunks(combined)
-
+        return discord_chunks(text)
     text = text.replace("```", "'''")
     room = REPLY_MAX_CHARS - _FENCE_OVERHEAD
-    fenced = [f"```\n{piece}\n```" for piece in discord_chunks(text, room)]
-    if not fenced:
-        return [line]
-    combined = f"{line}\n{fenced[0]}"
-    if len(combined) <= REPLY_MAX_CHARS:
-        return [combined, *fenced[1:]]
-    return [line, *fenced]
+    return [f"```\n{piece}\n```" for piece in discord_chunks(text, room)]
 
 
 def calls_from_model_text(text: str, names: set[str] | None = None) -> list[dict]:

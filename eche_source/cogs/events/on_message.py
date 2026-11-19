@@ -258,12 +258,26 @@ class OnMessage(commands.Cog):
                 spoken = BYPASS_REFUSAL
             # A quiet tool already posted everything, including its announcement.
             shown = "" if result.quiet else spoken
+            # "Eche used <tool>!" is its own message (owner request
+            # 2026-11-18), then the tool's answer. Quiet tools and tools that
+            # already announced post their own.
+            announced = bool(
+                result.quiet
+                or getattr(result, "announced", False)
+                # The asset tool posts "Eche used *asset*!" when it starts.
+                or (result.name == "asset" and getattr(ctx, "_asset_announced", False))
+            )
+            if not announced:
+                from core.announce import announce_tool
+
+                announced = await announce_tool(getattr(message, "channel", None), result.name)
             chunks = format_tool_messages(
                 result.name,
                 shown,
                 fence=False if result.for_model else result.fence,
+                with_line=False,
             )
-            sent = result.quiet
+            sent = result.quiet or (announced and not chunks)
             if not result.quiet:
                 for index, chunk in enumerate(chunks):
                     try:

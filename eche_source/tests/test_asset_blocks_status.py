@@ -348,7 +348,9 @@ class MessageAndStatusTests(unittest.TestCase):
 
     def test_video_block_logs_frame_n_of_total(self):
         rows = []
-        verdicts = iter(["", "", "", "age-vision-yes"])
+        # Output videos are checked at the beginning, middle and end only
+        # (owner-approved 2026-11-18); the third sampled frame is 49/49.
+        verdicts = iter(["", "", "age-vision-yes"])
 
         async def _age(*_a, **_k):
             return next(verdicts)
@@ -360,7 +362,7 @@ class MessageAndStatusTests(unittest.TestCase):
             with self.assertRaises(ImagineError):
                 asyncio.run(S.check_generated_media(b"mp4", "video/mp4", footer_hash=FOOTER, mode=SFW))
         blocks = [kw for event, kw in rows if event == "asset" and kw.get("outcome") == "refusal"]
-        self.assertEqual(blocks[-1]["frame"], "4/49")
+        self.assertEqual(blocks[-1]["frame"], "49/49")
 
 
 class IntentGateTests(unittest.TestCase):

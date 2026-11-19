@@ -99,6 +99,17 @@ _ADULT_HINT = (
 )
 
 
+# Owner-approved 2026-11-18 21:20 ET: every image and video prompt and edit
+# gets this line, people words or not (videos of burgers and kittens had no
+# hint and the model sometimes added kids). Media with no people is fine.
+# The stronger person hint above still follows when people are present.
+ALWAYS_ADULT_LINE = (
+    "If any people or characters appear, they are clearly adults (30s, 40s or "
+    "older); scenes with no people are fine."
+)
+ART_STYLE_LINE = "Keep the requested art style."
+
+
 def character_adult_hint(prompt: str) -> str:
     """Adult-age hint for prompts that could show a person or character, else ""."""
     text = prompt or ""
@@ -540,7 +551,11 @@ def build_sent_prompt(user_prompt: str, *, adult: bool = False, edit: bool = Fal
     rule = ADULT_RULE_STRICT if adult else ADULT_RULE
     hint = edit_adult_hint(body) if edit else character_adult_hint(body)
     if hint:
-        body = f"{body}\n\n{hint}"
+        # The person hint stays as-is (it ends with the art-style line);
+        # the always-on line follows it, and the footer is still last.
+        body = f"{body}\n\n{hint}\n\n{ALWAYS_ADULT_LINE}"
+    else:
+        body = f"{body}\n\n{ALWAYS_ADULT_LINE} {ART_STYLE_LINE}"
     sent = f"{rule}\n\n{body}\n\n{SAFETY_FOOTER}"
     return sent, footer_sha256()
 
@@ -937,6 +952,22 @@ async def _classify_image_checks(data: bytes, mime: str, *, ids: dict, snap: Ass
         raise ImagineError(refused, status="safety_block")
 
 
+def check_frame_indexes(total: int, stage: str = "output") -> list[int]:
+    """1-based frames to check.
+
+    Owner-approved 2026-11-18 21:20 ET: a generated video is checked at its
+    beginning, middle and end only (3 frames, to save API calls). Every
+    sampled frame gets both checks, and one YES still blocks. Source media a
+    user replies with is still checked frame by frame.
+    """
+    if total <= 0:
+        return []
+    if stage != "output":
+        return list(range(1, total + 1))
+    picks = [1, (total + 1) // 2, total]
+    return sorted(set(picks))
+
+
 async def check_generated_media(
     data: bytes,
     mime: str,
@@ -950,7 +981,7 @@ async def check_generated_media(
     mode: AssetMode | None = None,
     stage: str = "output",
 ) -> None:
-    """Classify one image, or every required frame. Fail closed. No retries."""
+    """Classify one image, or the sampled frames of a video. Fail closed."""
     from core.imagine import ImagineError
 
     snap = mode if mode is not None else read_asset_mode(observe=False)
@@ -971,7 +1002,8 @@ async def check_generated_media(
             _audit("refusal", category="frame-extract" if stage == "output" else f"{stage}-frame-extract", **ids)
             raise ImagineError(SOURCE_UNCHECKED if stage == "source" else OUTPUT_UNCHECKED, status="error")
         total = len(frames)
-        for index, frame in enumerate(frames, start=1):
+        for index in check_frame_indexes(total, stage):
+            frame = frames[index - 1]
             await _classify_image(
                 frame,
                 "image/jpeg",
