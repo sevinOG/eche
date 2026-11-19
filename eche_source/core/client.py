@@ -2120,9 +2120,31 @@ def _flatten_image_messages(messages) -> bool:
             for part in content
             if isinstance(part, dict) and part.get("type") == "text"
         ]
+        had_image = any(
+            isinstance(part, dict) and part.get("type") == "image_url" for part in content
+        )
+        if had_image:
+            texts.append(IMAGES_DROPPED_NOTE)
         messages[index] = {**msg, "content": "\n".join(texts).strip()}
         changed = True
     return changed
+
+
+# Sent in place of pictures/video frames the chat model can't take, so it
+# says it can't see them instead of guessing (seen 2026-11-18 with a
+# text-only Ollama chat model).
+IMAGES_DROPPED_NOTE = (
+    "[A picture or video was attached, but the current chat model can't see "
+    "images, so it wasn't shown to you. Say you can't see it; don't guess.]"
+)
+
+
+def _ollama_lacks_vision(url: str, model: str) -> bool:
+    """True only when Ollama reports this model's capabilities without vision."""
+    if _provider_backend() != "ollama":
+        return False
+    caps = _ollama_capabilities(url, model)
+    return caps is not None and len(caps) > 0 and "vision" not in caps
 
 
 def _attach_images(messages: list, images: list) -> list:
@@ -2473,6 +2495,10 @@ async def call_groq_turn(
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
+        if _messages_have_images(payload.get("messages")) and _ollama_lacks_vision(
+            url, str(payload.get("model") or "")
+        ):
+            _flatten_image_messages(payload.get("messages"))
         loop = asyncio.get_event_loop()
         data = await loop.run_in_executor(
             None,

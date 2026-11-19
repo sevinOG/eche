@@ -148,22 +148,19 @@ def asset_text(message: str) -> str:
 
 
 async def announce_start(channel, mode: str = "") -> None:
-    """Eche used *asset*! as its own message. "Making that!" waits for the
-    cap check (run_asset notifies "started" once a slot is reserved)."""
+    """Eche used *asset*! as its own message (no separate "Making that!")."""
     from core.announce import announce_tool
 
     await announce_tool(channel, "asset")
 
 
 def retry_notifier(channel, mode: str = ""):
-    """Progress lines from run_asset: "started" (after the cap check passed)
-    posts Making that!/Making that video!, "retrying" posts the retry line."""
-    from core.announce import RETRYING, making_line, post_line
+    """Progress lines from run_asset: "retrying" posts the retry line.
+    "started" posts nothing; the Eche used *asset*! line covers it."""
+    from core.announce import RETRYING, post_line
 
     async def _notify(event: str) -> None:
-        if event == "started":
-            await post_line(channel, making_line(mode), kind="making", tool="asset")
-        elif event == "retrying":
+        if event == "retrying":
             await post_line(channel, RETRYING, kind="retry", tool="asset")
 
     return _notify

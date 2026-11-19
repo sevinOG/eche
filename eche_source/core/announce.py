@@ -23,8 +23,8 @@ _DISPLAY = {
     "context_raw": "context",
 }
 
-MAKING_IMAGE = "Making that!"
-MAKING_VIDEO = "Making that video!"
+# "Making that!" was removed (owner 2026-11-18 22:06 ET): the separate
+# "Eche used *asset*!" line already says it.
 RETRYING = "That one didn't pass, trying again..."
 
 _sent: dict[tuple[str, str], float] = {}
@@ -40,10 +40,6 @@ def display_name(name: str) -> str:
 
 def tool_line(name: str) -> str:
     return f"Eche used *{display_name(name)}*!"
-
-
-def making_line(mode: str) -> str:
-    return MAKING_VIDEO if "video" in (mode or "") else MAKING_IMAGE
 
 
 def _allowed(channel_id: str, line: str, now: float) -> bool:
