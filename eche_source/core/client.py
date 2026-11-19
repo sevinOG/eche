@@ -2135,7 +2135,8 @@ def _flatten_image_messages(messages) -> bool:
 # text-only Ollama chat model).
 IMAGES_DROPPED_NOTE = (
     "[A picture or video was attached, but the current chat model can't see "
-    "images, so it wasn't shown to you. Say you can't see it; don't guess.]"
+    "images, so it wasn't shown to you. Say you can't see it; don't guess, "
+    "don't search the web for it, and don't make a new picture or video.]"
 )
 
 

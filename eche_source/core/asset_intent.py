@@ -93,6 +93,27 @@ _OPEN_RE = re.compile(
 
 DECLINE_NO_REQUEST = "no-request-wording"
 DECLINE_NO_OVERLAP = "prompt-not-from-message"
+DECLINE_ASKS_ABOUT = "asks-about-media"
+
+# Live 2026-11-18 23:05 ET: "Describe the video" made a new video. A message
+# that asks Eche to look at, describe or explain media is not a request to
+# make something, unless it also uses a make/edit verb.
+_ABOUT_RE = re.compile(
+    r"(?i)\b(?:describe\w*|explain\w*|summari[sz]e\w*|identify|recogni[sz]e|analy[sz]e\w*|"
+    r"what(?:'?s|\s+is|\s+are|\s+was|\s+happens|\s+happening)\b[^.?!]*\b(?:in|on|about|this|that|the)\b|"
+    r"what\s+do\s+you\s+see|can\s+you\s+see|do\s+you\s+see|look\s+at|watch\s+(?:this|that|the))"
+)
+_MAKE_VERB_RE = re.compile(
+    r"(?i)\b(?:make|makes|making|generate\w*|gen|create\w*|draw\w*|render\w*|paint\w*|sketch\w*|"
+    r"imagine|edit\w*|change\w*|turn|add|remove\w*|put|replace\w*|swap\w*|convert\w*|transform\w*|"
+    r"animate\w*|recolou?r\w*|gimme|redo|retry)\b"
+)
+
+
+def asks_about_media(text: str) -> bool:
+    """True for "describe/explain/what's in the video" with no make/edit verb."""
+    clean = _clean(text)
+    return bool(_ABOUT_RE.search(clean)) and not _MAKE_VERB_RE.search(clean)
 
 
 def decline_reason(prompt: str, message_text: str) -> str:
@@ -100,6 +121,8 @@ def decline_reason(prompt: str, message_text: str) -> str:
     text = _clean(message_text)
     if not has_request_wording(text):
         return DECLINE_NO_REQUEST
+    if asks_about_media(text):
+        return DECLINE_ASKS_ABOUT
     if is_retry(text) or _OPEN_RE.search(text):
         return ""
     if not (prompt or "").strip():
