@@ -1549,10 +1549,57 @@ def _openai_from_native(data: dict) -> dict:
     }
 
 
-def _audit_http(response=None, payload=None, *, outcome: str = "") -> None:
+def _completion_facts(response=None, data=None, request: dict | None = None) -> dict:
+    """Model, finish reason and token counts for the api audit row.
+
+    data is the parsed JSON body (REST) or None; an SDK completion object is
+    read through attributes. The model is the one the provider actually used
+    (openrouter/auto routes each request to a different model).
+    """
+    facts: dict = {}
+
+    def pick(obj, key):
+        if isinstance(obj, dict):
+            return obj.get(key)
+        return getattr(obj, key, None)
+
+    body = data if isinstance(data, dict) else None
+    if body is None and response is not None and not hasattr(response, "status_code") \
+            and not hasattr(response, "status"):
+        body = response  # SDK completion object
+    if body is not None:
+        try:
+            model = pick(body, "model")
+            if model:
+                facts["model"] = str(model)[:120]
+            choices = pick(body, "choices") or []
+            if choices:
+                reason = pick(choices[0], "finish_reason")
+                if reason:
+                    facts["finish_reason"] = str(reason)[:40]
+            usage = pick(body, "usage")
+            used = pick(usage, "completion_tokens") if usage is not None else None
+            if used is not None:
+                facts["completion_tokens"] = int(used)
+        except Exception:
+            pass
+    if isinstance(request, dict):
+        cap = request.get("max_tokens") or request.get("max_completion_tokens")
+        if cap is not None:
+            try:
+                facts["max_tokens"] = int(cap)
+            except Exception:
+                pass
+        if "model" not in facts and request.get("model"):
+            facts["model"] = str(request.get("model"))[:120]
+    return facts
+
+
+def _audit_http(response=None, payload=None, *, outcome: str = "", request: dict | None = None) -> None:
     try:
         from core.audit import api_from_http
-        api_from_http(_provider_label() or "llm", response, payload, outcome=outcome)
+        api_from_http(_provider_label() or "llm", response, payload, outcome=outcome,
+                      **_completion_facts(response, payload, request))
     except Exception:
         pass
 
@@ -1587,7 +1634,7 @@ def _sync_post(url: str, payload: dict, headers: dict, timeout: int = 45) -> dic
             )
             nxt = _after_http_error(payload, visible, stage, err)
             if nxt is None:
-                _audit_http(response, outcome="error")
+                _audit_http(response, outcome="error", request=payload)
                 return {"error": err}
             stage = nxt
             continue
@@ -1606,9 +1653,9 @@ def _sync_post(url: str, payload: dict, headers: dict, timeout: int = 45) -> dic
         nxt = _after_http_ok(payload, visible, stage, data)
         if nxt is None:
             if isinstance(data, dict) and data.get("error") and not data.get("choices"):
-                _audit_http(response, data, outcome="error")
+                _audit_http(response, data, outcome="error", request=payload)
                 return {"error": _error_text(data.get("error"))}
-            _audit_http(response, data, outcome="success")
+            _audit_http(response, data, outcome="success", request=payload)
             return data
         stage = nxt
     return {"error": f"{_provider_label()} request failed. model=`{payload.get('model', '?')}`"}
@@ -1653,7 +1700,7 @@ async def _async_post(url: str, payload: dict, headers: dict, timeout: int = 45)
                         )
                         nxt = _after_http_error(payload, visible, stage, err)
                         if nxt is None:
-                            _audit_http(http_resp, outcome="error")
+                            _audit_http(http_resp, outcome="error", request=payload)
                             return {"error": err}
                         stage = nxt
                         continue
@@ -1675,9 +1722,9 @@ async def _async_post(url: str, payload: dict, headers: dict, timeout: int = 45)
         nxt = _after_http_ok(payload, visible, stage, data)
         if nxt is None:
             if isinstance(data, dict) and data.get("error") and not data.get("choices"):
-                _audit_http(http_resp, data, outcome="error")
+                _audit_http(http_resp, data, outcome="error", request=payload)
                 return {"error": _error_text(data.get("error"))}
-            _audit_http(http_resp, data, outcome="success")
+            _audit_http(http_resp, data, outcome="success", request=payload)
             return data
         stage = nxt
     return {"error": f"{_provider_label()} request failed. model=`{payload.get('model', '?')}`"}
@@ -2396,7 +2443,7 @@ async def _groq_sdk_call(
     async def _create(kw: dict) -> str | dict:
         completion = await client.chat.completions.create(**kw)
         try:
-            _audit_http(completion, getattr(completion, "id", None), outcome="success")
+            _audit_http(completion, getattr(completion, "id", None), outcome="success", request=kw)
         except Exception:
             pass
         if kw.get("stream"):
@@ -2686,7 +2733,10 @@ async def settle_cut_reply(
 ) -> ModelTurn:
     """Post only finished sentences when the token cap stopped the model.
 
-    One repair call when the cut reply contains no finished sentence.
+    One repair call when the cut reply contains no finished sentence. The
+    repair gets a bigger cap (max(160, 2x)); if it still has no finished
+    sentence, the original cut text is posted, trimmed at its last whole word
+    plus an ellipsis, so a capped turn never ends in silence.
     """
     if max_completion_tokens is None:
         max_completion_tokens = channel_completion_tokens()
@@ -2696,6 +2746,7 @@ async def settle_cut_reply(
     if finished:
         turn.reply = finished
         return turn
+    original = turn.reply or ""
     repair_prompt = (
         f"{prompt}\n\n"
         "The reply was cut off before a sentence finished. "
@@ -2706,20 +2757,55 @@ async def settle_cut_reply(
         repaired = await call_groq_turn(
             repair_prompt,
             user_id=user_id,
-            max_completion_tokens=max_completion_tokens,
+            max_completion_tokens=repair_tokens(max_completion_tokens),
             tools=None,
             images=images,
             include_tool_note=False,
             job=job,
         )
     except Exception:
-        turn.reply = ""
+        turn.reply = trim_cut_text(original)
         return turn
     if repaired.quota:
         return repaired
     if repaired.cut:
-        repaired.reply = complete_sentences(repaired.reply or "")
+        cut_text = repaired.reply or ""
+        repaired.reply = complete_sentences(cut_text)
+        if not repaired.reply.strip():
+            repaired.reply = trim_cut_text(original) or trim_cut_text(cut_text)
+    elif not (repaired.reply or "").strip():
+        repaired.reply = trim_cut_text(original)
     return repaired
+
+
+REPAIR_MIN_TOKENS = 160
+
+
+def repair_tokens(cap: int | None) -> int:
+    """Cap for the one repair call: at least 160, else double the reply cap."""
+    try:
+        base = int(cap or 0)
+    except Exception:
+        base = 0
+    return max(REPAIR_MIN_TOKENS, 2 * base)
+
+
+_TRIM_TAIL = " ,;:-\u2013\u2014([{\"'"
+
+
+def trim_cut_text(text: str) -> str:
+    """A cut reply up to its last whole word, plus an ellipsis. Blank stays blank."""
+    body = " ".join(str(text or "").split())
+    if not body or not re.search(r"\w", body):
+        return ""
+    words = body.split(" ")
+    if len(words) > 1:
+        # The last word may be cut mid-word; drop it.
+        body = " ".join(words[:-1])
+    body = body.rstrip(_TRIM_TAIL).rstrip(".\u2026")
+    if not body or not re.search(r"\w", body):
+        return ""
+    return body + "\u2026"
 
 
 async def call_groq(

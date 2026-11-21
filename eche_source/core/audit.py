@@ -669,7 +669,8 @@ def record(event: str, *, safety: bool = False, **fields) -> dict:
         if rec.get("category") and event != "block":
             bits.append(f"category={rec['category']}")
         # What a block or decline matched and the offending text (local log only).
-        shows_detail = event == "block" or str(rec.get("outcome") or "").lower() in {"refusal", "declined", "block"}
+        shows_detail = event == "block" or str(rec.get("outcome") or "").lower() in {
+            "refusal", "declined", "block", "empty"}
         if shows_detail:
             if rec.get("reason") and event != "block":
                 bits.append(f"reason={rec['reason']}")
@@ -681,6 +682,17 @@ def record(event: str, *, safety: bool = False, **fields) -> dict:
                 bits.append(f"snippet={str(rec['snippet'])[:400]!r}")
             if rec.get("prompt"):
                 bits.append(f"prompt={str(rec['prompt'])[:1500]!r}")
+        if event == "api":
+            # Which model answered and why it stopped (openrouter/auto routes
+            # each request; a "length" stop at a small cap can empty a reply).
+            if rec.get("model"):
+                bits.append(f"model={rec['model']}")
+            if rec.get("finish_reason"):
+                bits.append(f"finish={rec['finish_reason']}")
+            if rec.get("completion_tokens") is not None or rec.get("max_tokens") is not None:
+                bits.append(f"tokens={rec.get('completion_tokens', '-')}/{rec.get('max_tokens', '-')}")
+        if str(rec.get("outcome") or "").lower() == "error" and rec.get("stderr"):
+            bits.append(f"stderr={str(rec['stderr'])[-400:]!r}")
         if rec.get("footer_hash"):
             bits.append(f"footer sha256={rec['footer_hash']}")
         if rec.get("request_id") or rec.get("response_id"):
