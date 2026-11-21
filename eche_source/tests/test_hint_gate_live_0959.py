@@ -54,7 +54,7 @@ class GoAheadGateTests(unittest.TestCase):
         self.assertEqual(AI.decline_reason("a dragon over a castle", "make a cat in a hat"), AI.DECLINE_NO_OVERLAP)
         self.assertEqual(AI.decline_reason("a dragon", "ok stop trying lmfao"), AI.DECLINE_NO_REQUEST)
 
-    def test_declined_row_keeps_the_tool_prompt(self):
+    def test_declined_row_keeps_reason_not_prompt(self):
         rows = []
         msg = SimpleNamespace(id=1, content="what the heck man", author=SimpleNamespace(id=3, name="u", bot=False),
                               guild=SimpleNamespace(id=9), channel=SimpleNamespace(id=2), reference=None,
@@ -67,8 +67,10 @@ class GoAheadGateTests(unittest.TestCase):
             result = asyncio.run(T.execute("asset", {"prompt": "jet girl dancing", "kind": "image"}, ctx))
         self.assertTrue(result.declined)
         row = [kw for e, kw in rows if e == "asset-request"][-1]
-        self.assertEqual((row["outcome"], row["prompt"], row["message"]),
-                         ("declined", "jet girl dancing", "what the heck man"))
+        self.assertEqual(row["outcome"], "declined")
+        self.assertIn("reason", row)
+        self.assertNotIn("prompt", row)
+        self.assertNotIn("message", row)
 
 
 if __name__ == "__main__":

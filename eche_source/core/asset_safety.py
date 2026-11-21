@@ -2,20 +2,29 @@
 # The single choke point for ?asset and the asset tool.
 #
 # Every generation prompt is handled here, in order:
-#   1. the full minors matcher (including bare boy/girl/kids)
-#   2. a media-only size/age/family/stylization filter (~20 languages)
-#   3. the narrow prompt child check (Grok, local qwen3-vl backup, fail
+#   1. girl(s) -> woman/women when no youth or school cue is present
+#   2. bypass wording
+#   3. the full minors matcher (including bare boy/girl/kids)
+#   4. the school+sexual rule, then the narrow stylized-sexual rule
+#      (sexual anime/chibi/loli-style art only; SFW anime is allowed).
+#      The old keyword media filter (media_prompt_blocked) does not gate
+#      asset prompts.
+#   5. the narrow prompt child check (Grok, local qwen3-vl backup, fail
 #      closed). There is no Llama Guard (removed 2026-11-14).
-#   4. the adult rule first, then the user prompt, then the adult-age hint
-#      for anything that could show a person or character
-#   5. the hardcoded safety footer, appended last as explicit rules
+#   6. the adult rule first, then the user prompt, then the adult-age hint
+#      for anything that could show a person or character, then the
+#      hardcoded safety footer, appended last as explicit rules
+#   7. Imagine is sent a diffusion-style body only (user prompt plus the
+#      approved 25+ adult line). The footer and rules stay in the audited
+#      sent_prompt and are not sent to the image model.
 #
-# Generated images, every sampled video frame (plus the last frame), and
-# every frame of an animated GIF or WebP, go through the image content
-# check and a fail-closed age check (Grok vision, local backup). Unsure and
-# errors block. A blocked prompt is never retried. A blocked asset is
-# never posted or written to memory. The only backend is Grok Imagine
-# (xAI); there is no fallback generator.
+# Generated images, the first/middle/last frames of a generated video, and
+# every frame of source media or an animated GIF or WebP, go through the
+# image content check and a fail-closed age check (Grok vision, local
+# backup). Unsure and errors block. A blocked prompt is never retried. A
+# blocked asset is never posted or written to memory; local temp copies
+# are burned. The only backend is Grok Imagine (xAI); there is no fallback
+# generator.
 
 from __future__ import annotations
 
@@ -164,6 +173,7 @@ class PreparedPrompt:
     user_prompt: str
     sent_prompt: str
     footer_hash: str
+    diffusion_prompt: str = ""  # what Imagine is sent: user prompt + 25+ line, no footer
 
 
 
@@ -540,23 +550,35 @@ RETRY_ADULT_CUES = "mid-30s,mature adult faces,realistic adult proportions,no ca
 
 
 def strengthen_for_retry(prepared: "PreparedPrompt") -> "PreparedPrompt":
-    """The same prepared prompt with RETRY_ADULT_LINE just before the footer.
+    """Add RETRY_ADULT_LINE to the Imagine body and just before the footer.
 
-    The footer stays last and unchanged (same footer hash). Raises when the
-    footer order cannot be kept, so the caller does not retry.
+    The footer stays last and unchanged (same footer hash) and is still not
+    sent to Imagine. Raises when the footer order cannot be kept or the
+    diffusion body is missing, so the caller does not retry.
     """
     from core.safety import SAFETY_FOOTER
 
     sent = prepared.sent_prompt or ""
     if not footer_is_last(sent):
         raise ValueError("footer is not last")
-    if RETRY_ADULT_LINE in sent:
+    body = (prepared.diffusion_prompt or "").strip()
+    if not body:
+        raise ValueError("missing diffusion prompt")
+    if SAFETY_FOOTER in body:
+        raise ValueError("footer leaked into diffusion prompt")
+    already = RETRY_ADULT_LINE in sent and RETRY_ADULT_LINE in body
+    if already:
         return prepared
-    head = sent[: -len(SAFETY_FOOTER)].rstrip()
-    stronger = f"{head}\n\n{RETRY_ADULT_LINE}\n\n{SAFETY_FOOTER}"
-    if not footer_is_last(stronger):
-        raise ValueError("footer is not last")
-    return _dc_replace(prepared, sent_prompt=stronger)
+    stronger_body = body if RETRY_ADULT_LINE in body else f"{body}\n\n{RETRY_ADULT_LINE}"
+    if SAFETY_FOOTER in stronger_body:
+        raise ValueError("footer leaked into diffusion prompt")
+    stronger_sent = sent
+    if RETRY_ADULT_LINE not in sent:
+        head = sent[: -len(SAFETY_FOOTER)].rstrip()
+        stronger_sent = f"{head}\n\n{RETRY_ADULT_LINE}\n\n{SAFETY_FOOTER}"
+        if not footer_is_last(stronger_sent):
+            raise ValueError("footer is not last")
+    return _dc_replace(prepared, sent_prompt=stronger_sent, diffusion_prompt=stronger_body)
 
 
 def footer_is_last(sent: str) -> bool:
@@ -572,8 +594,31 @@ def edit_adult_hint(prompt: str) -> str:
     return character_adult_hint(prompt) or _ADULT_HINT.format(who="person", their="their")
 
 
+def build_diffusion_prompt(user_prompt: str, *, edit: bool = False) -> str:
+    """What Imagine is sent: the user prompt plus the approved 25+ adult line.
+
+    No safety footer and no rules list. Checks still run on the full prompt.
+    """
+    from core.safety import SAFETY_FOOTER
+
+    body = (user_prompt or "").strip()
+    if len(body) > 2000:
+        body = body[:2000].rstrip()
+    hint = edit_adult_hint(body) if edit else character_adult_hint(body)
+    if hint:
+        out = f"{body}\n\n{hint}"
+    else:
+        out = f"{body}\n\n{ADULT_WORDING}"
+    if SAFETY_FOOTER in out:
+        raise ValueError("footer leaked into diffusion prompt")
+    return out
+
+
 def build_sent_prompt(user_prompt: str, *, adult: bool = False, edit: bool = False) -> tuple[str, str]:
-    """Adult-only rewrite, then the user prompt, then the footer last."""
+    """Adult-only rewrite, then the user prompt, then the footer last.
+
+    This text is audited (footer-last, footer hash). It is not sent to Imagine.
+    """
     from core.safety import SAFETY_FOOTER, footer_sha256
 
     body = (user_prompt or "").strip()
@@ -590,6 +635,19 @@ def build_sent_prompt(user_prompt: str, *, adult: bool = False, edit: bool = Fal
         body = f"{body}\n\n{ALWAYS_ADULT_LINE} {ART_STYLE_LINE}"
     sent = f"{rule}\n\n{body}\n\n{SAFETY_FOOTER}"
     return sent, footer_sha256()
+
+
+class SafetyAuditError(Exception):
+    """A safety audit row could not be written. The action must be refused."""
+
+
+def _audit_failure() -> None:
+    from core.imagine import ImagineError
+
+    raise ImagineError(
+        "The safety log could not be written, so nothing was generated.",
+        status="error",
+    )
 
 
 def _audit(
@@ -610,50 +668,57 @@ def _audit(
     rule: str = "",
     prompt: str = "",
     snippet: str = "",
+    sha256: str = "",
 ) -> None:
+    """Write a safety audit row. Prompt and snippet text are never stored.
+
+    A failed write raises SafetyAuditError; callers refuse the action.
+    Pass rows are safety rows too, so an unwritable pass fails closed.
+    `prompt` and `snippet` arguments are accepted for call-site compatibility
+    and are discarded.
+    """
+    del prompt, snippet
+    from core.audit import record
+    from core.safety import footer_sha256
+
+    digest = footer_hash or footer_sha256()
+    snap = mode
+    fields = dict(
+        outcome=outcome,
+        category=category,
+        footer_hash=digest,
+        request_id=request_id,
+        response_id=response_id,
+        error_type=error_type,
+        user_id=user_id,
+        guild_id=guild_id,
+        channel_id=channel_id,
+        safety=True,
+    )
+    if frame:
+        fields["frame"] = frame
+    if reason:
+        fields["reason"] = reason
+    if term:
+        fields["term"] = term
+    if rule:
+        fields["rule"] = rule
+    if sha256:
+        fields["sha256"] = str(sha256)[:16]
+    if snap is not None:
+        fields["adult"] = "1" if snap.adult else "0"
+        fields["approval"] = "1" if snap.approval else "0"
     try:
-        from core.audit import record
-        from core.safety import footer_sha256
-
-        digest = footer_hash or footer_sha256()
-        safety = outcome in {"refusal", "error", "blocked"} or bool(category)
-        snap = mode
-        # The prompt text is included only on refusals (term/rule/prompt/
-        # snippet), cut to 1500 characters, in the local audit log.
-        fields = dict(
-            outcome=outcome,
-            category=category,
-            footer_hash=digest,
-            request_id=request_id,
-            response_id=response_id,
-            error_type=error_type,
-            user_id=user_id,
-            guild_id=guild_id,
-            channel_id=channel_id,
-            safety=safety,
-        )
-        if frame:
-            fields["frame"] = frame
-        if reason:
-            fields["reason"] = reason
-        # What matched and the offending text, on refusals only (local log).
-        if term:
-            fields["term"] = term
-        if rule:
-            fields["rule"] = rule
-        if prompt:
-            from core.blocklist import excerpt, match_snippet
-
-            fields["prompt"] = excerpt(prompt)
-            snippet = snippet or (match_snippet(prompt, term) if term else "")
-        if snippet:
-            fields["snippet"] = snippet
-        if snap is not None:
-            fields["adult"] = "1" if snap.adult else "0"
-            fields["approval"] = "1" if snap.approval else "0"
         record("asset", **fields)
-    except Exception:
-        pass
+    except Exception as exc:
+        try:
+            from core.imagine import ImagineError
+        except Exception:
+            raise SafetyAuditError("audit log could not be written") from exc
+        raise ImagineError(
+            "The safety log could not be written, so nothing was generated.",
+            status="error",
+        ) from exc
 
 
 def _rewrite_girls(raw: str, user_text: str, model_prompt: str, ids: dict) -> tuple[str, str, str]:
@@ -667,13 +732,22 @@ def _rewrite_girls(raw: str, user_text: str, model_prompt: str, ids: dict) -> tu
         if changed:
             changed_in.append(label)
     if changed_in:
-        try:
-            from core.audit import record
+        from core.audit import record
 
+        try:
             record("asset-strip", source="prepare", rule=GIRL_REWRITE_RULE,
                    removed=f"{GIRL_REWRITE_RULE}:{','.join(changed_in)}", safety=True, **ids)
-        except Exception:
-            pass
+        except SafetyAuditError:
+            raise
+        except Exception as exc:
+            try:
+                from core.imagine import ImagineError
+            except Exception:
+                raise SafetyAuditError("audit log could not be written") from exc
+            raise ImagineError(
+                "The safety log could not be written, so nothing was generated.",
+                status="error",
+            ) from exc
     return out[0], out[1], out[2]
 
 
@@ -688,18 +762,46 @@ async def prepare_generation(
     model_prompt: str = "",
     edit: bool = False,
 ) -> PreparedPrompt:
-    """Bypass, matcher, school+sexual rule, model child check, footer-last.
+    """Bypass, matcher, school+sexual, stylized-sexual, child check, footer-last.
     Fail closed.
 
-    The prompt sent is checked. For the chat tool, the user's own message and
-    the model's prompt before any cue was stripped are checked too (matcher,
-    school+sexual rule) and go to the child check with it. The keyword media
-    filter (media_prompt_blocked) no longer gates asset prompts; it was
-    almost all false positives next to the matcher and the model child check.
-    No Llama Guard; see classifier.asset_prompt_check_async.
+    The prompt is checked in full. For the chat tool, the user's own message and
+    the model's prompt before any cue was stripped are checked too and go to
+    the child check with it. The keyword media filter (media_prompt_blocked)
+    does not gate asset prompts. The narrow stylized-sexual rule does (sexual
+    anime/chibi/loli-style art; SFW anime is allowed). Imagine is sent the
+    diffusion body only. No Llama Guard; see classifier.asset_prompt_check_async.
     """
-    from core.asset_filter import school_sexual_blocked
+    from core.asset_filter import school_sexual_blocked, stylized_sexual_blocked
+    from core.burn import retry_pending
     from core.blocklist import REFUSAL, block_detail, is_blocked, note
+    from core.classifier import asset_prompt_check_async
+    from core.guardrails import BYPASS_REFUSAL, asks_to_bypass_filter
+    from core.imagine import ImagineError
+
+    try:
+        return await _prepare_generation_inner(
+            prompt, user_id=user_id, guild_id=guild_id, channel_id=channel_id,
+            mode=mode, user_text=user_text, model_prompt=model_prompt, edit=edit,
+        )
+    except SafetyAuditError:
+        _audit_failure()
+
+
+async def _prepare_generation_inner(
+    prompt: str,
+    *,
+    user_id=None,
+    guild_id=None,
+    channel_id=None,
+    mode: AssetMode | None = None,
+    user_text: str = "",
+    model_prompt: str = "",
+    edit: bool = False,
+) -> PreparedPrompt:
+    from core.asset_filter import school_sexual_blocked, stylized_sexual_blocked
+    from core.blocklist import REFUSAL, block_detail, is_blocked, note
+    from core.burn import retry_pending
     from core.classifier import asset_prompt_check_async
     from core.guardrails import BYPASS_REFUSAL, asks_to_bypass_filter
     from core.imagine import ImagineError
@@ -707,6 +809,10 @@ async def prepare_generation(
     raw = (prompt or "").strip()
     snap = mode if mode is not None else read_asset_mode()
     ids = dict(user_id=user_id, guild_id=guild_id, channel_id=channel_id)
+    try:
+        retry_pending()
+    except Exception:
+        pass
 
     # "girl(s)" -> "woman/women" when no youth or school cue is present
     # (owner-approved 2026-11-19). All checks below run on the result.
@@ -714,7 +820,7 @@ async def prepare_generation(
 
     if asks_to_bypass_filter(raw):
         note("asset prompt bypass")
-        _audit("refusal", category="bypass", rule="bypass", prompt=raw, mode=snap, **ids)
+        _audit("refusal", category="bypass", rule="bypass", mode=snap, **ids)
         raise ImagineError(BYPASS_REFUSAL)
     if is_blocked(raw, user_id=user_id, channel_id=channel_id):
         note("asset prompt")
@@ -737,7 +843,14 @@ async def prepare_generation(
         if hit:
             note(f"asset {label} school-sexual")
             _audit("refusal", category="school-sexual", reason=f"in={label};{why}", rule="school-sexual",
-                   prompt=text, mode=snap, **ids)
+                   mode=snap, **ids)
+            raise ImagineError(REFUSAL)
+    for label, text in (("prompt", raw), *extras):
+        hit, why = stylized_sexual_blocked(text)
+        if hit:
+            note(f"asset {label} stylized-sexual")
+            _audit("refusal", category="stylized-sexual", reason=f"in={label};{why}", rule="stylized-sexual",
+                   mode=snap, **ids)
             raise ImagineError(REFUSAL)
 
     # The child check sees the prompt plus the user's words and the model's
@@ -751,19 +864,22 @@ async def prepare_generation(
         verdict = "child-check-error"
     if verdict:
         note(f"asset-input-{verdict}")
-        _audit("refusal", category=verdict, rule="child-check", prompt=checked, mode=snap, **ids)
+        _audit("refusal", category=verdict, rule="child-check", mode=snap, **ids)
         raise ImagineError(REFUSAL)
 
     sent, digest = build_sent_prompt(raw, adult=snap.adult, edit=edit)
     if not footer_is_last(sent):
         _audit("error", category="footer-order", footer_hash=digest, mode=snap, **ids)
         raise ImagineError("Safety rules could not be applied, so nothing was generated.")
+    diffusion = build_diffusion_prompt(raw, edit=edit)
     hinted = edit or bool(character_adult_hint(raw))
-    _audit("success", footer_hash=digest, mode=snap, reason="adult-hint" if hinted else "", **ids)
+    # Pass rows are safety rows: a failed write refuses the action.
+    _audit("success", category="pass", footer_hash=digest, mode=snap, reason="adult-hint" if hinted else "", **ids)
     return PreparedPrompt(
         user_prompt=raw,
         sent_prompt=sent,
         footer_hash=digest,
+        diffusion_prompt=diffusion,
     )
 
 
@@ -826,11 +942,114 @@ def _read_jpegs(folder: str, prefix: str = "frame-") -> list[bytes]:
     return frames
 
 
-def extract_video_frames(data: bytes, mime: str = "video/mp4") -> list[bytes]:
-    """JPEG frames at 4 fps in one pass, plus the last frame at duration-epsilon.
+def _probe_fps(src: str) -> float:
+    """Stream fps from ffprobe, or 0."""
+    ffprobe = shutil.which("ffprobe")
+    if not ffprobe or not src:
+        return 0.0
+    probe = _run_ffmpeg(
+        [
+            ffprobe,
+            "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=avg_frame_rate,r_frame_rate,nb_frames",
+            "-of", "default=noprint_wrappers=1",
+            src,
+        ],
+        timeout=20,
+    )
+    text = (probe.stdout or b"").decode("utf-8", "replace")
+    fps = 0.0
+    for line in text.splitlines():
+        if line.startswith("avg_frame_rate=") or line.startswith("r_frame_rate="):
+            raw = line.split("=", 1)[-1].strip()
+            if "/" in raw:
+                num, den = raw.split("/", 1)
+                try:
+                    n, d = float(num), float(den)
+                    if d:
+                        value = n / d
+                        if value > fps:
+                            fps = value
+                except ValueError:
+                    continue
+            else:
+                try:
+                    value = float(raw)
+                    if value > fps:
+                        fps = value
+                except ValueError:
+                    continue
+    return fps
 
-    Animated GIF and WebP yield every frame. Unknown duration or too few
-    frames returns an empty list (fail closed). Uses real ffmpeg.
+
+def _probe_frame_count(src: str) -> int:
+    """nb_frames from ffprobe, or 0."""
+    ffprobe = shutil.which("ffprobe")
+    if not ffprobe or not src:
+        return 0
+    probe = _run_ffmpeg(
+        [
+            ffprobe,
+            "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=nb_frames",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            src,
+        ],
+        timeout=20,
+    )
+    text = (probe.stdout or b"").decode("utf-8", "replace").strip()
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.upper() == "N/A":
+            continue
+        try:
+            value = int(line)
+        except ValueError:
+            continue
+        if value > 0:
+            return value
+    return 0
+
+
+def _extract_one_jpeg(ffmpeg: str, src: str, dest: str, *, timestamp: float | None = None, from_end: bool = False) -> bytes:
+    args = [ffmpeg, "-hide_banner", "-loglevel", "error"]
+    if from_end:
+        args.extend(["-sseof", f"-{LAST_FRAME_EPSILON}"])
+    elif timestamp is not None:
+        args.extend(["-ss", f"{max(0.0, timestamp):.4f}"])
+    args.extend(["-i", src, "-frames:v", "1", "-update", "1", "-f", "image2", "-y", dest])
+    result = _run_ffmpeg(args, timeout=30)
+    if result.returncode != 0 or not os.path.isfile(dest):
+        return b""
+    with open(dest, "rb") as fh:
+        blob = fh.read()
+    return blob if blob.startswith(b"\xff\xd8\xff") else b""
+
+
+def _frame_timestamp(index: int, count: int, duration: float, fps: float) -> float:
+    if index <= 1 or count <= 1:
+        return 0.0
+    if fps > 0:
+        stamp = (index - 1) / fps
+    elif duration > 0:
+        stamp = duration * (index - 1) / max(count, 1)
+    else:
+        stamp = 0.0
+    if duration > 0:
+        slack = 0.5 / fps if fps > 0 else LAST_FRAME_EPSILON
+        stamp = min(stamp, max(0.0, duration - slack))
+    return max(0.0, stamp)
+
+
+def extract_video_frames(data: bytes, mime: str = "video/mp4", stage: str = "output") -> list[bytes]:
+    """JPEG frames for the safety check. Fail closed on any extract error.
+
+    Generated video (stage="output"): only the first, middle, and last
+    frames. Source media is sampled at FRAME_FPS (8) plus a last-frame grab.
+    Animated GIF and WebP yield every frame. Unknown duration or a short
+    extract returns an empty list. Local copies are overwritten and deleted.
     """
     if not data:
         return []
@@ -849,74 +1068,82 @@ def extract_video_frames(data: bytes, mime: str = "video/mp4") -> list[bytes]:
     elif "webp" in kind:
         suffix = ".webp"
     animated = "gif" in kind or "webp" in kind
-    with tempfile.TemporaryDirectory(prefix="eche-frames-") as raw:
+    raw = tempfile.mkdtemp(prefix="eche-frames-")
+    try:
         src = os.path.join(raw, "src" + suffix)
         with open(src, "wb") as fh:
             fh.write(data)
         duration = probe_duration(src)
         if duration is None:
             return []
-        pattern = os.path.join(raw, "frame-%04d.jpg")
-        if animated:
-            args = [
-                ffmpeg,
-                "-hide_banner",
-                "-loglevel", "error",
-                "-i", src,
-                "-vsync", "0",
-                "-f", "image2",
-                "-y",
-                pattern,
-            ]
-        else:
-            args = [
-                ffmpeg,
-                "-hide_banner",
-                "-loglevel", "error",
-                "-i", src,
-                "-vf", f"fps={FRAME_FPS}",
-                "-f", "image2",
-                "-y",
-                pattern,
-            ]
-        result = _run_ffmpeg(args, timeout=60)
-        if result.returncode != 0:
-            return []
-        frames = _read_jpegs(raw)
-        fps_count = len(frames)
-        last = os.path.join(raw, "last.jpg")
-        last_result = _run_ffmpeg(
-            [
-                ffmpeg,
-                "-hide_banner",
-                "-loglevel", "error",
-                "-sseof", f"-{LAST_FRAME_EPSILON}",
-                "-i", src,
-                "-frames:v", "1",
-                "-update", "1",
-                "-f", "image2",
-                "-y",
-                last,
-            ],
-            timeout=30,
-        )
-        last_ok = False
-        if last_result.returncode == 0 and os.path.isfile(last):
-            with open(last, "rb") as fh:
-                blob = fh.read()
-            if blob:
-                last_ok = True
-                # Keep a unique last frame for the classifier, but do not
-                # let a byte-identical last frame shrink the fps count.
-                if not frames or blob != frames[-1]:
-                    frames.append(blob)
-        if not frames:
-            return []
-        if not animated:
-            needed = max(1, math.floor(duration * FRAME_FPS))
-            if fps_count < needed or not last_ok:
+        if animated or stage != "output":
+            pattern = os.path.join(raw, "frame-%04d.jpg")
+            if animated:
+                args = [
+                    ffmpeg, "-hide_banner", "-loglevel", "error",
+                    "-i", src, "-vsync", "0", "-f", "image2", "-y", pattern,
+                ]
+            else:
+                args = [
+                    ffmpeg, "-hide_banner", "-loglevel", "error",
+                    "-i", src, "-vf", f"fps={FRAME_FPS}", "-f", "image2", "-y", pattern,
+                ]
+            result = _run_ffmpeg(args, timeout=60)
+            if result.returncode != 0:
                 return []
-        return frames
+            frames = _read_jpegs(raw)
+            fps_count = len(frames)
+            last = os.path.join(raw, "last.jpg")
+            blob = _extract_one_jpeg(ffmpeg, src, last, from_end=True)
+            last_ok = bool(blob)
+            if blob and (not frames or blob != frames[-1]):
+                frames.append(blob)
+            if not frames:
+                return []
+            if not animated:
+                needed = max(1, math.floor(duration * FRAME_FPS))
+                if fps_count < needed or not last_ok:
+                    return []
+            return frames
+        fps = _probe_fps(src)
+        count = _probe_frame_count(src)
+        if count <= 0 and fps > 0 and duration > 0:
+            count = max(1, int(round(duration * fps)))
+        if count <= 0 and duration > 0:
+            count = max(1, math.floor(duration * FRAME_FPS))
+        if count <= 0:
+            return []
+        indexes = check_frame_indexes(count, "output")
+        if not indexes:
+            return []
+        picked: list[bytes] = []
+        for i, index in enumerate(indexes):
+            dest = os.path.join(raw, f"review-{i+1:02d}.jpg")
+            if index == count:
+                blob = _extract_one_jpeg(ffmpeg, src, dest, from_end=True)
+            else:
+                blob = _extract_one_jpeg(
+                    ffmpeg, src, dest,
+                    timestamp=_frame_timestamp(index, count, duration, fps),
+                )
+            if not blob:
+                return []
+            picked.append(blob)
+        if len(picked) != len(indexes):
+            return []
+        return picked
+    except Exception:
+        return []
+    finally:
+        try:
+            from core.burn import secure_delete_tree
+
+            secure_delete_tree(raw)
+        except Exception:
+            try:
+                shutil.rmtree(raw, ignore_errors=True)
+            except Exception:
+                pass
 
 
 def _image_part(data: bytes, mime: str) -> dict | None:
@@ -970,16 +1197,24 @@ async def _classify_image(
     stage_token = CHECK_STAGE.set(stage)
     try:
         await _classify_image_checks(data, mime, ids=ids, snap=snap, stage=stage)
+    except SafetyAuditError:
+        CHECK_STAGE.reset(stage_token)
+        CHECK_FRAME.reset(frame_token)
+        _audit_failure()
     finally:
         CHECK_STAGE.reset(stage_token)
         CHECK_FRAME.reset(frame_token)
 
 
 async def _classify_image_checks(data: bytes, mime: str, *, ids: dict, snap: AssetMode, stage: str) -> None:
+    import hashlib
+
     from core.blocklist import note
     from core.classifier import age_vision_async, classify_media_async, collect_signals
     from core.imagine import ImagineError
 
+    digest16 = hashlib.sha256(data or b"").hexdigest()[:16]
+    ids = dict(ids, sha256=digest16)
     source = stage == "source"
     refused = SOURCE_REFUSAL if source else OUTPUT_REFUSAL
     unchecked = SOURCE_UNCHECKED if source else OUTPUT_UNCHECKED
@@ -1054,6 +1289,31 @@ async def check_generated_media(
     """Classify one image, or the sampled frames of a video. Fail closed."""
     from core.imagine import ImagineError
 
+    try:
+        await _check_generated_media_inner(
+            data, mime, footer_hash=footer_hash, user_id=user_id, guild_id=guild_id,
+            channel_id=channel_id, request_id=request_id, response_id=response_id,
+            mode=mode, stage=stage,
+        )
+    except SafetyAuditError:
+        _audit_failure()
+
+
+async def _check_generated_media_inner(
+    data: bytes,
+    mime: str,
+    *,
+    footer_hash: str,
+    user_id=None,
+    guild_id=None,
+    channel_id=None,
+    request_id: str = "",
+    response_id: str = "",
+    mode: AssetMode | None = None,
+    stage: str = "output",
+) -> None:
+    from core.imagine import ImagineError
+
     snap = mode if mode is not None else read_asset_mode(observe=False)
     ids = dict(
         user_id=user_id,
@@ -1067,7 +1327,7 @@ async def check_generated_media(
     kind = (mime or "").lower()
     needs_frames = "video" in kind or _is_animated_image(mime, data)
     if needs_frames:
-        frames = extract_video_frames(data, mime)
+        frames = extract_video_frames(data, mime, stage=stage)
         if not frames:
             _audit("refusal", category="frame-extract" if stage == "output" else f"{stage}-frame-extract", **ids)
             raise ImagineError(SOURCE_UNCHECKED if stage == "source" else OUTPUT_UNCHECKED, status="error")

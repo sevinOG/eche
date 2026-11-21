@@ -53,6 +53,11 @@ _SECRET_KEYS = (
     "token", "nonce", "client_secret", "client_id", "bearer", "discord_token",
     "groq_api_key", "openrouter_api_key", "xai_api_key", "google_api_key",
     "us_access_token", "us_secret_token", "inf_api_key",
+    # Prompt and media bytes never belong in the log (ids, categories, rule
+    # ids, footer hash, and sha256 prefixes only).
+    "prompt", "snippet", "user_prompt", "sent_prompt", "excerpt",
+    "image", "image_bytes", "bytes", "b64", "content",
+    "dob", "date_of_birth", "birthdate", "birth_date", "birthday",
 )
 _SECRET_ASSIGN = re.compile(
     r"(?i)\b(?:" + "|".join(re.escape(k) for k in _SECRET_KEYS) + r")\b\s*[:=]\s*\S+"
@@ -668,7 +673,7 @@ def record(event: str, *, safety: bool = False, **fields) -> dict:
             bits.append(f"outcome={rec['outcome']}")
         if rec.get("category") and event != "block":
             bits.append(f"category={rec['category']}")
-        # What a block or decline matched and the offending text (local log only).
+        # What a block or decline matched: term and rule id only, never prompt text.
         shows_detail = event == "block" or str(rec.get("outcome") or "").lower() in {
             "refusal", "declined", "block", "empty"}
         if shows_detail:
@@ -678,10 +683,6 @@ def record(event: str, *, safety: bool = False, **fields) -> dict:
                 bits.append(f"rule={rec['rule']}")
             if rec.get("term"):
                 bits.append(f"term={rec['term']}")
-            if rec.get("snippet"):
-                bits.append(f"snippet={str(rec['snippet'])[:400]!r}")
-            if rec.get("prompt"):
-                bits.append(f"prompt={str(rec['prompt'])[:1500]!r}")
         if event == "api":
             # Which model answered and why it stopped (openrouter/auto routes
             # each request; a "length" stop at a small cap can empty a reply).

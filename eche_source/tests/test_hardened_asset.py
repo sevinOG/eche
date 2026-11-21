@@ -98,9 +98,9 @@ class HardenedAssetTests(unittest.TestCase):
         self.assertTrue(is_blocked(INCIDENT))
         self.assertTrue(is_blocked(INCIDENT_COMMAND))
 
-    def test_prepare_generation_blocks_incident_and_logs_term_and_prompt(self):
-        # Owner request 2026-11-19: refusal rows carry the matched term, the
-        # rule and the offending prompt (cut to 1500 chars), local log only.
+    def test_prepare_generation_blocks_incident_and_logs_term_not_prompt(self):
+        # Refusal rows carry the matched term and rule id only. Prompt text
+        # is not written to the local log.
         with tempfile.TemporaryDirectory(prefix="eche-asset-audit-") as raw:
             audit = Path(raw) / "logs"
             audit.mkdir()
@@ -118,8 +118,9 @@ class HardenedAssetTests(unittest.TestCase):
                 rows = [json.loads(line) for line in lines.splitlines() if line.strip()]
                 row = [r for r in rows if r.get("event") == "asset" and r.get("category") == "matcher"][-1]
                 self.assertEqual((row["term"], row["rule"]), ("boy", "always"))
-                self.assertIn("twig boy", row["prompt"])
-                self.assertLessEqual(len(row["prompt"]), 1500)
+                self.assertNotIn("prompt", row)
+                self.assertNotIn("snippet", row)
+                self.assertNotIn("twig boy", lines)
 
     def test_sent_prompt_has_footer_last(self):
         sent, digest = build_sent_prompt("a red paper boat")
@@ -142,27 +143,32 @@ class HardenedAssetTests(unittest.TestCase):
         added = len(ALWAYS_ADULT_LINE) + len(ART_STYLE_LINE) + 3
         self.assertLessEqual(len(sent) - len(ADULT_RULE) - len(SAFETY_FOOTER) - 4 - added, 2000)
 
-    def test_request_for_uses_prepared_sent_prompt_and_requires_choke_point(self):
-        from core.asset_safety import PreparedPrompt
+    def test_request_for_uses_diffusion_prompt_and_requires_choke_point(self):
+        from core.asset_safety import ADULT_WORDING, PreparedPrompt, build_diffusion_prompt
 
+        diffusion = build_diffusion_prompt("a red paper boat")
         prepared = PreparedPrompt(
             user_prompt="a red paper boat",
             sent_prompt=build_sent_prompt("a red paper boat")[0],
             footer_hash=FOOTER_HASH,
+            diffusion_prompt=diffusion,
         )
         plan = plan_asset("a red paper boat")
         with mock.patch("core.blocklist.is_blocked") as blocked:
             path, body = request_for(plan, prepared)
         blocked.assert_not_called()
         self.assertEqual(path, "/images/generations")
-        self.assertTrue(footer_is_last(body["prompt"]))
-        self.assertEqual(body["prompt"], prepared.sent_prompt)
+        self.assertEqual(body["prompt"], diffusion)
+        self.assertIn("a red paper boat", body["prompt"])
+        self.assertIn(ADULT_WORDING, body["prompt"])
+        self.assertFalse(footer_is_last(body["prompt"]))
+        self.assertNotIn(SAFETY_FOOTER, body["prompt"])
         self.assertNotIn("negative_prompt", body)
         self.assertEqual(body["model"], "grok-imagine-image-2.0")
         with self.assertRaises(ImagineError):
             request_for(plan, None)
         with self.assertRaises(ImagineError):
-            request_for(plan, PreparedPrompt(user_prompt="x", sent_prompt="", footer_hash=FOOTER_HASH))
+            request_for(plan, PreparedPrompt(user_prompt="x", sent_prompt="x", footer_hash=FOOTER_HASH))
 
     def test_plan_asset_refuses_sources_that_are_not_checked_media(self):
         # Edits need a real AssetSource (image or video) from a reply; any
@@ -367,7 +373,7 @@ class HardenedAssetTests(unittest.TestCase):
             self.assertEqual(raised.exception.text, OUTPUT_REFUSAL)
 
     @unittest.skipUnless(HAS_FFMPEG, "real ffmpeg is required")
-    def test_extract_video_frames_uses_real_ffmpeg_at_eight_fps(self):
+    def test_extract_video_frames_uses_real_ffmpeg_review_frames(self):
         with tempfile.TemporaryDirectory(prefix="eche-ff-") as raw:
             path = Path(raw) / "clip.mp4"
             data = _make_mp4(path, seconds=2.0)
@@ -375,10 +381,10 @@ class HardenedAssetTests(unittest.TestCase):
             self.assertIsNotNone(duration)
             self.assertGreater(duration, 1.5)
             frames = extract_video_frames(data, "video/mp4")
-            needed = math.floor(duration * FRAME_FPS)
-            # Unique frames may omit a byte-identical last frame.
-            self.assertGreaterEqual(len(frames), max(1, needed - 1))
+            # Generated video: first, middle, last only (at most 3).
             self.assertTrue(frames)
+            self.assertLessEqual(len(frames), 3)
+            self.assertGreaterEqual(len(frames), 1)
             for frame in frames:
                 self.assertTrue(frame.startswith(b"\xff\xd8\xff"))
             self.assertEqual(extract_video_frames(data, "video/mp4") and True, True)
@@ -726,7 +732,7 @@ class HeldOutIncidentFilterTests(unittest.TestCase):
 
 
     @unittest.skipUnless(HAS_FFMPEG, "real ffmpeg is required")
-    def test_fractional_length_clip_at_eight_fps_is_accepted(self):
+    def test_fractional_length_clip_review_frames_are_accepted(self):
         with tempfile.TemporaryDirectory(prefix="eche-ff604-") as raw:
             path = Path(raw) / "clip.mp4"
             data = _make_mp4(path, seconds=6.04)
@@ -734,9 +740,8 @@ class HeldOutIncidentFilterTests(unittest.TestCase):
             self.assertIsNotNone(duration)
             self.assertGreater(duration, 6.0)
             frames = extract_video_frames(data, "video/mp4")
-            self.assertTrue(frames, "a 6.04s clip at 8 fps must not be refused")
-            needed = math.floor(duration * FRAME_FPS)
-            self.assertGreaterEqual(len(frames), max(1, needed - 1))
+            self.assertTrue(frames, "a 6.04s clip must still yield review frames")
+            self.assertEqual(len(frames), 3)
             for frame in frames:
                 self.assertTrue(frame.startswith(b"\xff\xd8\xff"))
 

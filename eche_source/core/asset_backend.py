@@ -61,8 +61,12 @@ class XaiImagineBackend:
     def build_request(self, plan, prepared) -> tuple[str, dict]:
         from core.imagine import ImagineError
 
-        prompt = getattr(prepared, "sent_prompt", None) or ""
+        prompt = getattr(prepared, "diffusion_prompt", None) or ""
         if not prompt.strip():
+            raise ImagineError("Safety rules could not be applied, so nothing was generated.")
+        from core.safety import SAFETY_FOOTER
+
+        if SAFETY_FOOTER in prompt:
             raise ImagineError("Safety rules could not be applied, so nothing was generated.")
         mode = getattr(plan, "mode", "") or "image"
         source = getattr(plan, "source", None)

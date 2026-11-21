@@ -424,7 +424,8 @@ class IntentGateTests(unittest.TestCase):
         tool_rows = [kw for e, kw in rows if e == "tool"]
         self.assertEqual((tool_rows[-1]["outcome"], tool_rows[-1]["status"]), ("refusal", "safety_block"))
         req = [kw for e, kw in rows if e == "asset-request"][-1]
-        self.assertEqual((req["source"], req["kind"], req["prompt"]), ("chat", "image", "a red paper boat"))
+        self.assertEqual((req["source"], req["kind"]), ("chat", "image"))
+        self.assertNotIn("prompt", req)
 
     def test_memory_note_tells_the_model_not_to_retry(self):
         note = ML.tool_action("asset", {"prompt": "x"}, status="safety_block")

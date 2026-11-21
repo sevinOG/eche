@@ -8,7 +8,8 @@
 #    prompt before the checks and before generation. Anything ambiguous, or
 #    any non-negated youth term anywhere, keeps the prompt as written and
 #    blocked.
-# 3. Logged prompts are cut at 1500 chars and carry a snippet around the hit.
+# 3. Audit rows keep the term and rule id only; prompt and snippet text
+#    are not written.
 # Mocks only; nothing is generated.
 from __future__ import annotations
 
@@ -200,15 +201,14 @@ class ModelInstructionTests(unittest.TestCase):
 
 
 class LoggingTests(unittest.TestCase):
-    def test_snippet_shows_a_hit_deep_in_a_long_prompt(self):
+    def test_block_detail_keeps_term_and_drops_prompt_text(self):
         text = LIVE_1024 + " " + ("filler words " * 120) + "and a child in the corner"
         d = B.block_detail(text)
         self.assertEqual(d["term"], "child")
-        self.assertIn("a child in the corner", d["snippet"])
-        self.assertLessEqual(len(d["snippet"]), 2 * B.LOG_SNIPPET_RADIUS + len("child") + 2)
-        self.assertLessEqual(len(d["prompt"]), 1500)
+        self.assertNotIn("snippet", d)
+        self.assertNotIn("prompt", d)
 
-    def test_llm_output_row_has_snippet_and_long_prompt(self):
+    def test_llm_output_row_has_term_not_prompt(self):
         rows = []
         prompt = LIVE_1024 + ", no children" + ", and two kids watching"
         token = client._request_images.set(False)
@@ -220,10 +220,10 @@ class LoggingTests(unittest.TestCase):
         ev, f = [r for r in rows if r[0] == "block"][-1]
         self.assertEqual(f["category"], "llm-output")
         self.assertIn(f["term"], ("children", "kids"))
-        self.assertIn(f["term"], f["snippet"])
-        self.assertGreater(len(f["prompt"]), 500)
+        self.assertNotIn("snippet", f)
+        self.assertNotIn("prompt", f)
 
-    def test_gui_line_has_snippet(self):
+    def test_gui_line_has_term_not_snippet(self):
         import os
         import tempfile
 
@@ -233,8 +233,11 @@ class LoggingTests(unittest.TestCase):
                 mock.patch("core.gui_bridge.log", side_effect=lambda line, channel="": logged.append(line)):
             B.note("llm-output", term="children", rule="always", prompt=LIVE_1024 + ", no children")
         joined = "\n".join(logged)
-        self.assertIn("snippet=", joined)
-        self.assertIn("no children", joined)
+        self.assertIn("term=children", joined)
+        self.assertIn("rule=always", joined)
+        self.assertNotIn("snippet=", joined)
+        self.assertNotIn("prompt=", joined)
+        self.assertNotIn("no children", joined)
 
 
 if __name__ == "__main__":

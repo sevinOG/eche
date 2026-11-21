@@ -147,7 +147,11 @@ class EditPathTests(unittest.TestCase):
             mock.patch("core.asset_safety._audit"),
             mock.patch("core.asset_safety.require_enabled", lambda *a, **k: None),
             mock.patch("core.asset_safety.prepare_generation",
-                       mock.AsyncMock(return_value=SimpleNamespace(sent_prompt="bigger [footer]", footer_hash="f"))),
+                       mock.AsyncMock(return_value=SimpleNamespace(
+                           sent_prompt="bigger [footer]",
+                           diffusion_prompt="bigger. All characters are adults aged 25 or older, with mature adult facial features and adult proportions.",
+                           footer_hash="f",
+                       ))),
         ]
         for p in self._patches:
             p.start()
