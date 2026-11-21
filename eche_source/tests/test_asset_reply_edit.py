@@ -101,7 +101,11 @@ class SourceTests(unittest.TestCase):
 
 class PlanAndRequestTests(unittest.TestCase):
     def _prepared(self):
-        return SimpleNamespace(sent_prompt="make it blue\n[footer]", footer_hash="f")
+        return SimpleNamespace(
+            sent_prompt="make it blue\n[footer]",
+            diffusion_prompt="make it blue. All characters are adults aged 25 or older, with mature adult facial features and adult proportions.",
+            footer_hash="f",
+        )
 
     def test_image_reply_goes_to_the_image_edit_endpoint(self):
         src = SRC.AssetSource(data=JPEG, mime="image/jpeg", kind="image")
@@ -138,7 +142,11 @@ class ChokePointTests(unittest.TestCase):
             mock.patch("core.asset_safety._audit"),
             mock.patch("core.asset_safety.require_enabled", lambda *a, **k: None),
             mock.patch("core.asset_safety.prepare_generation",
-                       mock.AsyncMock(return_value=SimpleNamespace(sent_prompt="make it blue [footer]", footer_hash="f"))),
+                       mock.AsyncMock(return_value=SimpleNamespace(
+                           sent_prompt="make it blue [footer]",
+                           diffusion_prompt="make it blue. All characters are adults aged 25 or older, with mature adult facial features and adult proportions.",
+                           footer_hash="f",
+                       ))),
         ]
         for p in self._patches:
             p.start()

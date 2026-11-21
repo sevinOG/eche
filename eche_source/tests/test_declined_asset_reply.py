@@ -4,8 +4,8 @@
 # wording. The intent gate declined (reason no-request-wording) and the turn
 # was re-asked without the asset tool and without saying why, so the model
 # told the user the asset tool "isn't loaded". The re-ask now carries a note
-# that the tool is loaded and did not run for this message, and the declined
-# audit row keeps a short excerpt of the message. Mocks only; no media.
+# that the tool is loaded and did not run for this message. The declined
+# audit row keeps the reason, not the message text. Mocks only; no media.
 from __future__ import annotations
 
 import asyncio
@@ -101,7 +101,9 @@ class DeclinedReAskTests(unittest.TestCase):
         self.assertEqual(sent, ["say what you want me to make"])
         declined = [kw for e, kw in rows if e == "asset-request" and kw.get("outcome") == "declined"]
         self.assertEqual(declined[-1]["reason"], "no-request-wording")
-        self.assertEqual(declined[-1]["message"], "lmao ok how about now")
+        self.assertNotIn("message", declined[-1])
+        self.assertNotIn("prompt", declined[-1])
+        self.assertNotIn("lmao ok how about now", str(declined[-1]))
 
 
 if __name__ == "__main__":

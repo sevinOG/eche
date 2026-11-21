@@ -558,11 +558,13 @@ def plan_asset(text: str, *, kind: str = "", source=None, asset_mode=None) -> As
 def request_for(plan: AssetPlan, prepared) -> tuple[str, dict]:
     """POST path and JSON body. No network.
 
-    `prepared` is required: the choke-point result, with the adult rewrite
-    and the safety footer last. There is no fallback to plan.prompt, and
-    negative_prompt is not sent (it is not a documented xAI parameter).
+    `prepared` is required: the choke-point result, with a diffusion-style
+    body (user prompt plus the 25+ adult line) and an audited footer hash.
+    The safety footer is not sent to Imagine. There is no fallback to
+    plan.prompt, and negative_prompt is not sent (it is not a documented
+    xAI parameter).
     """
-    if prepared is None or not getattr(prepared, "sent_prompt", None):
+    if prepared is None or not getattr(prepared, "diffusion_prompt", None):
         raise ImagineError("Safety rules could not be applied, so nothing was generated.")
     from core.asset_backend import get_backend
 

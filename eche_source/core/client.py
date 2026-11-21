@@ -1073,7 +1073,7 @@ async def _output_blocked(*texts, tool_calls=None) -> bool:
     if combined:
         term, check = match_info(combined, force_context=True)
         if check:
-            note("llm-output", term=term, rule=f"{check}+context", prompt=excerpt(reply))
+            note("llm-output", term=term, rule=f"{check}+context")
             return True
     # Chat text replies do not run the model child check. Generated-image
     # and asset outputs are checked on the image path, which stays on.

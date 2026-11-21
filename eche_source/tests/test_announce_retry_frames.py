@@ -96,8 +96,13 @@ class RetryTests(unittest.TestCase):
 
         plan = SimpleNamespace(prompt=prompt, user_text=prompt, model_prompt=prompt, mode="image", source=None)
         prepared = S.PreparedPrompt(
-            user_prompt=prompt, sent_prompt=S.build_sent_prompt(prompt)[0], footer_hash="h")
+            user_prompt=prompt,
+            sent_prompt=S.build_sent_prompt(prompt)[0],
+            footer_hash="h",
+            diffusion_prompt=S.build_diffusion_prompt(prompt),
+        )
         self.sent_prompts = []
+        self.diffusion_prompts = []
         seq = list(outcomes)
 
         async def check(*a, **k):
@@ -123,6 +128,7 @@ class RetryTests(unittest.TestCase):
         posted.__iter__ = lambda self: iter((200, {}))
         def request_for(_plan, prep):
             self.sent_prompts.append(prep.sent_prompt)
+            self.diffusion_prompts.append(prep.diffusion_prompt)
             return "/p", {}
 
         with mock.patch.object(I, "request_for", side_effect=request_for), \
@@ -158,6 +164,13 @@ class RetryTests(unittest.TestCase):
         self.assertIn(S.RETRY_ADULT_LINE, second)
         self.assertTrue(second.endswith(SAFETY_FOOTER))
         self.assertEqual(second.count(SAFETY_FOOTER), 1)
+        # Imagine is sent the diffusion body: retry cues, no footer.
+        d_first, d_second = self.diffusion_prompts
+        self.assertNotIn(S.RETRY_ADULT_LINE, d_first)
+        self.assertIn(S.RETRY_ADULT_LINE, d_second)
+        self.assertNotIn(SAFETY_FOOTER, d_first)
+        self.assertNotIn(SAFETY_FOOTER, d_second)
+        self.assertIn(S.ADULT_WORDING, d_first)
 
     def test_second_block_refuses(self):
         out, exc, notes, _, seq = self._run(["block", "block", "pass"])

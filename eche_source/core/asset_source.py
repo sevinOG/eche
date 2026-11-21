@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 import tempfile
 from dataclasses import dataclass, field
 from urllib.parse import urlparse
@@ -165,11 +166,22 @@ def video_seconds(data: bytes) -> float | None:
     """Real duration from ffprobe, or None (callers fail closed)."""
     from core.asset_safety import probe_duration
 
-    with tempfile.TemporaryDirectory(prefix="eche-src-") as raw:
+    raw = tempfile.mkdtemp(prefix="eche-src-")
+    try:
         path = os.path.join(raw, "src.mp4")
         with open(path, "wb") as fh:
             fh.write(data)
         return probe_duration(path)
+    finally:
+        try:
+            from core.burn import secure_delete_tree
+
+            secure_delete_tree(raw)
+        except Exception:
+            try:
+                shutil.rmtree(raw, ignore_errors=True)
+            except Exception:
+                pass
 
 
 async def source_from_reply(message) -> AssetSource | None:

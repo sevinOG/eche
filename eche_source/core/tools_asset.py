@@ -72,11 +72,12 @@ _OUTCOME_FOR_STATUS = {
 
 
 def audit_request(*, prompt: str, kind: str, source: str, has_media: bool, ids: dict) -> None:
-    """One audit line per asset request: the prompt, kind, and where it came from.
+    """One audit line per asset request: kind and where it came from.
 
     source is "chat" (the model's tool call) or "?asset" (the command).
-    The prompt goes through the audit log's secret redaction like every line.
+    The prompt text is not stored.
     """
+    del prompt
     try:
         from core.audit import record
 
@@ -85,7 +86,6 @@ def audit_request(*, prompt: str, kind: str, source: str, has_media: bool, ids: 
             source=source,
             kind=kind or "auto",
             reply_media="1" if has_media else "0",
-            prompt=" ".join(str(prompt or "").split())[:600],
             **ids,
         )
     except Exception:
@@ -335,21 +335,15 @@ async def make_asset(ctx, arguments: dict) -> ToolResult:
 
             record("asset-request", source="chat",
                    outcome="followup" if context_used == "follow-up-to-eche" else "context-overlap",
-                   reason=context_used, message=" ".join(str(user_text or "").split())[:200],
-                   **_ids(message))
+                   reason=context_used, **_ids(message))
         except Exception:
             pass
     if declined:
         try:
             from core.audit import record
 
-            # A short excerpt of the declined message, so a decline can be
-            # diagnosed from the log (the prompt is already logged on runs).
-            excerpt = " ".join(str(user_text or "").split())[:200]
-            # The tool prompt the model wrote, so an over-decline can be
-            # reproduced (prompts are logged on runs too).
             record("asset-request", source="chat", outcome="declined", reason=declined,
-                   message=excerpt, prompt=raw_prompt[:1500], **_ids(message))
+                   **_ids(message))
         except Exception:
             pass
         return ToolResult(text=NO_REQUEST_DECLINED, fence=False, declined=True, outcome="declined")

@@ -1831,7 +1831,7 @@ def match(text: str) -> str:
 
 
 # Short reasons for keyword-rule blocks. The matched term and the offending
-# text go only to the local audit/desktop log, via note(term=, rule=, prompt=).
+# text go only to the local audit/desktop log, via note(term=, rule=). Prompt text is not logged.
 _NOTE_REASONS = (
     ("-age-vision-yes", "vision: flagged"),
     ("-age-vision-unsure", "vision: uncertain"),
@@ -1887,12 +1887,12 @@ def excerpt(text, limit: int = LOG_PROMPT_CHARS) -> str:
 
 
 def block_detail(*texts, user_id=None, channel_id=None) -> dict:
-    """What made is_blocked() refuse: {"term", "rule", "prompt"}, or {}.
+    """What made is_blocked() refuse: {"term", "rule"}, or {}.
 
     rule is the match_info check (always, age, context, extra) or
-    "close-variant" for the retry catch. prompt is the offending text, cut to
-    1500 characters; snippet is about 80 characters either side of the hit. Read-only: nothing is remembered, so calling it after a
-    block does not change later results. Local audit log only.
+    "close-variant" for the retry catch. Prompt and snippet text are not
+    included. Read-only: nothing is remembered, so calling it after a
+    block does not change later results.
     """
     close = None
     for text in texts:
@@ -1901,11 +1901,7 @@ def block_detail(*texts, user_id=None, channel_id=None) -> dict:
             continue
         term, check = match_info(raw)
         if term:
-            detail = {"term": term, "rule": check, "prompt": excerpt(raw)}
-            snippet = match_snippet(raw, term)
-            if snippet:
-                detail["snippet"] = snippet
-            return detail
+            return {"term": term, "rule": check}
         if close is None and user_id is not None:
             tokens = _tokens(raw)
             now = time.monotonic()
@@ -1916,7 +1912,6 @@ def block_detail(*texts, user_id=None, channel_id=None) -> dict:
                     close = {
                         "term": ",".join(sorted(tokens & prior))[:200],
                         "rule": "close-variant",
-                        "prompt": excerpt(raw),
                     }
                     break
     return close or {}
@@ -1925,9 +1920,10 @@ def block_detail(*texts, user_id=None, channel_id=None) -> dict:
 def note(where: str, *, term: str = "", rule: str = "", prompt: str = "", snippet: str = "") -> None:
     """One log line with the footer hash.
 
-    term / rule / prompt / snippet name what matched, the offending text
-    (cut to 1500 characters) and the text around the hit. They go only to the local audit log and the desktop log.
+    term and rule name what matched. Prompt and snippet arguments are
+    accepted for call-site compatibility and are discarded.
     """
+    del prompt, snippet
     digest = ""
     try:
         from core.safety import footer_sha256
@@ -1938,12 +1934,8 @@ def note(where: str, *, term: str = "", rule: str = "", prompt: str = "", snippe
     extra = f", footer sha256={digest}" if digest else ""
     reason = note_reason(where)
     why = f", reason={reason}" if reason else ""
-    if term and prompt and not snippet:
-        snippet = match_snippet(prompt, term)
-    detail = {k: v for k, v in (
-        ("term", term), ("rule", rule), ("snippet", snippet), ("prompt", excerpt(prompt) if prompt else ""),
-    ) if v}
-    shown = "".join(f", {k}={v!r}" if k in ("prompt", "snippet") else f", {k}={v}" for k, v in detail.items())
+    detail = {k: v for k, v in (("term", term), ("rule", rule)) if v}
+    shown = "".join(f", {k}={v}" for k, v in detail.items())
     line = f"Blocked ({where}){why}{shown}{extra}."
     try:
         from core.audit import block as audit_block

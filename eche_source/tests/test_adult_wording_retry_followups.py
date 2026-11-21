@@ -72,18 +72,29 @@ class AdultWordingTests(unittest.TestCase):
         for mode, edit in ((SFW, False), (SFW, True), (ADULT, False)):
             with mock.patch("core.audit.record"), \
                     mock.patch("core.classifier.asset_prompt_check_async", new=mock.AsyncMock(return_value="")):
+                prompt = "a confident woman personifying the USA"
                 prepared = asyncio.run(S.prepare_generation(
-                    "a confident woman personifying the USA", user_id=None, guild_id=1, channel_id=None,
+                    prompt, user_id=None, guild_id=1, channel_id=None,
                     mode=mode, edit=edit))
             self.assertTrue(prepared.sent_prompt.startswith(FINAL_WORDING))
             self.assertIn("mature adult woman aged 25 or older", prepared.sent_prompt)
             self.assertTrue(S.footer_is_last(prepared.sent_prompt))
+            self.assertIn(prompt, prepared.diffusion_prompt)
+            self.assertIn("aged 25 or older", prepared.diffusion_prompt)
+            self.assertIn("mature adult facial features and adult proportions", prepared.diffusion_prompt)
+            self.assertNotIn(SAFETY_FOOTER, prepared.diffusion_prompt)
+            self.assertIn("mature adult woman aged 25 or older", prepared.diffusion_prompt)
 
 
 class RetryCueTests(unittest.TestCase):
     def _prepared(self, prompt="a surreal painterly woman personifying the UK"):
         sent, digest = S.build_sent_prompt(prompt)
-        return S.PreparedPrompt(user_prompt=prompt, sent_prompt=sent, footer_hash=digest)
+        return S.PreparedPrompt(
+            user_prompt=prompt,
+            sent_prompt=sent,
+            footer_hash=digest,
+            diffusion_prompt=S.build_diffusion_prompt(prompt),
+        )
 
     def test_retry_adds_cues_before_the_footer(self):
         prepared = self._prepared()
@@ -92,6 +103,9 @@ class RetryCueTests(unittest.TestCase):
         self.assertIn("mid-30s", stronger.sent_prompt)
         self.assertIn("mature adult faces", stronger.sent_prompt)
         self.assertTrue(S.footer_is_last(stronger.sent_prompt))
+        self.assertIn(S.RETRY_ADULT_LINE, stronger.diffusion_prompt)
+        self.assertIn("mid-30s", stronger.diffusion_prompt)
+        self.assertNotIn(SAFETY_FOOTER, stronger.diffusion_prompt)
         self.assertEqual(stronger.footer_hash, prepared.footer_hash)
         self.assertTrue(stronger.sent_prompt.startswith(prepared.sent_prompt[: -len(SAFETY_FOOTER)].rstrip()))
         self.assertNotIn(S.RETRY_ADULT_LINE, prepared.sent_prompt)

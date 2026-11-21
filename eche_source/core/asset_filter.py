@@ -497,3 +497,50 @@ def school_sexual_blocked(text: str) -> tuple[bool, str]:
     if school and sexual:
         return True, f"school={','.join(school)};sexual={','.join(sexual)}"
     return False, ""
+
+
+# Sexual content drawn as anime, chibi, or loli-style art. SFW anime is allowed.
+# These words alone are enough; other style words need a sexual cue as well.
+# This is the only part of the old keyword media filter that still gates
+# asset prompts (owner 2026-11-21). media_prompt_blocked itself is not used.
+_STYLIZED_ART_RE = re.compile(
+    r"(?is)(?:"
+    r"\b(?:anime|manga|chibi|lolis?|lolicon|shotas?|shotacon|moe|kawaii|hentai|ecchi|waifus?|toons?|cartoons?)\b"
+    r"|アニメ|マンガ|漫画|ちび|ロリ|萌え"
+    r")"
+)
+_INHERENT_STYLIZED_SEXUAL_RE = re.compile(
+    r"(?is)\b(?:hentai|ecchi|lolicon|shotacon|lolis?|shotas?)\b|ロリ"
+)
+
+
+def _stylized_sexual(inspect: str) -> str:
+    """A short reason when inspect is sexual stylized art, else ''."""
+    if _INHERENT_STYLIZED_SEXUAL_RE.search(inspect):
+        return "inherent"
+    if not _STYLIZED_ART_RE.search(inspect):
+        return ""
+    sexual = [name for name, rx in _SEXUAL_RES.items() if rx.search(inspect)]
+    if sexual:
+        return "stylized+" + ",".join(sexual)
+    return ""
+
+
+def stylized_sexual_blocked(text: str) -> tuple[bool, str]:
+    """Block only sexual stylized art. SFW anime does not match.
+
+    (blocked, short reason naming the rule, never the prompt).
+    """
+    raw = text or ""
+    if not raw.strip():
+        return False, ""
+    for form in _forms(raw):
+        inspect = _masked(form)
+        if not inspect.strip():
+            continue
+        if _is_despaced_copy(raw, form) or _is_despaced_copy(raw, inspect):
+            continue
+        why = _stylized_sexual(inspect)
+        if why:
+            return True, why
+    return False, ""

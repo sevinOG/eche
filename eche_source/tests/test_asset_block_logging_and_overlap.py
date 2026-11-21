@@ -1,7 +1,7 @@
 # tests/test_asset_block_logging_and_overlap.py
 # Owner request 2026-11-19 (after live 09:54 / 09:55 / 10:00 ET):
-# 1. Asset-path refusals log the matched term, the rule and the offending
-#    prompt (cut to 1500 chars since #26) in the local audit log and desktop log.
+# 1. Asset-path refusals log the matched term and the rule id in the local
+#    audit log and desktop log. Prompt and snippet text are not written.
 # 2. A short request that follows Eche's own offer ("make the shirt") passes
 #    the prompt-overlap gate when the tool prompt overlaps the recent
 #    conversation. Unrelated prompts are still declined.
@@ -49,15 +49,18 @@ def _output_blocked(prompt: str) -> bool:
 
 
 class BlockLoggingTests(unittest.TestCase):
-    def test_block_detail_names_term_rule_and_prompt(self):
+    def test_block_detail_names_term_and_rule_only(self):
         d = B.block_detail("a cheerful teen holding a flag")
         self.assertEqual((d["term"], d["rule"]), ("teen", "always"))
-        self.assertEqual(d["prompt"], "a cheerful teen holding a flag")
+        self.assertNotIn("prompt", d)
+        self.assertNotIn("snippet", d)
         self.assertEqual(B.block_detail("a lighthouse at dusk"), {})
 
-    def test_block_detail_truncates_to_1500_chars(self):
+    def test_block_detail_does_not_store_long_prompt_text(self):
         d = B.block_detail("a child " + "x" * 4000)
-        self.assertLessEqual(len(d["prompt"]), 1500)
+        self.assertEqual(d["term"], "child")
+        self.assertNotIn("prompt", d)
+        self.assertNotIn("snippet", d)
 
     def test_block_detail_reports_close_variant_without_remembering(self):
         B.clear_recent_blocks()
@@ -70,7 +73,7 @@ class BlockLoggingTests(unittest.TestCase):
         finally:
             B.clear_recent_blocks()
 
-    def test_llm_output_block_logs_term_rule_and_prompt(self):
+    def test_llm_output_block_logs_term_and_rule_not_prompt(self):
         rows = []
         with mock.patch("core.audit.record", side_effect=lambda ev, **f: rows.append((ev, f)) or {}):
             self.assertTrue(_output_blocked("USA teen dominating UK teen"))
@@ -78,9 +81,10 @@ class BlockLoggingTests(unittest.TestCase):
         self.assertEqual(ev, "block")
         self.assertEqual(fields["category"], "llm-output")
         self.assertEqual((fields["term"], fields["rule"]), ("teen", "always"))
-        self.assertIn("USA teen dominating UK teen", fields["prompt"])
+        self.assertNotIn("prompt", fields)
+        self.assertNotIn("snippet", fields)
 
-    def test_gui_line_shows_term_rule_and_prompt(self):
+    def test_gui_line_shows_term_and_rule_not_prompt(self):
         import os
         import tempfile
 
@@ -93,7 +97,9 @@ class BlockLoggingTests(unittest.TestCase):
         self.assertIn("Blocked (llm-output)", joined)
         self.assertIn("rule=always", joined)
         self.assertIn("term=teen", joined)
-        self.assertIn("USA teen vs UK teen", joined)
+        self.assertNotIn("USA teen vs UK teen", joined)
+        self.assertNotIn("prompt=", joined)
+        self.assertNotIn("snippet=", joined)
 
     def test_prepare_generation_matcher_row_has_detail(self):
         from core import asset_safety as S
@@ -110,7 +116,8 @@ class BlockLoggingTests(unittest.TestCase):
                                                  mode=mode, model_prompt="a toddler on a swing"))
         row = [f for ev, f in rows if ev == "asset" and f.get("category") == "matcher"][-1]
         self.assertEqual((row["term"], row["rule"], row["reason"]), ("toddler", "always", "in=model"))
-        self.assertEqual(row["prompt"], "a toddler on a swing")
+        self.assertNotIn("prompt", row)
+        self.assertNotIn("snippet", row)
 
 
 SHIRT_OFFER = ("Want me to make you a t-shirt? I could do the squid-beak fermenter, or the "
