@@ -139,6 +139,40 @@ def is_prefix_command(bot, message) -> bool:
 # the chat retry is offered neither, so it answers in plain text.
 DECLINE_GATED_TOOLS = frozenset({"asset", "thread"})
 
+# Posted when a chat turn ends with no reply at all (owner 2026-11-20: Eche was
+# "dropping calls" when a 64-token reply was cut and its repair came back
+# empty). The drop itself is logged with its reason; see _log_empty_reply.
+EMPTY_REPLY_FALLBACK = "Sorry, lost my train of thought \u2014 say that again?"
+EMPTY_CUT_UNREPAIRED = "cut-unrepaired"
+EMPTY_TRACE = "empty-trace"
+EMPTY_DECLINED_TOOLCALL = "declined-retry-toolcall"
+EMPTY_DECLINED_EMPTY = "declined-retry-empty"
+
+
+def _log_empty_reply(message, reason: str, **detail) -> None:
+    """One GUI line and one audit row for a chat turn that had nothing to send."""
+    who = getattr(getattr(message, "author", None), "display_name", None) or "user"
+    try:
+        from core.gui_bridge import log as gui_log
+
+        gui_log(f"No reply to {who}: {reason} (sent fallback)", channel="chat")
+    except Exception:
+        pass
+    try:
+        from core.audit import record
+
+        record(
+            "chat",
+            outcome="empty",
+            reason=reason,
+            user_id=getattr(getattr(message, "author", None), "id", None),
+            guild_id=getattr(getattr(message, "guild", None), "id", None),
+            channel_id=getattr(getattr(message, "channel", None), "id", None),
+            **detail,
+        )
+    except Exception:
+        pass
+
 class OnMessage(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -560,6 +594,8 @@ class OnMessage(commands.Cog):
         if not calls and not quota_reply:
             # The model typed a tool call instead of using the API.
             calls = calls_from_model_text(turn.reply, names)
+        was_cut = bool(not calls and not quota_reply and turn.cut)
+        empty_reason = ""
         if not calls and not quota_reply and turn.cut:
             turn = await settle_cut_reply(
                 turn,
@@ -614,8 +650,15 @@ class OnMessage(commands.Cog):
                 )
                 if not list(retry_turn.tool_calls or []):
                     reply = retry_turn.reply or ""
+                    if not reply.strip():
+                        empty_reason = EMPTY_DECLINED_EMPTY
+                else:
+                    # The retry was offered no gated tool but still asked for
+                    # one; there is no text to post.
+                    empty_reason = EMPTY_DECLINED_TOOLCALL
             except Exception as e:
                 dprint(f"[on_message] declined-tool reply failed: {type(e).__name__}")
+                empty_reason = EMPTY_DECLINED_EMPTY
 
         if has_images and not ran_tools and reply.strip() and is_blocked(
             reply, user_id=user_id, channel_id=channel_id
@@ -650,6 +693,22 @@ class OnMessage(commands.Cog):
             if getattr(self.bot, "next_reply_override", False):
                 self.bot.next_reply_override = False
                 self.bot.override_waiting_for = None
+        elif not quota_reply:
+            # Nothing to post: say why in the log, and answer with a short
+            # fallback instead of silence. The fallback is not remembered.
+            if not empty_reason:
+                empty_reason = EMPTY_CUT_UNREPAIRED if was_cut else EMPTY_TRACE
+            _log_empty_reply(
+                message,
+                empty_reason,
+                cut=was_cut,
+                tool_declined=bool(tool_declined),
+                tools=",".join(str((c or {}).get("name") or "") for c in calls if isinstance(c, dict))[:120],
+            )
+            try:
+                await _send_reply(message, EMPTY_REPLY_FALLBACK)
+            except Exception as e:
+                dprint(f"[on_message] fallback send failed: {type(e).__name__}")
 
         asked = cleaned
         note = " ".join((remembered or "").split())

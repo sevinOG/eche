@@ -11,20 +11,101 @@ from contextlib import contextmanager
 
 from core.paths import ensure_user_layout, find_ffmpeg
 
-def audit_after_playback(ctx=None, error=None) -> None:
-    """Audit hook for the voice client after_playback callback."""
+# A track that ends this soon after it started did not really play (live
+# 2026-11-20 22:27/22:28 ET: googlevideo answered 403 and ffmpeg exited at once,
+# while the audit row still said success).
+EARLY_EXIT_S = 3.0
+
+
+def playback_failure(
+    error=None,
+    *,
+    exit_code=None,
+    elapsed=None,
+    stream_error: str = "",
+    stopped: bool = False,
+) -> str:
+    """Why a finished track failed, or "" when it played normally.
+
+    A user ?skip/?stop is never a failure. Otherwise any player error, an
+    error from the yt-dlp stream, a non-zero ffmpeg exit, or a track that
+    ended within EARLY_EXIT_S seconds counts.
+    """
+    if stopped:
+        return ""
+    if error:
+        return f"{type(error).__name__}: {error}"[:500]
+    if stream_error:
+        return str(stream_error)[:500]
+    if exit_code not in (None, 0):
+        return f"ffmpeg exited with code {exit_code}"
+    if elapsed is not None and elapsed < EARLY_EXIT_S:
+        return f"playback ended after {elapsed:.1f}s"
+    return ""
+
+
+def audit_after_playback(
+    ctx=None,
+    error=None,
+    *,
+    exit_code=None,
+    elapsed=None,
+    stderr: str = "",
+    stream_error: str = "",
+    stopped: bool = False,
+) -> str:
+    """Audit hook for the voice client after_playback callback.
+
+    Returns the failure reason ("" when the track played normally).
+    """
+    reason = playback_failure(
+        error, exit_code=exit_code, elapsed=elapsed, stream_error=stream_error, stopped=stopped
+    )
     try:
         from core.audit import safe_activity
         safe_activity(
             "music-after-playback",
-            outcome="error" if error else "success",
+            outcome="error" if reason else "success",
             error_type=type(error).__name__ if error else "",
+            reason=reason,
+            exit_code=exit_code,
+            elapsed_s=round(float(elapsed), 1) if elapsed is not None else None,
+            stderr=" | ".join(part for part in (str(stream_error or "")[-400:], str(stderr or "")[-800:]) if part)
+            if reason else "",
+            stopped=True if stopped else None,
             user_id=getattr(getattr(ctx, "author", None), "id", None),
             guild_id=getattr(getattr(ctx, "guild", None), "id", None),
             channel_id=getattr(getattr(ctx, "channel", None), "id", None),
         )
     except Exception:
         pass
+    return reason
+
+
+class StderrTail:
+    """Writable sink for ffmpeg's stderr: keeps the last few KB.
+
+    It has no fileno(), so discord.py reads ffmpeg's stderr on a thread and
+    writes it here instead of discarding it.
+    """
+
+    def __init__(self, limit: int = 4096):
+        self.limit = limit
+        self._buf = bytearray()
+
+    def write(self, data) -> int:
+        if isinstance(data, str):
+            data = data.encode("utf-8", "replace")
+        self._buf.extend(data or b"")
+        if len(self._buf) > self.limit:
+            del self._buf[: len(self._buf) - self.limit]
+        return len(data or b"")
+
+    def flush(self) -> None:
+        pass
+
+    def text(self) -> str:
+        return bytes(self._buf).decode("utf-8", "replace").strip()
 
 
 _ffmpeg_path = find_ffmpeg()
@@ -40,6 +121,8 @@ import discord
 from discord.ext import commands
 import asyncio
 import re
+import shlex
+import time
 from cogs.music.music_queue_storage import load_queue, save_queue
 
 try:
@@ -283,7 +366,11 @@ def _node_binary() -> str | None:
     return None
 
 
-def ydl_options(*, use_cookies: bool = False) -> dict:
+# Second-try YouTube clients after the first stream was refused.
+RETRY_PLAYER_CLIENTS = ("web_safari", "mweb", "tv")
+
+
+def ydl_options(*, use_cookies: bool = False, player_client=None) -> dict:
     opts = {
         "format": "bestaudio/best",
         "quiet": True,
@@ -295,6 +382,9 @@ def ydl_options(*, use_cookies: bool = False) -> dict:
         "ignoreerrors": False,
         "geo_bypass": True,
         "nocheckcertificate": True,
+        # IPv4 only. The stream URL is signed for the IP that extracted it;
+        # on 5G/CGNAT an IPv6 or second path for the audio fetch gets 403.
+        "source_address": "0.0.0.0",
     }
     node = _node_binary()
     if node:
@@ -309,18 +399,20 @@ def ydl_options(*, use_cookies: bool = False) -> dict:
         cookie = youtube_cookie_file()
         if cookie:
             opts["cookiefile"] = cookie
+    if player_client:
+        opts["extractor_args"] = {"youtube": {"player_client": list(player_client)}}
     return opts
 
 
 @contextmanager
-def youtube_dl(*, use_cookies: bool = False):
+def youtube_dl(*, use_cookies: bool = False, player_client=None):
     """Open yt-dlp without letting it rewrite the saved cookie file."""
     if yt_dlp is None:
         raise TrackError(
             "Music needs `yt-dlp` in this portable build. "
             "Rebuild with `pip install -r requirements.txt` then `install.bat`."
         )
-    opts = ydl_options(use_cookies=use_cookies)
+    opts = ydl_options(use_cookies=use_cookies, player_client=player_client)
     notes = _YtdlNotes()
     opts["logger"] = notes
     temp_cookie = None
@@ -360,10 +452,10 @@ def _playable_info(info):
     return None
 
 
-def _extract_once(url, *, use_cookies: bool):
+def _extract_once(url, *, use_cookies: bool, player_client=None):
     notes = None
     try:
-        with youtube_dl(use_cookies=use_cookies) as ydl:
+        with youtube_dl(use_cookies=use_cookies, player_client=player_client) as ydl:
             notes = ydl._eche_notes
             return ydl.extract_info(url, download=False), notes, None
     except TrackError:
@@ -372,15 +464,31 @@ def _extract_once(url, *, use_cookies: bool):
         return None, notes, exc
 
 
-def extract_youtube(url):
+def _mark_cookies(info, used: bool):
+    if isinstance(info, dict):
+        info["_eche_cookies"] = bool(used)
+    return info
+
+
+def extract_youtube(url, *, retry: bool = False):
     """Logged-out extract. Cookies are retried only when that pass cannot play.
 
+    retry=True is the second try after a refused stream: cookies (when saved
+    and node is present) and a different YouTube player client first.
     Returns (info, notes, error). error is None when a stream URL was found.
+    The info dict carries _eche_cookies so the audio fetch uses the same
+    session settings.
     """
+    if retry:
+        use = bool(youtube_cookie_file() and _node_binary())
+        info_r, notes_r, exc_r = _extract_once(url, use_cookies=use, player_client=RETRY_PLAYER_CLIENTS)
+        playable_r = _playable_info(info_r) if exc_r is None else None
+        if playable_r and not _info_age_locked(playable_r):
+            return _mark_cookies(info_r, use), notes_r, None
     info, notes, exc = _extract_once(url, use_cookies=False)
     playable = _playable_info(info) if exc is None else None
     if playable and not _info_age_locked(playable):
-        return info, notes, None
+        return _mark_cookies(info, False), notes, None
 
     blob = f"{notes.text() if notes else ''}\n{exc or ''}"
     can_retry = bool(youtube_cookie_file() and _node_binary() and not _empty_search(blob))
@@ -390,9 +498,9 @@ def extract_youtube(url):
     info2, notes2, exc2 = _extract_once(url, use_cookies=True)
     playable2 = _playable_info(info2) if exc2 is None else None
     if playable2 and not _info_age_locked(playable2):
-        return info2, notes2, None
+        return _mark_cookies(info2, True), notes2, None
     if playable:
-        return info, notes, None
+        return _mark_cookies(info, False), notes, None
 
     merged = _YtdlNotes()
     if notes is not None:
@@ -463,6 +571,196 @@ FFMPEG_OPTIONS = {
     ),
     "options": "-vn"
 }
+# yt-dlp fetches the audio in this process and pipes it to ffmpeg's stdin, so
+# the fetch uses yt-dlp's own session, headers, cookies and IPv4 address.
+PIPE_FFMPEG_OPTIONS = {"before_options": "", "options": "-vn"}
+
+
+def direct_ffmpeg_options(info: dict | None) -> dict:
+    """ffmpeg options for opening the URL itself (fallback when the pipe can't
+    be set up): yt-dlp's request headers and user agent go along."""
+    headers = dict((info or {}).get("http_headers") or {})
+    agent = str(headers.pop("User-Agent", "") or "")
+    before = FFMPEG_OPTIONS["before_options"]
+    if agent:
+        before += " -user_agent " + shlex.quote(agent)
+    if headers:
+        joined = "".join(f"{k}: {v}\r\n" for k, v in headers.items() if k and v is not None)
+        before += " -headers " + shlex.quote(joined)
+    return {"before_options": before, "options": FFMPEG_OPTIONS["options"]}
+
+
+class StreamError(Exception):
+    """The audio stream could not be fetched (for example HTTP 403)."""
+
+
+class YtdlStream:
+    """File-like audio stream fetched through yt-dlp for ffmpeg's stdin.
+
+    Ranged requests of CHUNK bytes, like yt-dlp's own YouTube downloader.
+    Any fetch error ends the stream and is kept in .error for the log.
+    `opener(url, headers)` returns a response with read()/close(); by default
+    it is yt-dlp's urlopen with the same options as the extraction.
+    """
+
+    CHUNK = 10 * 1024 * 1024
+
+    def __init__(self, url: str, headers: dict | None = None, *, use_cookies: bool = False,
+                 filesize: int | None = None, opener=None, chunk: int | None = None):
+        self.url = url
+        self.headers = dict(headers or {})
+        self.use_cookies = use_cookies
+        self.filesize = int(filesize) if filesize else None
+        self.chunk = int(chunk or self.CHUNK)
+        self.error = ""
+        self.bytes_read = 0
+        self._opener = opener
+        self._stack = None
+        self._resp = None
+        self._chunk_left = 0
+        self._done = False
+
+    # -- opening -------------------------------------------------------
+    def _default_opener(self):
+        from contextlib import ExitStack
+        from yt_dlp.networking import Request
+
+        if self._stack is None:
+            self._stack = ExitStack()
+            self._ydl = self._stack.enter_context(youtube_dl(use_cookies=self.use_cookies))
+
+        def open_url(url, headers):
+            return self._ydl.urlopen(Request(url, headers=headers))
+        return open_url
+
+    def _open_next(self) -> bool:
+        if self.filesize is not None and self.bytes_read >= self.filesize:
+            return False
+        start = self.bytes_read
+        end = start + self.chunk - 1
+        if self.filesize is not None:
+            end = min(end, self.filesize - 1)
+        headers = {**self.headers, "Range": f"bytes={start}-{end}"}
+        opener = self._opener or self._default_opener()
+        try:
+            self._resp = opener(self.url, headers)
+        except Exception as exc:
+            status = getattr(exc, "status", None) or getattr(getattr(exc, "response", None), "status", None)
+            if status == 416 and start > 0:
+                return False  # asked past the end: done
+            raise StreamError(_stream_error_text(exc, status)) from exc
+        self._chunk_left = end - start + 1
+        if getattr(self._resp, "status", 206) == 200:
+            # The server ignored Range and sent the whole file: read to EOF.
+            self._chunk_left = 1 << 62
+        return True
+
+    def prime(self) -> "YtdlStream":
+        """Open the first chunk now, so a refused stream fails before ffmpeg starts."""
+        if self._resp is None and not self._done:
+            if not self._open_next():
+                self._done = True
+        return self
+
+    # -- reading -------------------------------------------------------
+    def read(self, size: int = -1) -> bytes:
+        while not self._done:
+            try:
+                if self._resp is None and not self._open_next():
+                    self._done = True
+                    break
+                want = size if size and size > 0 else 65536
+                data = self._resp.read(min(want, self._chunk_left) if self._chunk_left > 0 else want)
+            except StreamError as exc:
+                self.error = str(exc)
+                self._done = True
+                break
+            except Exception as exc:
+                self.error = _stream_error_text(exc, getattr(exc, "status", None))
+                self._done = True
+                break
+            if data:
+                self.bytes_read += len(data)
+                self._chunk_left -= len(data)
+                if self._chunk_left <= 0:
+                    self._close_resp()
+                return data
+            # This range is finished. A short range means the file ended.
+            short = self._chunk_left > 0
+            self._close_resp()
+            if short:
+                self._done = True
+        return b""
+
+    def _close_resp(self) -> None:
+        resp, self._resp = self._resp, None
+        if resp is not None:
+            try:
+                resp.close()
+            except Exception:
+                pass
+
+    def close(self) -> None:
+        self._done = True
+        self._close_resp()
+        stack, self._stack = self._stack, None
+        if stack is not None:
+            try:
+                stack.close()
+            except Exception:
+                pass
+
+
+def _stream_error_text(exc, status=None) -> str:
+    if status:
+        reason = getattr(exc, "reason", None) or getattr(getattr(exc, "response", None), "reason", None) or ""
+        return f"HTTP {status} {reason}".strip()
+    return f"{type(exc).__name__}: {exc}"[:300]
+
+
+def open_stream(info: dict, audio_url: str, *, opener=None) -> YtdlStream:
+    """A primed YtdlStream for this track. Raises StreamError when refused."""
+    info = info or {}
+    filesize = info.get("filesize") or None
+    chunk = ((info.get("downloader_options") or {}).get("http_chunk_size")) or None
+    stream = YtdlStream(
+        audio_url,
+        info.get("http_headers") or {},
+        use_cookies=bool(info.get("_eche_cookies")),
+        filesize=filesize,
+        opener=opener,
+        chunk=chunk,
+    )
+    try:
+        return stream.prime()
+    except Exception:
+        stream.close()
+        raise
+
+
+def refused_message(title: str, reason: str) -> str:
+    label = f"**{title}**" if title else "that track"
+    if "403" in (reason or ""):
+        return (f"\u274c YouTube refused the audio stream for {label} (HTTP 403 Forbidden), "
+                "even after a second try. Skipping.")
+    return f"\u274c Couldn't play {label}: {reason or 'playback stopped right away'}. Skipping."
+
+
+def _ffmpeg_exit_code(source) -> int | None:
+    """ffmpeg's exit code when it has exited on its own; None while running."""
+    proc = getattr(source, "_process", None)
+    poll = getattr(proc, "poll", None)
+    if poll is None:
+        return None
+    try:
+        code = poll()
+        if code is None:
+            wait = getattr(proc, "wait", None)
+            if wait is not None:
+                code = wait(timeout=1)
+        return code
+    except Exception:
+        return None
 
 
 def _lookup_video_info(query: str):
@@ -492,6 +790,8 @@ class Music(commands.Cog):
         self._queue_lock = asyncio.Lock()
         self._connect_lock = asyncio.Lock()
         self._starting = False
+        # Set by ?skip / ?stop so the ended track is not counted as a failure.
+        self._user_stopped = False
 
     # ---------------------------------------------------------
     # ALWAYS build a valid search query
@@ -551,7 +851,7 @@ class Music(commands.Cog):
     # ---------------------------------------------------------
     # Extract REAL audio URL from Piped
     # ---------------------------------------------------------
-    def extract_audio_url(self, query):
+    def extract_audio_url(self, query, retry: bool = False):
         if yt_dlp is None:
             return None, None
 
@@ -562,7 +862,7 @@ class Music(commands.Cog):
         piped_url = self.build_piped_url(video_id)
 
         try:
-            info, notes, exc = extract_youtube(piped_url)
+            info, notes, exc = extract_youtube(piped_url, retry=retry)
         except TrackError:
             raise
         if exc is not None:
@@ -738,8 +1038,9 @@ class Music(commands.Cog):
 
         # The lookup blocks. Run it off the bot loop so more ?play commands can
         # record themselves in the thread while this song is still resolving.
+        retry = bool(current.get("_stream_retry"))
         try:
-            info, audio_url = await asyncio.to_thread(self.extract_audio_url, query)
+            info, audio_url = await asyncio.to_thread(self.extract_audio_url, query, retry)
         except TrackError as err:
             await ctx.send(str(err))
             async with self._queue_lock:
@@ -768,8 +1069,27 @@ class Music(commands.Cog):
 
         if self.current is not current or not self.playing:
             return
+
+        # yt-dlp fetches the audio itself (same session, headers, cookies and
+        # IPv4 address as the extraction) and pipes it into ffmpeg. The first
+        # chunk is opened here, so a refused stream (403) is caught before
+        # anything is announced.
+        stream = None
+        try:
+            stream = await asyncio.to_thread(open_stream, info, audio_url)
+        except StreamError as err:
+            audit_after_playback(ctx, None, stream_error=str(err), elapsed=0.0)
+            return await self._track_failed(ctx, current, str(err))
+        except Exception as err:
+            # The pipe could not be set up at all (for example an old yt-dlp
+            # without its networking module): ffmpeg opens the URL with
+            # yt-dlp's headers instead.
+            print(f"MUSIC STREAM: pipe unavailable ({type(err).__name__}); direct URL", flush=True)
+            stream = None
+
         await self.send_now_playing(ctx, current)
 
+        stderr_tail = StderrTail()
         try:
             # Full path. discord.py's default is the bare name "ffmpeg", which
             # raises "ffmpeg was not found" when the target PC has none on PATH.
@@ -777,8 +1097,17 @@ class Music(commands.Cog):
             current_path = os.environ.get("PATH", "")
             if ff_dir and os.path.isdir(ff_dir) and ff_dir not in current_path:
                 os.environ["PATH"] = ff_dir + os.pathsep + current_path
-            source = discord.FFmpegPCMAudio(audio_url, executable=ffmpeg_path, **FFMPEG_OPTIONS)
+            if stream is not None:
+                source = discord.FFmpegPCMAudio(
+                    stream, pipe=True, executable=ffmpeg_path, stderr=stderr_tail, **PIPE_FFMPEG_OPTIONS
+                )
+            else:
+                source = discord.FFmpegPCMAudio(
+                    audio_url, executable=ffmpeg_path, stderr=stderr_tail, **direct_ffmpeg_options(info)
+                )
         except Exception as e:
+            if stream is not None:
+                stream.close()
             import shutil
             from core.ffmpeg_fetch import last_error
             detail = last_error()
@@ -799,14 +1128,32 @@ class Music(commands.Cog):
             return
 
         if self.current is not current or not self.playing or self.vc is None:
+            if stream is not None:
+                stream.close()
             return
 
+        started = time.monotonic()
+        self._user_stopped = False
+
         def after_playback(error):
-            audit_after_playback(ctx, error)
-            asyncio.run_coroutine_threadsafe(
-                self.play_next(ctx),
-                self.bot.loop
+            stopped = bool(self._user_stopped)
+            elapsed = time.monotonic() - started
+            exit_code = None if stopped else _ffmpeg_exit_code(source)
+            stream_error = getattr(stream, "error", "") if stream is not None else ""
+            if stream is not None:
+                stream.close()
+            reason = audit_after_playback(
+                ctx,
+                error,
+                exit_code=exit_code,
+                elapsed=elapsed,
+                stderr=stderr_tail.text(),
+                stream_error=stream_error,
+                stopped=stopped,
             )
+            early = bool(reason) and elapsed < EARLY_EXIT_S
+            nxt = self._track_failed(ctx, current, reason) if early else self.play_next(ctx)
+            asyncio.run_coroutine_threadsafe(nxt, self.bot.loop)
 
         try:
             self.vc.play(source, after=after_playback)
@@ -818,6 +1165,28 @@ class Music(commands.Cog):
                     self.current = None
                     self.playing = False
                     await self.update_queue_message(ctx)
+
+    async def _track_failed(self, ctx, entry, reason: str):
+        """A track failed right away: re-extract once with cookies and another
+        YouTube client and replay it; after that, say so and move on."""
+        if not entry.get("_stream_retry"):
+            entry["_stream_retry"] = True
+            async with self._queue_lock:
+                if self.current is entry or self.current is None:
+                    self.queue.insert(0, entry)
+                    self.current = None
+                self._starting = False
+            return await self.play_next(ctx)
+        entry.pop("_stream_retry", None)
+        try:
+            await ctx.send(refused_message(str(entry.get("title") or ""), reason))
+        except Exception:
+            pass
+        async with self._queue_lock:
+            if self.current is entry:
+                self.current = None
+            self._starting = False
+        return await self.play_next(ctx)
 
     # ---------------------------------------------------------
     # COMMAND: play
@@ -908,6 +1277,7 @@ class Music(commands.Cog):
         paused = bool(vc and getattr(vc, "is_paused", lambda: False)())
         playing = bool(vc and getattr(vc, "is_playing", lambda: False)())
         if playing or paused:
+            self._user_stopped = True
             vc.stop()
             await ctx.send("Skipped.")
         elif self.current or self.playing or self.queue:
@@ -931,6 +1301,7 @@ class Music(commands.Cog):
             self.playing = False
             await self.update_queue_message(ctx)
         if self.vc:
+            self._user_stopped = True
             self.vc.stop()
         await ctx.send("Stopped and cleared queue.")
 
