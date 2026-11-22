@@ -399,7 +399,8 @@ class ExtractOptionsTests(unittest.TestCase):
         opts = M.ydl_options(player_client=M.RETRY_PLAYER_CLIENTS)
         self.assertEqual(opts["extractor_args"]["youtube"]["player_client"], list(M.RETRY_PLAYER_CLIENTS))
 
-    def test_retry_extract_uses_cookies_and_another_client_first(self):
+    def test_retry_extract_uses_cookies_and_another_client_set(self):
+        # PR #30: cookies on every attempt when saved; the retry changes clients.
         calls = []
         info = {"url": "https://x/a", "title": "t"}
 
@@ -412,19 +413,20 @@ class ExtractOptionsTests(unittest.TestCase):
                 mock.patch.object(M, "_node_binary", return_value="/node"):
             got, _notes, exc = M.extract_youtube("u", retry=True)
         self.assertIsNone(exc)
-        self.assertEqual(calls, [(True, M.RETRY_PLAYER_CLIENTS)])
+        self.assertEqual(calls, [(True, M.RETRY_PLAYER_CLIENTS_COOKIES)])
         self.assertTrue(got["_eche_cookies"])
 
-    def test_first_extract_is_logged_out(self):
+    def test_first_extract_without_saved_cookies_is_logged_out(self):
         calls = []
 
         def once(url, *, use_cookies, player_client=None):
             calls.append((use_cookies, player_client))
             return {"url": "https://x/a"}, None, None
 
-        with mock.patch.object(M, "_extract_once", once):
+        with mock.patch.object(M, "_extract_once", once), \
+                mock.patch.object(M, "youtube_cookie_file", return_value=None):
             got, _notes, _exc = M.extract_youtube("u")
-        self.assertEqual(calls, [(False, None)])
+        self.assertEqual(calls, [(False, M.PLAYER_CLIENTS_NO_COOKIES)])
         self.assertFalse(got["_eche_cookies"])
 
     def test_direct_fallback_passes_headers_and_user_agent(self):

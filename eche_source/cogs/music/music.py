@@ -53,6 +53,8 @@ def audit_after_playback(
     stderr: str = "",
     stream_error: str = "",
     stopped: bool = False,
+    stream_format: str = "",
+    mode: str = "",
 ) -> str:
     """Audit hook for the voice client after_playback callback.
 
@@ -73,6 +75,8 @@ def audit_after_playback(
             stderr=" | ".join(part for part in (str(stream_error or "")[-400:], str(stderr or "")[-800:]) if part)
             if reason else "",
             stopped=True if stopped else None,
+            format=stream_format,
+            mode=mode,
             user_id=getattr(getattr(ctx, "author", None), "id", None),
             guild_id=getattr(getattr(ctx, "guild", None), "id", None),
             channel_id=getattr(getattr(ctx, "channel", None), "id", None),
@@ -366,13 +370,41 @@ def _node_binary() -> str | None:
     return None
 
 
-# Second-try YouTube clients after the first stream was refused.
-RETRY_PLAYER_CLIENTS = ("web_safari", "mweb", "tv")
+# YouTube player clients (yt-dlp 2026.10.26). Only clients whose https audio
+# needs no PO token are used: tv, tv_downgraded, tv_samsung, visionos and
+# web_embedded (PO Token Guide + INNERTUBE_CLIENTS). web_safari is last: its
+# https formats need a PO token, but its HLS (m3u8) audio does not, so it is
+# the HLS fallback. Avoided (GVS PO token for https): web, mweb, ios, android,
+# android_vr, tv_simply, web_music, web_creator. With cookies yt-dlp skips
+# clients that can't take them (visionos, android_vr), so the cookie lists
+# lead with the tv clients, which need cookies to avoid DRM-only formats.
+PLAYER_CLIENTS_COOKIES = ("tv", "tv_samsung", "web_embedded", "web_safari")
+PLAYER_CLIENTS_NO_COOKIES = ("visionos", "tv_samsung", "web_safari")
+RETRY_PLAYER_CLIENTS_COOKIES = ("tv_downgraded", "web_embedded", "tv_samsung", "web_safari")
+RETRY_PLAYER_CLIENTS_NO_COOKIES = ("tv_samsung", "web_embedded", "visionos", "web_safari")
+# Kept for callers/tests of the PR #28 name: the logged-out retry list.
+RETRY_PLAYER_CLIENTS = RETRY_PLAYER_CLIENTS_NO_COOKIES
+PO_TOKEN_CLIENTS = frozenset({"web", "mweb", "ios", "android", "android_vr", "tv_simply",
+                              "web_music", "web_creator"})
+
+
+def player_clients(*, cookies: bool, retry: bool = False) -> tuple:
+    if retry:
+        return RETRY_PLAYER_CLIENTS_COOKIES if cookies else RETRY_PLAYER_CLIENTS_NO_COOKIES
+    return PLAYER_CLIENTS_COOKIES if cookies else PLAYER_CLIENTS_NO_COOKIES
+
+
+# Progressive (single-file http/https) audio first, so it can be piped. Only
+# when a video has nothing progressive does yt-dlp pick HLS, and then ffmpeg
+# opens the m3u8 itself (live 2026-11-21: piping a playlist into ffmpeg's
+# stdin failed with "Not detecting m3u8/hls ... Invalid data").
+PROGRESSIVE_FORMAT = "bestaudio[protocol^=http][protocol!*=m3u8][protocol!*=dash]/bestaudio[protocol=https]"
+FORMAT_SELECTOR = PROGRESSIVE_FORMAT + "/bestaudio/best[acodec!=none]"
 
 
 def ydl_options(*, use_cookies: bool = False, player_client=None) -> dict:
     opts = {
-        "format": "bestaudio/best",
+        "format": FORMAT_SELECTOR,
         "quiet": True,
         "no_warnings": True,
         "extract_flat": False,
@@ -394,7 +426,7 @@ def ydl_options(*, use_cookies: bool = False, player_client=None) -> dict:
         opts["remote_components"] = ["ejs:github"]
     # Cookies without that solution leave only storyboard images, and
     # bestaudio then raises "Requested format is not available" for ordinary
-    # songs. Callers pass use_cookies only for the sign-in retry.
+    # songs, so cookies are only used together with node.
     if use_cookies and node:
         cookie = youtube_cookie_file()
         if cookie:
@@ -471,36 +503,35 @@ def _mark_cookies(info, used: bool):
 
 
 def extract_youtube(url, *, retry: bool = False):
-    """Logged-out extract. Cookies are retried only when that pass cannot play.
+    """Extract one video for playback.
 
-    retry=True is the second try after a refused stream: cookies (when saved
-    and node is present) and a different YouTube player client first.
+    Cookies (cookies/ytcookies.txt, with node for the player challenge) are
+    used on the first attempt when present (live 2026-11-21: every logged-out
+    first attempt got 403). If that pass can't play, the other mode is tried
+    once (logged-out after cookies, so a stale cookie file can't break music).
+    retry=True is the second try after a refused stream: the same order with
+    a different set of player clients.
     Returns (info, notes, error). error is None when a stream URL was found.
     The info dict carries _eche_cookies so the audio fetch uses the same
     session settings.
     """
-    if retry:
-        use = bool(youtube_cookie_file() and _node_binary())
-        info_r, notes_r, exc_r = _extract_once(url, use_cookies=use, player_client=RETRY_PLAYER_CLIENTS)
-        playable_r = _playable_info(info_r) if exc_r is None else None
-        if playable_r and not _info_age_locked(playable_r):
-            return _mark_cookies(info_r, use), notes_r, None
-    info, notes, exc = _extract_once(url, use_cookies=False)
+    use = bool(youtube_cookie_file() and _node_binary())
+    info, notes, exc = _extract_once(url, use_cookies=use, player_client=player_clients(cookies=use, retry=retry))
     playable = _playable_info(info) if exc is None else None
     if playable and not _info_age_locked(playable):
-        return _mark_cookies(info, False), notes, None
+        return _mark_cookies(info, use), notes, None
 
     blob = f"{notes.text() if notes else ''}\n{exc or ''}"
-    can_retry = bool(youtube_cookie_file() and _node_binary() and not _empty_search(blob))
-    if not can_retry:
+    if not use or _empty_search(blob):
         return info, notes, exc
 
-    info2, notes2, exc2 = _extract_once(url, use_cookies=True)
+    info2, notes2, exc2 = _extract_once(url, use_cookies=False,
+                                        player_client=player_clients(cookies=False, retry=retry))
     playable2 = _playable_info(info2) if exc2 is None else None
     if playable2 and not _info_age_locked(playable2):
-        return _mark_cookies(info2, True), notes2, None
+        return _mark_cookies(info2, False), notes2, None
     if playable:
-        return _mark_cookies(info, False), notes, None
+        return _mark_cookies(info, use), notes, None
 
     merged = _YtdlNotes()
     if notes is not None:
@@ -618,7 +649,11 @@ class YtdlStream:
         self._stack = None
         self._resp = None
         self._chunk_left = 0
+        self._chunk_end = None
         self._done = False
+        # Mid-stream transport errors (live 21:34 ET: ConnectionResetError
+        # 10054) reopen the range at the current byte, at most this often.
+        self.resumes = 0
 
     # -- opening -------------------------------------------------------
     def _default_opener(self):
@@ -633,13 +668,17 @@ class YtdlStream:
             return self._ydl.urlopen(Request(url, headers=headers))
         return open_url
 
-    def _open_next(self) -> bool:
+    MAX_RESUMES = 2
+
+    def _open_next(self, resume_end: int | None = None) -> bool:
         if self.filesize is not None and self.bytes_read >= self.filesize:
             return False
         start = self.bytes_read
-        end = start + self.chunk - 1
+        end = resume_end if resume_end is not None else start + self.chunk - 1
         if self.filesize is not None:
             end = min(end, self.filesize - 1)
+        if end < start:
+            return False
         headers = {**self.headers, "Range": f"bytes={start}-{end}"}
         opener = self._opener or self._default_opener()
         try:
@@ -650,10 +689,25 @@ class YtdlStream:
                 return False  # asked past the end: done
             raise StreamError(_stream_error_text(exc, status)) from exc
         self._chunk_left = end - start + 1
+        self._chunk_end = end
         if getattr(self._resp, "status", 206) == 200:
             # The server ignored Range and sent the whole file: read to EOF.
             self._chunk_left = 1 << 62
+            self._chunk_end = None
         return True
+
+    def _resume(self, exc) -> bool:
+        """Reopen the current range at the byte we reached, once or twice."""
+        if self.resumes >= self.MAX_RESUMES or self.bytes_read <= 0 or self._chunk_end is None:
+            return False
+        self.resumes += 1
+        end = self._chunk_end
+        self._close_resp()
+        try:
+            return self._open_next(resume_end=end)
+        except StreamError as err:
+            self.error = f"{_stream_error_text(exc, getattr(exc, 'status', None))}; resume failed: {err}"
+            return False
 
     def prime(self) -> "YtdlStream":
         """Open the first chunk now, so a refused stream fails before ffmpeg starts."""
@@ -676,7 +730,10 @@ class YtdlStream:
                 self._done = True
                 break
             except Exception as exc:
-                self.error = _stream_error_text(exc, getattr(exc, "status", None))
+                if self._resume(exc):
+                    continue
+                if not self.error:
+                    self.error = _stream_error_text(exc, getattr(exc, "status", None))
                 self._done = True
                 break
             if data:
@@ -736,6 +793,154 @@ def open_stream(info: dict, audio_url: str, *, opener=None) -> YtdlStream:
     except Exception:
         stream.close()
         raise
+
+
+def _format_client(fmt: dict) -> str:
+    match = re.search(r"[?&]c=([A-Za-z0-9_]+)", str((fmt or {}).get("url") or ""))
+    return match.group(1) if match else ""
+
+
+def format_label(fmt: dict) -> str:
+    """'251/https/TVHTML5' for logs."""
+    fmt = fmt or {}
+    parts = [str(fmt.get("format_id") or "?"), str(fmt.get("protocol") or "?")]
+    client = _format_client(fmt)
+    if client:
+        parts.append(client)
+    return "/".join(parts)
+
+
+def is_hls_format(fmt: dict) -> bool:
+    proto = str((fmt or {}).get("protocol") or "").lower()
+    return "m3u8" in proto
+
+
+def is_progressive_format(fmt: dict) -> bool:
+    """A single http(s) file: safe to pipe. Not HLS, not DASH, not storyboards."""
+    fmt = fmt or {}
+    proto = str(fmt.get("protocol") or "").lower()
+    if not fmt.get("url") or not proto.startswith("http"):
+        return False
+    if "m3u8" in proto or "dash" in proto:
+        return False
+    if str(fmt.get("acodec") or "") == "none":
+        return False
+    return True
+
+
+def _has_audio(fmt: dict) -> bool:
+    return str((fmt or {}).get("acodec") or "") != "none"
+
+
+def _audio_only(fmt: dict) -> bool:
+    return _has_audio(fmt) and str((fmt or {}).get("vcodec") or "none") == "none"
+
+
+def _rate(fmt: dict) -> float:
+    for key in ("abr", "tbr"):
+        try:
+            if fmt.get(key):
+                return float(fmt[key])
+        except Exception:
+            pass
+    return 0.0
+
+
+MAX_PIPE_TRIES = 4
+# Innertube client names (the c= URL parameter) whose https files need a PO token.
+_PO_TOKEN_C = frozenset({"WEB", "MWEB", "IOS", "ANDROID", "ANDROID_VR", "TVHTML5_SIMPLY",
+                         "WEB_REMIX", "WEB_CREATOR"})
+
+
+def _po_token_format(fmt: dict) -> bool:
+    return _format_client(fmt).upper() in _PO_TOKEN_C
+
+
+def stream_candidates(info: dict) -> tuple[list, list]:
+    """(progressive, hls) formats to try, best first.
+
+    yt-dlp's chosen format leads its group. Progressive: audio-only by bitrate,
+    then muxed files (format 18). HLS: audio-only, then muxed, by bitrate.
+    Formats from PO-token clients are left out.
+    """
+    info = info or {}
+    chosen = dict(info) if info.get("url") else None
+    formats = [f for f in (info.get("formats") or []) if isinstance(f, dict) and f.get("url")]
+
+    progressive, hls, seen = [], [], set()
+
+    def add(group, fmt):
+        url = fmt.get("url")
+        if url in seen:
+            return
+        seen.add(url)
+        group.append(fmt)
+
+    later = []  # progressive files from PO-token clients: likely 403, tried last
+    if chosen is not None:
+        if is_progressive_format(chosen):
+            add(later if _po_token_format(chosen) else progressive, chosen)
+        elif is_hls_format(chosen):
+            add(hls, chosen)
+    prog = [f for f in formats if is_progressive_format(f)]
+    ordered = sorted((f for f in prog if _audio_only(f)), key=_rate, reverse=True) + \
+        sorted((f for f in prog if not _audio_only(f)), key=_rate, reverse=True)
+    for fmt in ordered:
+        add(later if _po_token_format(fmt) else progressive, fmt)
+    progressive.extend(later)
+    hl = [f for f in formats if is_hls_format(f) and _has_audio(f)]
+    for fmt in sorted((f for f in hl if _audio_only(f)), key=_rate, reverse=True):
+        add(hls, fmt)
+    for fmt in sorted((f for f in hl if not _audio_only(f)), key=_rate):
+        add(hls, fmt)  # muxed HLS: lowest video first, the audio is what matters
+    return progressive, hls
+
+
+def open_track(info: dict, *, opener=None):
+    """How to play this track: ("pipe", YtdlStream, fmt) or ("hls", None, fmt).
+
+    Progressive formats are tried in order (each try is one ranged request);
+    the first that answers is piped. When none answers, or there are none,
+    an HLS format goes straight to ffmpeg. Raises StreamError when nothing
+    is playable; the message lists what was tried.
+    """
+    info = info or {}
+    progressive, hls = stream_candidates(info)
+    tried = []
+    last = ""
+    for fmt in progressive[:MAX_PIPE_TRIES]:
+        merged = {**fmt, "_eche_cookies": info.get("_eche_cookies")}
+        if not merged.get("http_headers"):
+            merged["http_headers"] = info.get("http_headers") or {}
+        try:
+            return "pipe", open_stream(merged, fmt["url"], opener=opener), fmt
+        except StreamError as err:
+            last = str(err)
+            tried.append(f"{format_label(fmt)}: {err}")
+    if hls:
+        return "hls", None, hls[0]
+    if not tried:
+        raise StreamError("no playable audio format")
+    raise StreamError(f"{last} (tried {'; '.join(tried)})"[:500])
+
+
+def hls_ffmpeg_options(fmt: dict | None) -> dict:
+    """ffmpeg opens an HLS (m3u8) playlist itself with its hls demuxer and
+    yt-dlp's request headers. Forcing -f hls skips ffmpeg's extension sniff
+    ("Not detecting m3u8/hls with non standard extension")."""
+    headers = dict((fmt or {}).get("http_headers") or {})
+    agent = str(headers.pop("User-Agent", "") or "")
+    before = "-nostdin"
+    if agent:
+        before += " -user_agent " + shlex.quote(agent)
+    if headers:
+        joined = "".join(f"{k}: {v}\r\n" for k, v in headers.items() if k and v is not None)
+        before += " -headers " + shlex.quote(joined)
+    # A fresh googlevideo playlist answers its first segment requests with
+    # 403 now and then; retrying a segment recovers (box test 2026-11-21:
+    # 8 segment 403s, 0 skipped with retries; 13 skipped without).
+    before += " -f hls -seg_max_retry 10"
+    return {"before_options": before, "options": "-vn"}
 
 
 def refused_message(title: str, reason: str) -> str:
@@ -1070,22 +1275,27 @@ class Music(commands.Cog):
         if self.current is not current or not self.playing:
             return
 
-        # yt-dlp fetches the audio itself (same session, headers, cookies and
-        # IPv4 address as the extraction) and pipes it into ffmpeg. The first
-        # chunk is opened here, so a refused stream (403) is caught before
-        # anything is announced.
+        # A progressive file is fetched by yt-dlp itself (same session,
+        # headers, cookies and IPv4 address as the extraction) and piped into
+        # ffmpeg; its first chunk is opened here, so a refused stream (403) is
+        # caught before anything is announced, and the next progressive format
+        # is tried. Only when no progressive format answers does an HLS
+        # playlist go straight to ffmpeg (never through the pipe).
         stream = None
+        mode = "pipe"
+        fmt = info
         try:
-            stream = await asyncio.to_thread(open_stream, info, audio_url)
+            mode, stream, fmt = await asyncio.to_thread(open_track, info)
         except StreamError as err:
-            audit_after_playback(ctx, None, stream_error=str(err), elapsed=0.0)
+            audit_after_playback(ctx, None, stream_error=str(err), elapsed=0.0, mode="none")
             return await self._track_failed(ctx, current, str(err))
         except Exception as err:
             # The pipe could not be set up at all (for example an old yt-dlp
             # without its networking module): ffmpeg opens the URL with
             # yt-dlp's headers instead.
             print(f"MUSIC STREAM: pipe unavailable ({type(err).__name__}); direct URL", flush=True)
-            stream = None
+            stream, mode, fmt = None, "direct", info
+        stream_format = format_label(fmt)
 
         await self.send_now_playing(ctx, current)
 
@@ -1100,6 +1310,10 @@ class Music(commands.Cog):
             if stream is not None:
                 source = discord.FFmpegPCMAudio(
                     stream, pipe=True, executable=ffmpeg_path, stderr=stderr_tail, **PIPE_FFMPEG_OPTIONS
+                )
+            elif mode == "hls":
+                source = discord.FFmpegPCMAudio(
+                    fmt["url"], executable=ffmpeg_path, stderr=stderr_tail, **hls_ffmpeg_options(fmt)
                 )
             else:
                 source = discord.FFmpegPCMAudio(
@@ -1150,6 +1364,8 @@ class Music(commands.Cog):
                 stderr=stderr_tail.text(),
                 stream_error=stream_error,
                 stopped=stopped,
+                stream_format=stream_format,
+                mode=mode,
             )
             early = bool(reason) and elapsed < EARLY_EXIT_S
             nxt = self._track_failed(ctx, current, reason) if early else self.play_next(ctx)
