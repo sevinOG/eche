@@ -9,9 +9,14 @@ import json
 import os
 
 # Defaults. The live values are Settings → Memory & Prompts → Context & Memory
-# (memory_recent_messages, memory_fold_every).
+# (memory_recent_messages, memory_fold_every). The quiet time is
+# ECHE_MEMORY_FOLD_IDLE_MINUTES, else FOLD_IDLE_MINUTES.
 KEEP = 3
-FOLD_EVERY = 3
+# The long-term memory is updated after this many of the person's messages,
+# or once the chat has been quiet for FOLD_IDLE_MINUTES. The fold sees both
+# sides of the conversation.
+FOLD_EVERY = 8
+FOLD_IDLE_MINUTES = 30
 # Messages waiting on a fold are kept even past KEEP, up to this many, so a
 # slow fold setting or a failing summarizer does not drop them.
 _PENDING_CEILING = 40
@@ -25,10 +30,20 @@ def keep() -> int:
 
 
 def fold_every() -> int:
-    """New messages before the long-term summary is updated."""
+    """New messages before the long-term memory is updated."""
     from core.context_caps import get
 
     return get("memory_fold_every")
+
+
+def fold_idle_seconds() -> float:
+    """Quiet time after which waiting messages are folded anyway."""
+    raw = (os.environ.get("ECHE_MEMORY_FOLD_IDLE_MINUTES") or "").strip()
+    try:
+        minutes = max(5, min(240, int(float(raw)))) if raw else FOLD_IDLE_MINUTES
+    except ValueError:
+        minutes = FOLD_IDLE_MINUTES
+    return float(minutes) * 60.0
 
 
 def clip_message(text: str, cap: int | None = None) -> str:
@@ -64,7 +79,13 @@ def _path(user_id: int, side: str) -> str:
 
 
 def _empty() -> dict:
-    return {"pending": 0, "stash": [], "messages": []}
+    return {"pending": 0, "stash": [], "messages": [], "times": [], "last_at": 0.0}
+
+
+def _now() -> float:
+    import time
+
+    return time.time()
 
 
 def _load(user_id: int, side: str) -> dict:
@@ -85,14 +106,32 @@ def _load(user_id: int, side: str) -> dict:
     except (TypeError, ValueError):
         pending = 0
     pending = max(0, pending)
+    rows: list[str] = []
+    stamps: list[float] = []
+    raw_times = data.get("times") if isinstance(data.get("times"), list) else []
+    if isinstance(messages, list):
+        # Older files have no times. Those messages count as time 0.
+        offset = len(messages) - len(raw_times)
+        for index, line in enumerate(messages):
+            if not str(line).strip():
+                continue
+            rows.append(str(line))
+            at = raw_times[index - offset] if 0 <= index - offset < len(raw_times) else 0.0
+            try:
+                stamps.append(float(at or 0.0))
+            except (TypeError, ValueError):
+                stamps.append(0.0)
+    held = _held(pending)
+    try:
+        last_at = float(data.get("last_at") or 0.0)
+    except (TypeError, ValueError):
+        last_at = 0.0
     return {
         "pending": pending,
         "stash": [str(line) for line in stash if str(line).strip()] if isinstance(stash, list) else [],
-        "messages": (
-            [str(line) for line in messages if str(line).strip()][-_held(pending):]
-            if isinstance(messages, list)
-            else []
-        ),
+        "messages": rows[-held:],
+        "times": stamps[-held:],
+        "last_at": last_at,
     }
 
 
@@ -122,11 +161,16 @@ def push(user_id: int, side: str, text: str) -> tuple[list[str], int]:
         state = _load(int(user_id), side)
         return list(state["messages"]), int(state["pending"])
     state = _load(int(user_id), side)
+    now = _now()
     state["messages"].append(body)
+    state["times"].append(now)
+    state["last_at"] = now
     state["pending"] = int(state["pending"]) + 1
     # Newest stays in the last slot. The oldest drops once the buffer is full
     # and it is no longer waiting on a fold.
-    state["messages"] = state["messages"][-_held(state["pending"]):]
+    held = _held(state["pending"])
+    state["messages"] = state["messages"][-held:]
+    state["times"] = state["times"][-held:]
     _save(int(user_id), side, state)
     path = _path(int(user_id), side)
     print(
@@ -174,6 +218,67 @@ def notes_for_fold(user_id: int, side: str) -> list[str]:
     return notes
 
 
+def pending_rows(user_id: int, side: str) -> list[tuple[float, str]]:
+    """(time, text) for stashed pin lines and messages waiting on a fold.
+
+    Stashed lines from an older pin have no time and sort first.
+    """
+    try:
+        state = _load(int(user_id), side)
+    except (TypeError, ValueError):
+        return []
+    pending = int(state["pending"])
+    rows: list[tuple[float, str]] = []
+    seen: set[str] = set()
+    for line in state["stash"]:
+        text = str(line).strip()
+        if text and text not in seen:
+            rows.append((0.0, text))
+            seen.add(text)
+    if pending > 0:
+        tail = list(zip(state["times"], state["messages"]))[-pending:]
+        for at, line in tail:
+            text = str(line).strip()
+            if text and text not in seen:
+                rows.append((float(at or 0.0), text))
+                seen.add(text)
+    return rows
+
+
+def pending_count(user_id: int, side: str) -> int:
+    try:
+        return int(_load(int(user_id), side)["pending"])
+    except (TypeError, ValueError):
+        return 0
+
+
+def last_at(user_id: int, side: str) -> float:
+    try:
+        return float(_load(int(user_id), side)["last_at"])
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def users_waiting() -> list[int]:
+    """Every person with messages waiting on a fold (for the idle sweep)."""
+    from core.paths import memories_dir
+
+    base = memories_dir()
+    out: list[int] = []
+    if not os.path.isdir(base):
+        return out
+    for name in os.listdir(base):
+        if not name.startswith("user-"):
+            continue
+        try:
+            uid = int(name[len("user-"):])
+        except ValueError:
+            continue
+        if pending_count(uid, "user") > 0 or pending_count(uid, "bot") > 0 or has_stash(uid, "user") or has_stash(uid, "bot"):
+            out.append(uid)
+    return out
+
+
 def prompt_lines(user_id: int, side: str) -> list[str]:
     """Lines the prompt should still see: pin lines waiting on a fold, then the
     newest messages (Settings → Recent messages kept)."""
@@ -196,10 +301,19 @@ def has_stash(user_id: int, side: str) -> bool:
         return False
 
 
-def clear_folded(user_id: int, side: str) -> None:
-    """The summary landed. The newest messages stay. The stash does not."""
+def clear_folded(user_id: int, side: str, count: int | None = None) -> None:
+    """The memory landed. The newest messages stay. The stash does not.
+
+    count is how many waiting messages the fold took. Messages that arrived
+    while the fold ran stay waiting. None clears every waiting message.
+    """
     state = _load(int(user_id), side)
-    state["pending"] = 0
+    if count is None:
+        state["pending"] = 0
+    else:
+        state["pending"] = max(0, int(state["pending"]) - max(0, int(count)))
     state["stash"] = []
-    state["messages"] = state["messages"][-keep():]
+    held = max(keep(), state["pending"])
+    state["messages"] = state["messages"][-held:]
+    state["times"] = state["times"][-held:]
     _save(int(user_id), side, state)

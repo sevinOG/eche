@@ -322,22 +322,22 @@ class MaskToggleTests(TempRoot):
 
     def test_drop_rule_follows_toggle(self):
         on = [
-            sp.build_merge_prompt("- Old.", "user: hi", char_limit=500),
-            sp.build_condense_prompt("- Old.", 500),
-            episodic.fold_prompt("old", ["a: b"], 500),
-            episodic.condense_prompt("a", "b", 500),
-            cs.condense_memory_prompt("user", "a", "b", 500),
+            sp.build_user_fold_prompt("u1 | identity | Old.", "Them: hi"),
+            sp.build_self_fold_prompt("b1 | stances | I said old.", "Eche: hi"),
+            sp.build_migration_prompt("user", "- Old."),
+            sp.build_episode_prompt("P1: a\nEche: b", "today", 1),
+            sp.build_consolidate_prompt("- a", "this week"),
         ]
         for text in on:
             self.assertIn("No slurs", text)
             self.assertIn("@mentions", text)
         self.save(memory_mask_slurs="0")
         off = [
-            sp.build_merge_prompt("- Old.", "user: hi", char_limit=500),
-            sp.build_condense_prompt("- Old.", 500),
-            episodic.fold_prompt("old", ["a: b"], 500),
-            episodic.condense_prompt("a", "b", 500),
-            cs.condense_memory_prompt("user", "a", "b", 500),
+            sp.build_user_fold_prompt("u1 | identity | Old.", "Them: hi"),
+            sp.build_self_fold_prompt("b1 | stances | I said old.", "Eche: hi"),
+            sp.build_migration_prompt("user", "- Old."),
+            sp.build_episode_prompt("P1: a\nEche: b", "today", 1),
+            sp.build_consolidate_prompt("- a", "this week"),
         ]
         for text in off:
             self.assertNotIn("slurs", text.lower())

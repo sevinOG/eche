@@ -1,50 +1,34 @@
 # context_summarizer.py
+# The one long-term memory update path, for both memories kept per person:
+#   * side "user": what Eche knows about the person ("Context for ..." pin)
+#   * side "bot":  Eche's record of its own outputs with them ("Eche with ...")
+#
+# Both live as structured JSON (core/memory_store.py). After memory_fold_every
+# of the person's messages, or once the chat has been quiet for
+# 30 minutes (FOLD_IDLE_MINUTES), both sides of the waiting conversation go to the
+# summarizer once per memory. It replies with JSON edits; the code applies
+# them, then the Discord pin is rewritten as a rendered copy.
+#
+# A person with no JSON yet is migrated once: the old prose on their pin is
+# sorted into sections under the same rules, and kept as a legacy backup.
+# A failed or unreadable reply changes nothing and keeps the waiting messages.
 
 from __future__ import annotations
 
 import asyncio
 import re
+import time
 
-from core.context_manager import (
-    ensure_context_channel,
-    fit_memory_pin,
-    parse_pin_sections,
-    split_memory_pin,
-)
-from core.client import call_groq_raw, drop_safety_preamble, is_quota_error
+from core.client import call_groq_raw, drop_safety_preamble
 from core.summary_safety import scrub_summary, with_summary_rule
-from core.summarizer_prompt import (
-    build_condense_prompt,
-    build_merge_prompt,
-    get_summarizer_model,
-)
+from core.summarizer_prompt import SUMMARIZER_TEMPERATURE, get_summarizer_model
 
-RECENT_MESSAGE_COUNT = 3
-# Fold this many stored recent lines into long-term memory, then clear New:.
-# One line is one turn on that pin: a USER line, or a BOT line.
-# Used for both the user's context and the bot's self context.
-ARCHIVE_AFTER_MESSAGES = 3
-# Discord rejects a pin edit over 2000 characters. Compact the cloud before
-# that, down to a size that still leaves room for the next short lines.
-_PIN_SOFT = 1700
-_CLOUD_TARGET = 900
-_NEXT_LINES_RESERVE = 320
-
-
-def cloud_target() -> int:
-    """Compact target for the older Summary/New pin. Never above half the
-    long-term summary slider, so a smaller slider means a smaller cloud."""
-    from core.context_manager import pin_cap
-
-    return max(200, min(_CLOUD_TARGET, pin_cap() // 2))
-
-
-def merge_target(label: str) -> int:
-    """Length target for an in-place merge on the older Summary/New pin."""
-    from core.context_manager import pin_cap
-
-    room = min(pin_cap(), _PIN_SOFT) - _NEXT_LINES_RESERVE - len(label or "")
-    return max(200, room)
+# Room for the JSON edits in one reply.
+OPS_CHARS = 2400
+# Newest part of the waiting conversation that the summarizer reads.
+CONVERSATION_CHARS = 7000
+_LINE_CHARS = 600
+_LOCKS: dict[int, asyncio.Lock] = {}
 
 # Reject API failures and instruction-echo so they never become "memory"
 _BAD_SUMMARY_MARKERS = (
@@ -78,71 +62,6 @@ _BAD_SUMMARY_MARKERS = (
     "no headings, no intro",
 )
 
-
-def pin_would_crowd(header: str, summary: str) -> bool:
-    """True when the cloud should be compacted before Discord rejects the pin."""
-    size = len(header or "") + len((summary or "").strip()) + _NEXT_LINES_RESERVE
-    return size > _PIN_SOFT
-
-
-_DROP_WORDS = frozenset(
-    """
-    a an the and or but of to for in on at by is are was were be been being
-    has have had do does did with from that this these those it its they them
-    their user bot said says told about into also just like some very
-    not you your our his her she him who what when where which will would
-    can could should than then there here over under out all any each
-    """.split()
-)
-
-
-def _memory_terms(text: str) -> set[str]:
-    words = re.findall(r"[a-z0-9']+", (text or "").lower())
-    return {word for word in words if len(word) >= 4 and word not in _DROP_WORDS}
-
-
-def summary_drops_existing(existing: str, updated: str) -> bool:
-    """True when a merge kept less than about two fifths of the stored facts.
-
-    A shorter wording that still names the same subjects is kept. A rewrite
-    that only retells the new lines is rejected so the recent block stays.
-    """
-    old = _memory_terms(existing)
-    if len(old) < 8:
-        return False
-    kept = old & _memory_terms(updated)
-    return len(kept) * 5 < len(old) * 2
-
-
-def partition_recent(message_lines: list[str], keep: int) -> tuple[list[str], list[str]] | None:
-    """Split New: lines into (history to fold, lines to leave).
-
-    None means there is nothing to fold yet, so the caller keeps every line.
-    keep=0 folds every line and leaves the recent block empty.
-    """
-    if keep > 0 and len(message_lines) <= keep:
-        return None
-    if keep <= 0:
-        return list(message_lines), []
-    return list(message_lines[:-keep]), list(message_lines[-keep:])
-
-
-_FOLD_PLACEHOLDERS = {
-    "(none yet)",
-    "(summary unavailable)",
-    "(none)",
-    "(no notes)",
-}
-
-
-def _usable_fold(text: str) -> str:
-    """A placeholder is not a summary. The pin and the buffer stay as they were."""
-    from core.episodic import tidy_summary
-
-    body = tidy_summary(text)
-    if not body or body.lower() in _FOLD_PLACEHOLDERS or _is_bad_llm_output(body):
-        return ""
-    return body
 
 
 def _is_bad_llm_output(text: str) -> bool:
@@ -178,271 +97,7 @@ def _clean_summary_text(text: str) -> str:
     return scrub_summary(t.strip())
 
 
-async def _llm_summary(
-    prompt: str,
-    model: str,
-    *,
-    retries: int = 3,
-    char_target: int = 1900,
-) -> str | None:
-    """
-    Call the model. A quota error is not retried here; the Groq client already
-    waited once. Returns clean summary text or None (caller keeps prior summary).
-    """
-    last = ""
-    for attempt in range(retries):
-        try:
-            from core.context_caps import summary_tokens
 
-            raw = await call_groq_raw(
-                with_summary_rule(prompt),
-                model=model,
-                max_completion_tokens=summary_tokens(char_target),
-            )
-        except Exception as e:
-            print(f"[context_summarizer] LLM exception (try {attempt + 1}): {e}")
-            last = str(e)
-            await asyncio.sleep(1.5 * (attempt + 1))
-            continue
-
-        text = _clean_summary_text(raw or "")
-        if _is_bad_llm_output(text):
-            print(
-                f"[context_summarizer] Rejecting bad LLM output (try {attempt + 1}): "
-                f"{text[:160]!r}"
-            )
-            last = text
-            # The chat client already waited and retried a quota error once.
-            if is_quota_error(text):
-                return None
-            await asyncio.sleep(1.0)
-            continue
-
-        return text
-
-    print(f"[context_summarizer] All LLM attempts failed. Last={last[:200]!r}")
-    return None
-
-
-async def compact_cloud(summary: str) -> str:
-    """Shorten the long-term cloud. A failed pass keeps the text it was given."""
-    text = (summary or "").strip()
-    if not text or text in ("(none yet)", "(summary unavailable)"):
-        return text or "(none yet)"
-    target = cloud_target()
-    condensed = await _llm_summary(
-        build_condense_prompt(text, target),
-        get_summarizer_model(),
-        char_target=target,
-    )
-    if (
-        condensed
-        and len(condensed) < len(text)
-        and not summary_drops_existing(text, condensed)
-    ):
-        print(
-            f"[context_summarizer] Compacted cloud from {len(text)} "
-            f"to {len(condensed)} chars."
-        )
-        return condensed
-    print("[context_summarizer] Cloud compact kept the existing summary.")
-    return text
-
-
-async def summarize_context(
-    bot,
-    guild,
-    user_id,
-    username=None,
-    override_header: str | None = None,
-    keep_recent: int | None = None,
-):
-    """
-    Fold older New: lines into the long-term summary.
-
-    keep_recent defaults to RECENT_MESSAGE_COUNT (leave that many verbatim).
-    keep_recent=0 folds every stored line and leaves New: empty. The caller
-    does that after a reply once three short lines are stored. Those lines
-    become sentences in the cloud. The cloud is compacted before the pin
-    reaches Discord's limit, and that pass keeps instructions and user info.
-
-    Layout:
-
-    <HEADER>
-    Summary:
-    <long-term summary of older messages>
-
-    New:
-    <last few USER/bot lines verbatim>
-    """
-    try:
-        from core.audit import safe_activity
-        safe_activity(
-            "summarizer",
-            outcome="success",
-            user_id=user_id,
-            guild_id=getattr(guild, "id", None),
-        )
-    except Exception:
-        pass
-
-    if override_header:
-        from core.bot_memory import ensure_bot_memory_channel
-        channel, pinned = await ensure_bot_memory_channel(bot, user_id, username)
-    else:
-        channel, pinned = await ensure_context_channel(
-            bot,
-            guild,
-            user_id,
-            username,
-        )
-
-    if not channel or not pinned:
-        print("[context_summarizer] No memory channel — skipping archive.")
-        return None
-
-    from core.discord_store import refresh_record
-
-    pinned = await refresh_record(pinned)
-    content = pinned.content or ""
-
-    if override_header:
-        fallback = override_header
-    elif username:
-        fallback = f"Context for {username}:\n"
-    else:
-        fallback = "Context initialized.\n"
-
-    # Keep the pin's own title when it already has a Summary block.
-    _header, _body, recognized = split_memory_pin(content, fallback)
-    if not recognized:
-        print(
-            f"[context_summarizer] Pin for {user_id} has no summary block — "
-            "leaving it unchanged."
-        )
-        return None
-
-    label, summary_block, message_lines = parse_pin_sections(content, fallback)
-
-    # If prior summary was an error dump, treat as empty so we can recover
-    if _is_bad_llm_output(summary_block) or summary_block.strip() in (
-        "(none yet)",
-        "(summary unavailable)",
-    ):
-        if _is_bad_llm_output(summary_block):
-            print("[context_summarizer] Clearing previously stored bad summary text")
-        summary_block = ""
-
-    async def _write_layout(summary_text: str, recent: list[str]) -> str:
-        s = (summary_text or "").strip() or "(none yet)"
-        new_content = fit_memory_pin(label, s, recent)
-        try:
-            from core.discord_store import edit_record
-            await edit_record(pinned, new_content)
-        except Exception as e:
-            print(f"[context_summarizer] ERROR editing pinned for user {user_id}: {e}")
-        return s
-
-    def _keep_prior(reason: str) -> tuple[str, list[str]]:
-        # A failed fold puts the lines back into New: so they are not dropped.
-        print(f"[context_summarizer] {reason}")
-        # Every stored line goes back. The tail alone would drop the lines
-        # that failed to fold when the caller left the last few in New:.
-        return existing_summary or "(summary unavailable)", list(message_lines)
-
-    keep = RECENT_MESSAGE_COUNT if keep_recent is None else max(0, int(keep_recent))
-    parted = partition_recent(message_lines, keep)
-    if parted is None:
-        return await _write_layout(summary_block.strip() or "(none yet)", message_lines)
-
-    history_lines, recent_lines = parted
-    history_text = "\n".join(history_lines).strip()
-    existing_summary = drop_safety_preamble(summary_block.strip())
-
-    if not history_text:
-        return await _write_layout(existing_summary or "(none yet)", recent_lines)
-
-    sum_model = get_summarizer_model()
-    print(f"[context_summarizer] Using model={sum_model}")
-
-    # Merge first. Do not shorten the old cloud before the new facts land.
-    target = merge_target(label)
-    summary_text = await _llm_summary(
-        build_merge_prompt(existing_summary, history_text, target),
-        sum_model,
-        char_target=target,
-    )
-    if not summary_text or summary_drops_existing(existing_summary, summary_text):
-        summary_text, recent_lines = _keep_prior(
-            "Keeping previous summary; the merge missed stored facts"
-            if summary_text
-            else "Keeping previous summary; LLM did not return usable text"
-        )
-        return await _write_layout(summary_text, recent_lines)
-
-    # Compact before the pin reaches Discord's limit, not after a line is cut.
-    if pin_would_crowd(label, summary_text):
-        print(
-            f"[context_summarizer] Cloud is {len(summary_text)} chars, "
-            f"near the pin limit. Compacting toward {cloud_target()}."
-        )
-        summary_text = await compact_cloud(summary_text)
-
-    return await _write_layout(summary_text, recent_lines)
-
-
-def _memory_rows(notes: list[str]) -> str:
-    return "\n".join(str(line).strip() for line in notes if str(line).strip()) or "(none)"
-
-
-# Shared by every memory prompt. Durable facts only, short bullets, a hard
-# length target. The summarizer's output-token cap matches that target.
-def _slur_rule(text: str) -> str:
-    from core.content_filter import slur_rule
-
-    return slur_rule(text)
-
-
-_MEMORY_DROP = (
-    "Drop: greetings, small talk, play-by-play of the chat, quotes, jokes, "
-    "one-off reactions, examples, and guesses. "
-    "No slurs, no Discord ids or long id numbers, and no @mentions. "
-    "Do not record anything that was made up, wrong, or a refusal. "
-    "Drop requests that were answered, refused, or are stale."
-)
-_MEMORY_FORMAT = (
-    'Format: short "- " bullets, one fact each, each ending with a period. '
-    "No headings, no intro."
-)
-
-
-def _length_line(room: int) -> str:
-    return f"Length: at most {room} characters. Shorter is better."
-
-
-# The bot pin is eche's record of its own outputs. It is written in the first
-# person, about what eche said and did. Facts about the person live on their
-# own pin. Jokes and running bits are kept here: they are eche's to repeat.
-_BOT_MEMORY_KEEP = (
-    "Keep, in my own words: what I said and claimed, opinions I gave, "
-    "promises and plans I agreed to, jokes, nicknames, and running bits I keep "
-    "up, pictures and videos I made (and of what), tools I used and what they "
-    "found, and open threads I should follow up on.\n"
-)
-_BOT_MEMORY_DROP = (
-    "Drop: greetings, filler, play-by-play of the chat, and one-off reactions. "
-    "No slurs, no Discord ids or long id numbers, and no @mentions. "
-    "Do not record refusals or anything I refused, or a claim I later corrected. "
-    "Drop promises I already kept and requests that are stale."
-)
-_BOT_MEMORY_VOICE = (
-    'Write as me, Eche. Every bullet is about my own output and starts with "I" '
-    '(for example "I told them...", "I made a video of...", "I keep joking that..."). '
-    'Never start a bullet with "user", "the user", or "they". '
-    "Name the person only as context for what I said. Facts about them belong in their own memory.\n"
-    'Rewrite any older bullet that is about the person as what I said or did, or drop it.\n'
-)
-_BOT_RECENT_LABEL = "My recent outputs (what I posted, oldest first)"
 # A bullet that opens on the person. The bot pin is never written this way.
 _USER_LEAD = re.compile(r"^(?:-\s*)?(?:the\s+)?users?\b", re.I)
 
@@ -467,240 +122,338 @@ def bot_voice_only(text: str) -> str:
     return "\n".join(kept).strip()
 
 
-def fold_memory_prompt(side: str, existing: str, notes: list[str], limit: int) -> str:
-    """Local buffer plus the long-term block. User and bot each keep their own job."""
-    from core.content_filter import clean_lines, clean_memory_text
-    from core.episodic import tidy_summary
-
-    prose = clean_memory_text(tidy_summary(existing)) or "(none yet)"
-    rows = _memory_rows(clean_lines(notes))
-    room = max(1, int(limit))
-    if side == "bot":
-        return (
-            "Update my long-term memory of my own outputs with this person: "
-            "what I, Eche, said and did. Reply with the updated memory only.\n"
-            f"{_BOT_MEMORY_KEEP}"
-            f"{_BOT_MEMORY_VOICE}"
-            f"{_slur_rule(_BOT_MEMORY_DROP)}\n"
-            "Merge new outputs in. Replace things I changed my mind on. "
-            "Keep older outputs that still matter for staying consistent.\n"
-            f"{_MEMORY_FORMAT}\n"
-            f"{_length_line(room)}\n\n"
-            f"Summary:\n{prose}\n\n"
-            f"{_BOT_RECENT_LABEL}:\n{rows}"
-        )
-    intro = (
-        "Update the long-term memory of this person. "
-        "Reply with the updated memory only.\n"
-        "Keep: who they are, their preferences, how they want to be treated, "
-        "instructions they gave, decisions, and open threads.\n"
-    )
-    return (
-        f"{intro}"
-        f"{_slur_rule(_MEMORY_DROP)}\n"
-        "Merge new facts in. Replace facts that changed. Keep older facts that still hold.\n"
-        f"{_MEMORY_FORMAT}\n"
-        f"{_length_line(room)}\n\n"
-        f"Summary:\n{prose}\n\n"
-        f"Recent messages:\n{rows}"
-    )
-
-
-def condense_memory_prompt(side: str, existing: str, fresh: str, limit: int) -> str:
-    """Second pass. The stored block plus the summary that did not fit."""
-    from core.content_filter import clean_memory_text
-    from core.episodic import tidy_summary
-
-    prose = clean_memory_text(tidy_summary(existing)) or "(none yet)"
-    segment = clean_memory_text(tidy_summary(fresh)) or "(none)"
-    room = max(1, int(limit))
-    if side == "bot":
-        return (
-            "Shorten my long-term memory of my own outputs with this person. "
-            "Reply with the shortened memory only.\n"
-            "Combine the existing summary and the new summary. Keep what I said and "
-            "claimed, my opinions, promises, running bits, what I made, and open threads. "
-            "Merge duplicates.\n"
-            f"{_BOT_MEMORY_VOICE}"
-            f"{_slur_rule(_BOT_MEMORY_DROP)}\n"
-            f"{_MEMORY_FORMAT}\n"
-            f"{_length_line(room)}\n\n"
-            f"Existing summary:\n{prose}\n\n"
-            f"New summary:\n{segment}"
-        )
-    keep = "who they are, preferences, instructions, decisions, and open threads"
-    intro = "Shorten this person's long-term memory. Reply with the shortened memory only.\n"
-    return (
-        f"{intro}"
-        f"Combine the existing summary and the new summary. Keep {keep}. "
-        "Merge duplicates. Drop anything trivial or one-off.\n"
-        f"{_slur_rule(_MEMORY_DROP)}\n"
-        f"{_MEMORY_FORMAT}\n"
-        f"{_length_line(room)}\n\n"
-        f"Existing summary:\n{prose}\n\n"
-        f"New summary:\n{segment}"
-    )
-
-
-def choose_memory(title: str, fresh: str, condensed: str) -> str:
-    """Prose that fits the pin. A pass that runs past it ends on a sentence."""
-    from core.context_manager import summary_fits, summary_room
-    from core.episodic import _clip_prose
-
-    for text in (fresh, condensed):
-        if text and summary_fits(title, text):
-            return text
-    room = summary_room(title)
-    for text in (condensed, fresh):
-        clipped = _clip_prose(text or "", room)
-        if clipped and summary_fits(title, clipped):
-            return clipped
-    return ""
+def _lock(user_id: int) -> asyncio.Lock:
+    lock = _LOCKS.get(int(user_id))
+    if lock is None:
+        lock = asyncio.Lock()
+        _LOCKS[int(user_id)] = lock
+    return lock
 
 
 async def _memory_completion(prompt: str, limit: int) -> str:
-    from core.client import call_groq_raw
+    """One summarizer call: safety rule first, fixed model, low temperature."""
     from core.context_caps import summary_tokens
-    from core.episodic import episode_summary_text
 
     raw = await call_groq_raw(
         with_summary_rule(prompt),
         model=get_summarizer_model(),
         max_completion_tokens=summary_tokens(limit),
+        temperature=SUMMARIZER_TEMPERATURE,
     )
-    return episode_summary_text(raw)
+    return drop_safety_preamble(raw or "")
 
 
-async def _in_bot_voice(folded: str, existing: str, rows: list[str], room: int) -> str:
-    """The bot pin stays in eche's voice. A fold written about the person is
-    asked for once more, then any bullet that still opens on "user" is dropped.
-    Empty means the fold is not used and the buffer is kept for next time.
-    """
-    if not user_centric_bullets(folded):
-        return folded
-    print("[context_summarizer] bot summary was written about the person. Retrying in first person.")
-    retry = ""
+def parse_ops(raw: str) -> dict | None:
+    """The JSON edits, or None for an error, a refusal, or anything unreadable."""
+    from core.episodic import _parse_json
+
+    data = _parse_json(raw)
+    if data is None:
+        return None
+    known = {"add", "update", "remove", "touch", "kept"}
+    if not any(key in data for key in known):
+        return None
+    return {key: data[key] for key in known if isinstance(data.get(key), list)}
+
+
+async def _ask_ops(prompt: str) -> dict | None:
     try:
-        retry = await _memory_completion(
-            fold_memory_prompt("bot", existing, rows, room)
-            + '\n\nYour last answer started bullets with "user". '
-            'Every bullet must start with "I" and describe what I said or did.',
-            room,
-        )
+        raw = await _memory_completion(prompt, OPS_CHARS)
     except Exception as exc:
-        print(f"[context_summarizer] bot first-person retry failed: {exc}")
-    retry = _usable_fold(retry)
-    best = retry if retry and not user_centric_bullets(retry) else (retry or folded)
-    return bot_voice_only(best)
+        print(f"[context_summarizer] memory call failed: {type(exc).__name__}", flush=True)
+        return None
+    ops = parse_ops(raw)
+    if ops is None:
+        print("[context_summarizer] memory reply was not usable JSON; nothing changed.", flush=True)
+    return ops
 
 
-async def fold_long_memory(
-    pinned,
-    fallback_header: str,
-    notes: list[str],
-    *,
-    side: str = "user",
-) -> bool:
-    """Fold the local buffer into the long-term pin. The pin has no New: section.
+def conversation_text(user_rows, bot_rows, limit: int = CONVERSATION_CHARS) -> str:
+    """Both sides, oldest first. Lines from an older pin come first."""
+    from core.content_filter import clean_memory_text
 
-    Same steps as the server episode: one summary, then a compact pass when
-    that summary will not fit, then a sentence boundary if it still will not.
-    False leaves the pin unchanged so the next message can try again.
-    """
-    from core.context_manager import (
-        parse_pin_sections,
-        summary_fits,
-        summary_only,
-        summary_room,
-        title_from_label,
+    rows: list[tuple[float, int, str]] = []
+    for order, (at, text) in enumerate(user_rows or []):
+        label = "Them" if at else "Earlier note"
+        rows.append((float(at or 0), order, f"{label}: {text}"))
+    for order, (at, text) in enumerate(bot_rows or []):
+        label = "Eche" if at else "Earlier note (Eche)"
+        rows.append((float(at or 0), 10_000 + order, f"{label}: {text}"))
+    rows.sort(key=lambda row: (row[0], row[1]))
+    lines: list[str] = []
+    for _at, _order, line in rows:
+        body = clean_memory_text(" ".join(line.split()))
+        if len(body) > _LINE_CHARS:
+            body = body[: _LINE_CHARS - 1].rstrip() + "…"
+        if body:
+            lines.append(body)
+    out: list[str] = []
+    used = 0
+    for line in reversed(lines):
+        if used + len(line) + 1 > limit:
+            break
+        out.append(line)
+        used += len(line) + 1
+    return "\n".join(reversed(out))
+
+
+def _names_of(*things) -> list[str]:
+    names: list[str] = []
+    for thing in things:
+        if thing is None:
+            continue
+        if isinstance(thing, str):
+            names.append(thing)
+            continue
+        for attr in ("name", "display_name", "global_name", "nick"):
+            value = getattr(thing, attr, None)
+            if value:
+                names.append(str(value))
+    return names
+
+
+def _own_names(bot, guild, user_id: int, username) -> list[str]:
+    member = guild.get_member(user_id) if guild is not None and hasattr(guild, "get_member") else None
+    user = None
+    if bot is not None and hasattr(bot, "get_user"):
+        try:
+            user = bot.get_user(user_id)
+        except Exception:
+            user = None
+    return _names_of(username, member, user)
+
+
+def _known_names(bot) -> list[str]:
+    from core.episodic import _known_names as names
+
+    return names(bot)
+
+
+def _legacy_summary(content: str, fallback: str) -> str:
+    from core.context_manager import parse_pin_sections
+
+    if not content:
+        return ""
+    _label, summary, _recent = parse_pin_sections(content, fallback)
+    text = drop_safety_preamble((summary or "").strip())
+    if not text or text in ("(none yet)", "(summary unavailable)", "none") or _is_bad_llm_output(text):
+        return ""
+    return text
+
+
+async def migrate_profile(side: str, legacy: str, own_names=(), known_names=()) -> dict | None:
+    """A first JSON memory from old pin prose. None when the call failed."""
+    from core import memory_store
+    from core.summarizer_prompt import build_migration_prompt
+
+    profile = memory_store.empty(side)
+    if not legacy:
+        return profile
+    ops = await _ask_ops(build_migration_prompt(side, legacy))
+    if ops is None:
+        return None
+    memory_store.apply_ops(
+        profile, {"add": ops.get("add") or []}, side, own_names=own_names, known_names=known_names
     )
+    profile["legacy"] = {"text": legacy, "at": time.time()}
+    return profile
+
+
+async def _pins(bot, guild, uid: int, username):
+    """(thread, live content, fallback header) per side. Missing pins are None."""
     from core.discord_store import (
         BOT_CONTEXT_HEADER,
         OLD_BOT_CONTEXT_HEADER,
         USER_CONTEXT_HEADER,
+        bot_memory_header,
         read_pinned_first,
+    )
+
+    out: dict[str, tuple] = {}
+    label = " ".join(str(username or "").split()) or str(uid)
+    for side in ("user", "bot"):
+        thread = None
+        try:
+            if side == "user" and guild is not None and bot is not None:
+                from core.context_manager import ensure_context_channel
+
+                thread, _pin = await ensure_context_channel(bot, guild, uid, username)
+            elif side == "bot" and bot is not None:
+                from core.bot_memory import ensure_bot_memory_channel
+
+                thread, _pin = await ensure_bot_memory_channel(bot, uid, username)
+        except Exception as exc:
+            print(f"[context_summarizer] {side} pin lookup failed: {type(exc).__name__}", flush=True)
+            thread = None
+        headers = (BOT_CONTEXT_HEADER, OLD_BOT_CONTEXT_HEADER) if side == "bot" else (USER_CONTEXT_HEADER,)
+        fallback = bot_memory_header(label) if side == "bot" else f"{USER_CONTEXT_HEADER}{label}:\n"
+        # No thread means the old pin cannot be checked: a person with no JSON
+        # memory yet is not started over without it.
+        content, readable = "", False
+        if thread is not None:
+            live, ok = await read_pinned_first(thread, headers)
+            readable = bool(ok)
+            content = getattr(live, "content", "") or "" if live is not None else ""
+        out[side] = (thread, content, fallback, readable)
+    return out
+
+
+async def write_memory_pin(thread, side: str, content: str, fallback: str, profile: dict) -> bool:
+    """The Discord copy of the JSON memory. The JSON stays the source."""
+    from core import memory_store
+    from core.context_manager import parse_pin_sections, summary_only, summary_room, title_from_label
+    from core.discord_store import (
+        BOT_CONTEXT_HEADER,
+        OLD_BOT_CONTEXT_HEADER,
+        USER_CONTEXT_HEADER,
         same_discord_text,
         write_pinned,
     )
 
-    rows = [str(line).strip() for line in notes if str(line).strip()]
-    headers = (
-        (BOT_CONTEXT_HEADER, OLD_BOT_CONTEXT_HEADER)
-        if side == "bot"
-        else (USER_CONTEXT_HEADER,)
-    )
-    channel = getattr(pinned, "channel", None)
-    live, pins_ok = await read_pinned_first(channel, headers)
-    if not pins_ok:
-        print(f"[context_summarizer] {side} pin list could not be read.")
-        return None
-    content = getattr(live, "content", "") or "" if live is not None else ""
-    label, summary_block, message_lines = parse_pin_sections(content, fallback_header)
-    for line in message_lines:
-        text = str(line).strip()
-        if text and text not in rows:
-            rows.append(text)
-    if not rows:
+    if thread is None:
         return False
-
-    existing = drop_safety_preamble((summary_block or "").strip())
-    if _is_bad_llm_output(existing) or existing in ("(none yet)", "(summary unavailable)"):
-        existing = ""
-
+    label, _summary, _recent = parse_pin_sections(content or fallback, fallback)
     title = title_from_label(label)
-    room = summary_room(title)
-    print(f"[context_summarizer] Using model={get_summarizer_model()}")
-    try:
-        folded = await _memory_completion(
-            fold_memory_prompt(side, existing, rows, room),
-            room,
-        )
-    except Exception as exc:
-        print(f"[context_summarizer] {side} summary failed: {exc}")
-        return False
-    folded = _usable_fold(folded)
-    if folded and side == "bot":
-        folded = await _in_bot_voice(folded, existing, rows, room)
-    if not folded:
-        print(f"[context_summarizer] {side} summary returned no usable text.")
-        return False
-
-    chosen = folded
-    if not summary_fits(title, folded):
-        print(
-            f"[context_summarizer] {side} summary is {len(folded)} characters. Compacting."
-        )
-        try:
-            condensed = await _memory_completion(
-                condense_memory_prompt(side, existing, folded, room),
-                room,
-            )
-        except Exception as exc:
-            print(f"[context_summarizer] {side} compact failed: {exc}")
-            condensed = ""
-        condensed = _usable_fold(condensed)
-        if condensed and side == "bot":
-            condensed = bot_voice_only(condensed)
-        chosen = choose_memory(title, folded, condensed)
-    if not chosen:
-        print(f"[context_summarizer] {side} summary did not fit.")
-        return False
-
-    body = summary_only(title, chosen)
-    if content.startswith(OLD_BOT_CONTEXT_HEADER):
+    room = min(memory_store.RENDER_CAP, summary_room(title))
+    text = memory_store.render(profile, room, side) or "(none yet)"
+    body = summary_only(title, text)
+    if (content or "").startswith(OLD_BOT_CONTEXT_HEADER):
         header = OLD_BOT_CONTEXT_HEADER
     elif side == "bot":
         header = BOT_CONTEXT_HEADER
     else:
         header = USER_CONTEXT_HEADER
-    if (
-        live is not None
-        and getattr(live, "pinned", False)
-        and same_discord_text(body, content)
-    ):
-        return live
-    written, note = await write_pinned(channel, header, body)
+    if content and same_discord_text(body, content):
+        return True
+    written, note = await write_pinned(thread, header, body)
     if written is None or note == "pin-failed":
-        print(f"[context_summarizer] {side} summary was not written ({note}).")
-        return None
-    return written
+        print(f"[context_summarizer] {side} pin copy was not written ({note}).", flush=True)
+        return False
+    return True
+
+
+def _audit(user_id, guild) -> None:
+    try:
+        from core.audit import safe_activity
+
+        safe_activity(
+            "summarizer",
+            outcome="success",
+            user_id=user_id,
+            guild_id=getattr(guild, "id", None),
+        )
+    except Exception:
+        pass
+
+
+async def fold_person(bot, guild, user_id, username=None, *, reason: str = "count", force: bool = False) -> bool:
+    """Update both memories for one person from the waiting conversation.
+
+    guild is the home server (where the pins live). True when both memories
+    were updated; the waiting messages are then cleared. Anything else keeps
+    them for the next try.
+    """
+    from core import memory_store
+    from core.personal_recent import clear_folded, pending_count, pending_rows
+    from core.summarizer_prompt import build_self_fold_prompt, build_user_fold_prompt
+
+    _audit(user_id, guild)
+    try:
+        uid = int(user_id)
+    except (TypeError, ValueError):
+        return False
+    async with _lock(uid):
+        user_rows = pending_rows(uid, "user")
+        bot_rows = pending_rows(uid, "bot")
+        user_pending = pending_count(uid, "user")
+        bot_pending = pending_count(uid, "bot")
+        if not user_rows and not bot_rows and not force:
+            return False
+        conversation = conversation_text(user_rows, bot_rows)
+        own = _own_names(bot, guild, uid, username)
+        known = _known_names(bot)
+        pins = await _pins(bot, guild, uid, username)
+        print(
+            f"[context_summarizer] Using model={get_summarizer_model()} for {uid} "
+            f"({reason}: {len(user_rows)} from them, {len(bot_rows)} from me)",
+            flush=True,
+        )
+        done = True
+        for side in ("user", "bot"):
+            thread, content, fallback, readable = pins[side]
+            profile = memory_store.load(uid, side)
+            if profile is None:
+                if not readable:
+                    # The old pin could not be read: do not start over without it.
+                    done = False
+                    continue
+                profile = await migrate_profile(side, _legacy_summary(content, fallback), own, known)
+                if profile is None:
+                    done = False
+                    continue
+                memory_store.save(uid, side, profile)
+                print(f"[memory] {side} memory for {uid} moved to the structured format", flush=True)
+            if conversation:
+                builder = build_self_fold_prompt if side == "bot" else build_user_fold_prompt
+                ops = await _ask_ops(builder(memory_store.listing(profile), conversation))
+                if ops is None:
+                    done = False
+                    continue
+                stats = memory_store.apply_ops(profile, ops, side, own_names=own, known_names=known)
+                print(
+                    f"[memory] {side} memory for {uid}: +{stats['added']} ~{stats['updated']} "
+                    f"-{stats['removed']} merged {stats['merged']} dropped {len(stats['dropped'])}",
+                    flush=True,
+                )
+            else:
+                memory_store.maintain(profile, side)
+            memory_store.save(uid, side, profile)
+            try:
+                await write_memory_pin(thread, side, content, fallback, profile)
+            except Exception as exc:
+                print(f"[context_summarizer] {side} pin copy failed: {type(exc).__name__}", flush=True)
+        if done:
+            clear_folded(uid, "user", user_pending)
+            clear_folded(uid, "bot", bot_pending)
+            print(f"[memory] summary stored for {uid}", flush=True)
+        else:
+            print(f"[memory] summary did not land; keeping the buffer for {uid}", flush=True)
+        return done
+
+
+def fold_reason(user_id: int, now: float | None = None) -> str:
+    """"count", "idle", or "" (not yet)."""
+    from core.personal_recent import fold_every, fold_idle_seconds, has_stash, last_at, pending_count
+
+    now = time.time() if now is None else float(now)
+    uid = int(user_id)
+    user_p = pending_count(uid, "user")
+    bot_p = pending_count(uid, "bot")
+    every = fold_every()
+    if user_p >= every or bot_p >= every * 2:
+        return "count"
+    if user_p + bot_p == 0 and not (has_stash(uid, "user") or has_stash(uid, "bot")):
+        return ""
+    last = max(last_at(uid, "user"), last_at(uid, "bot"))
+    if last and now - last >= fold_idle_seconds():
+        return "idle"
+    return ""
+
+
+async def replace_memory(bot, guild, user_id, username, text: str, side: str = "user") -> bool:
+    """Owner command: start this memory over from the given text (or empty)."""
+    from core import memory_store
+
+    uid = int(user_id)
+    async with _lock(uid):
+        own = _own_names(bot, guild, uid, username)
+        known = _known_names(bot)
+        legacy = (text or "").strip()
+        profile = await migrate_profile(side, legacy, own, known) if legacy else memory_store.empty(side)
+        if profile is None:
+            return False
+        memory_store.save(uid, side, profile)
+        pins = await _pins(bot, guild, uid, username)
+        thread, content, fallback, _readable = pins[side]
+        await write_memory_pin(thread, side, content, fallback, profile)
+        return True

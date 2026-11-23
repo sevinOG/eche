@@ -242,9 +242,17 @@ class MemoryWipeTests(TempRoot):
         self.assertIn("home server", report.problem)
 
     def test_clears_local_buffers_and_caches(self):
+        from core import memory_store
+
         pr.push(self.USER_A, "user", "hello there")
         pr.push(self.USER_A, "bot", "hi")
-        episodic.push_recent(4242, ["alice: hi"])
+        memory_store.save(self.USER_A, "user", memory_store.empty("user"))
+        memory_store.save(self.USER_A, "bot", memory_store.empty("bot"))
+        folder = os.path.join(self.root, "memories", "4242")
+        os.makedirs(folder, exist_ok=True)
+        for name in ("recent.txt", "episodes.jsonl", "open_episodes.json", "episodes_meta.json", "episodes_legacy.json"):
+            with open(os.path.join(folder, name), "w", encoding="utf-8") as fh:
+                fh.write("{}\n")
         local_path = os.path.join(self.root, "memories", "local")
         os.makedirs(local_path, exist_ok=True)
         keep = os.path.join(local_path, "history.jsonl")
@@ -255,9 +263,12 @@ class MemoryWipeTests(TempRoot):
 
         guild = self._guild()
         report = run(mw.wipe_memory(guild, log=lambda _t: None))
-        self.assertEqual(report.local_files, 3)
+        self.assertEqual(report.local_files, 9)
         self.assertEqual(pr.messages(self.USER_A, "user") if hasattr(pr, "messages") else [], [])
-        self.assertEqual(episodic.read_recent(4242), [])
+        self.assertIsNone(memory_store.load(self.USER_A, "user"))
+        self.assertIsNone(memory_store.load(self.USER_A, "bot"))
+        self.assertEqual(os.listdir(folder), [])
+        self.assertEqual(episodic.read_records(4242), [])
         self.assertFalse(ds._pins_scanned)
         self.assertTrue(os.path.isfile(keep))
 
@@ -368,18 +379,19 @@ class FilterTests(TempRoot):
 
     def test_drop_rules_in_every_memory_prompt(self):
         prompts = [
-            cs.fold_memory_prompt("old", ["new note"]) if _accepts(cs.fold_memory_prompt, 2) else "",
-            episodic.fold_prompt("old", ["a: b"]) if _accepts(episodic.fold_prompt, 2) else "",
-            sp.DEFAULT_SUMMARIZER_PROMPT,
+            sp.build_user_fold_prompt("u1 | likes | Old.", "Them: new note"),
+            sp.build_self_fold_prompt("b1 | stances | I said old.", "Eche: new note"),
+            sp.build_migration_prompt("user", "- old"),
+            sp.build_episode_prompt("P1: a\nEche: b", "today", 1),
+            sp.build_consolidate_prompt("- a", "this week"),
         ]
-        for text in filter(None, prompts):
+        for text in prompts:
             folded = text.lower()
             self.assertIn("no slurs", folded)
             self.assertIn("@mentions", folded)
             self.assertIn("refused", folded)
-        self.assertIn("no slurs", cs._MEMORY_DROP.lower())
-        self.assertIn("no slurs", episodic._EPISODE_DROP.lower())
-        self.assertIn("stale", cs._MEMORY_DROP.lower())
+            self.assertIn("stale", folded)
+        self.assertIn("no slurs", sp.MEMORY_RULES.lower())
 
     def test_personal_buffer_cleaned_on_push(self):
         root = tempfile.mkdtemp(prefix="eche-pr-")

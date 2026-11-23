@@ -10,7 +10,12 @@ async def load_user_context(bot, user_id, username):
     ALWAYS load user context from the HOME SERVER.
     Username MUST be the global username (member.name), never nickname.
     Truncated to avoid Groq "prompt too long".
+    Structured memory (memory_store) is used once it exists; until then the
+    older prose on the pin.
     """
+    structured = _structured(user_id, "user")
+    if structured is not None:
+        return structured, []
     guild = get_home_guild(bot)
     from core.discord_store import fetch_live
 
@@ -40,6 +45,9 @@ async def load_bot_context(bot, user_id, username=None):
     Load this user's copy of the bot's self-context from the home server.
     Truncated to avoid Groq "prompt too long".
     """
+    structured = _structured(user_id, "bot")
+    if structured is not None:
+        return structured, []
     from core.discord_store import fetch_live
 
     channel, pinned = await ensure_bot_memory_channel(bot, user_id, username)
@@ -61,6 +69,21 @@ async def load_bot_context(bot, user_id, username=None):
     if not prose or prose == "(none yet)":
         prose = "none"
     return prose, [str(line).strip() for line in recent if str(line).strip()]
+
+
+def _structured(user_id, side: str) -> str | None:
+    """Rendered JSON memory for the prompt, or None when there is none yet."""
+    try:
+        from core import memory_store
+
+        profile = memory_store.load(int(user_id), side)
+    except Exception:
+        return None
+    if profile is None:
+        return None
+    from core.context_caps import get
+
+    return memory_store.prompt_text(profile, side, get("memory_summary_prompt_chars")) or "none"
 
 
 _BACKGROUND = "Background. Use this only when the message at the end needs it."
@@ -89,6 +112,7 @@ async def build_prompt(
     media_note: str = "",
     image_count: int = 0,
     server_id=None,
+    channel_id=None,
 ):
     """
     User turn for Eche: today, the two memory pins, this server's episode, and this message.
@@ -108,9 +132,15 @@ async def build_prompt(
     bot_recent = _merge_rows(bot_pin, bot_file)
     episode = ""
     if server_id and _episodic_in_prompt():
-        from core.episodic import load_episodic, prompt_episode
+        from core.episodic import recall_for_prompt
 
-        episode = prompt_episode(await load_episodic(bot, server_id))
+        try:
+            episode = await recall_for_prompt(bot, server_id, user_id, channel_id, user_message)
+        except Exception as exc:
+            from core.debuglog import dprint
+
+            dprint(f"[builder] episode recall failed: {exc}")
+            episode = ""
     speaker = _speaker(username, user_id)
     latest = _latest_message(speaker, user_message, media_note, image_count)
     return fit_memory_prompt(

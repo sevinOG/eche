@@ -273,98 +273,6 @@ def user_lines_in_new_section(content: str) -> list[str]:
     return [line for line in recent if line.strip()]
 
 
-async def update_context(bot, guild, user_id, message_text, username=None):
-    """
-    Appends one short line inside the New: section.
-
-    Does not fold. Call this only after the Discord reply is already out.
-    archive_user_recents_if_due then folds every third stored line into the
-    long-term cloud and clears New:. Nothing is appended after that fold.
-
-    Works even when the user is not a member of the home guild.
-    """
-    if guild is None:
-        dprint(
-            f"[context_manager] ERROR: guild is None — cannot update context for {user_id}. "
-            f"Set HOME_SERVER_ID and ensure the bot is in that server."
-        )
-        return
-
-    channel, pinned = await ensure_context_channel(bot, guild, user_id, username)
-    if not channel or not pinned:
-        dprint(f"[context_manager] ERROR: Could not update user context for {user_id}.")
-        return
-
-    # Resolve display name (membership optional)
-    member = guild.get_member(user_id) if guild else None
-    user = member
-    if user is None:
-        try:
-            user = await bot.fetch_user(user_id)
-        except Exception:
-            user = None
-
-    from core.discord_store import refresh_record
-
-    display_name = _display_name(member, user, username=username, user_id=user_id)
-    header = f"Context for {display_name}:\n\n"
-    pinned = await refresh_record(pinned)
-    label, summary, recent = parse_pin_sections(pinned.content or header, header)
-    recent.append(_user_line(message_text).strip())
-    summary = await _compact_cloud_if_due(label, summary)
-    new_content = fit_memory_pin(label, summary, recent)
-
-    try:
-        from core.discord_store import edit_record
-        await edit_record(pinned, new_content)
-    except Exception as e:
-        print(f"[context_manager] ERROR editing pinned message for {user_id}: {e}")
-
-
-async def _compact_cloud_if_due(label: str, summary: str) -> str:
-    """Compact the cloud before the pin hits Discord's character limit."""
-    from core.context_summarizer import compact_cloud, pin_would_crowd
-
-    if not pin_would_crowd(label, summary):
-        return summary
-    return await compact_cloud(summary)
-
-
-async def archive_user_recents_if_due(bot, guild, user_id, username=None):
-    """After a reply, fold three stored lines into the long-term cloud.
-
-    The next message then becomes the first line in an empty New: block.
-    A failed summary leaves the lines in New: so they are not dropped.
-    """
-    if guild is None:
-        return
-
-    from core.context_summarizer import ARCHIVE_AFTER_MESSAGES, summarize_context
-
-    channel, pinned = await ensure_context_channel(bot, guild, user_id, username)
-    if not channel or not pinned:
-        return
-
-    lines = user_lines_in_new_section(pinned.content or "")
-    dprint(
-        f"[context_manager] User {user_id} recent USER lines before archive: {len(lines)}"
-    )
-    if len(lines) < ARCHIVE_AFTER_MESSAGES:
-        return
-
-    dprint(
-        f"[context_manager] Archiving {len(lines)} recent USER lines "
-        f"for {user_id} into the long-term block."
-    )
-    await summarize_context(
-        bot,
-        guild,
-        user_id,
-        username,
-        keep_recent=0,
-    )
-
-
 # The long-term pin is one Discord message. Leave room under the 2000 limit.
 PIN_CAP = 1900
 
@@ -456,64 +364,64 @@ async def _stash_pin_lines(pinned, user_id: int, side: str, fallback: str) -> No
 
 
 async def remember_side(bot, guild, user_id, username, text: str, *, side: str) -> None:
-    """Store one full message locally. Every third one updates the long-term pin.
+    """Store one full message locally. The long-term memory is updated from
+    both sides of the chat after memory_fold_every of the person's messages,
+    or once the chat went quiet (core/context_summarizer.fold_reason).
 
-    The buffer stays. A failed summary leaves the counter high so the next
-    message tries again, and the prompt still has the messages.
+    The buffer stays until an update lands, so a failed one loses nothing.
     """
-    from core.personal_recent import (
-        clear_folded,
-        fold_every,
-        has_stash,
-        notes_for_fold,
-        push,
-    )
+    from core import memory_store
+    from core.context_summarizer import fold_reason
+    from core.personal_recent import fold_every, has_stash, pending_count, push
 
     try:
         uid = int(user_id)
     except (TypeError, ValueError):
         return
-    _messages, pending = push(uid, side, text)
-    if guild is None and side != "bot":
+    home = guild if side != "bot" else get_home_guild(bot)
+    if side != "bot" and guild is None:
+        push(uid, side, text)
         return
+    if side == "user" and fold_reason(uid) == "idle":
+        # The earlier conversation ended a while ago: fold it on its own.
+        await _fold(bot, home, uid, username, "idle")
+    push(uid, side, text)
+
+    if not memory_store.exists(uid, side):
+        # Before the first structured update: old New: lines leave the pin
+        # and wait in the file until the update takes them.
+        try:
+            if side == "bot":
+                from core.bot_memory import ensure_bot_memory_channel
+                from core.discord_store import bot_memory_header
+
+                _channel, pinned = await ensure_bot_memory_channel(bot, uid, username)
+                fallback = bot_memory_header(username or uid)
+            else:
+                _channel, pinned = await ensure_context_channel(bot, guild, uid, username)
+                fallback = f"Context for {username or uid}:\n"
+            if pinned is not None:
+                await _stash_pin_lines(pinned, uid, side, fallback)
+        except Exception as exc:
+            dprint(f"[context_manager] {side} pin check failed: {exc}")
 
     if side == "bot":
-        from core.bot_memory import ensure_bot_memory_channel
-        from core.discord_store import bot_memory_header
+        # Both sides of the turn are stored now.
+        if fold_reason(uid) == "count" or (has_stash(uid, "user") and pending_count(uid, "user") >= fold_every()):
+            await _fold(bot, home, uid, username, "count")
+    elif pending_count(uid, "user") >= fold_every() + 2:
+        # Several messages with no reply stored: do not wait for one.
+        await _fold(bot, home, uid, username, "count")
 
-        _channel, pinned = await ensure_bot_memory_channel(bot, uid, username)
-        fallback = bot_memory_header(username or uid)
-    else:
-        _channel, pinned = await ensure_context_channel(bot, guild, uid, username)
-        fallback = f"Context for {username or uid}:\n"
 
-    if pinned is None:
-        return
-    # New: leaves the pin on this turn. Those lines are in the file, and the
-    # prompt reads them, until a fold lands.
-    await _stash_pin_lines(pinned, uid, side, fallback)
-    if pending < fold_every() and not has_stash(uid, side):
-        return
+async def _fold(bot, guild, uid: int, username, reason: str) -> None:
+    from core.context_summarizer import fold_person
 
-    from core.context_summarizer import fold_long_memory
-
-    notes = notes_for_fold(uid, side)
     try:
-        folded = await fold_long_memory(pinned, fallback, notes, side=side)
+        await fold_person(bot, guild, uid, username, reason=reason)
     except Exception as exc:
-        dprint(f"[context_manager] {side} summary failed: {exc}")
-        folded = None
-    if folded:
-        clear_folded(uid, side)
-        print(
-            f"[memory] {side} summary stored for {uid} on message {getattr(folded, 'id', '?')}",
-            flush=True,
-        )
-    else:
-        print(
-            f"[memory] {side} summary did not land; keeping the buffer for {uid}",
-            flush=True,
-        )
+        dprint(f"[context_manager] memory update failed: {exc}")
+        print(f"[memory] summary did not land; keeping the buffer for {uid}", flush=True)
 
 
 async def remember_user(bot, guild, user_id, username, text: str) -> None:

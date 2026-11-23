@@ -22,9 +22,12 @@ Do **not** paste tokens into GitHub Issues, Discord public channels, or screensh
 Depending on your setup, Eche may store:
 
 - Conversation **context** and **summaries** (channels/files under `context/`, `memories/`)
-- Bot “self-memory” style notes
+- Structured long-term memory per person (`memories/user-{id}/profile.json`) and Eche's notes on its own replies to them (`self.json`), mirrored to that person's memory pin
+- Server **episodes** (`memories/{server id}/episodes.jsonl`): when, which channel, participant Discord user ids (never names), what happened, outcome, tone, and a salience score
 - Logs under `logs/`
 - Optional cookies (e.g. music) under `cookies/`
+
+The memory summarizer is told not to keep other people's names, health, sex-life, money, address, phone, email, password details, or anything about minors, and a code filter drops entries that still look like they do. Old summaries moved to the new format are kept as a local backup (`legacy` in `profile.json` / `self.json`, `episodes_legacy.json`) until **Reset all memory**.
 
 These are **local files** (or Discord channels your bot creates in **your** servers). They are not uploaded to an Eche service. Anyone with access to that Discord server or your install folder can read what you store there—treat memory channels as sensitive.
 

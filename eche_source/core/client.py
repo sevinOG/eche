@@ -2901,11 +2901,14 @@ async def call_groq_raw(
     prompt: str,
     model: str | None = None,
     max_completion_tokens: int = 512,
+    temperature: float | None = None,
 ) -> str:
     """
     Sends a prompt and returns ONLY the model's text.
     Optional model= overrides the chat model (memory summarizer).
+    temperature defaults to 0.4; the memory summarizer asks for 0.2.
     """
+    temp = 0.4 if temperature is None else float(temperature)
     from core.blocklist import REFUSAL
     from core.safety import MinorsBlocked
 
@@ -2923,7 +2926,7 @@ async def call_groq_raw(
                 messages,
                 model=use_model,
                 max_completion_tokens=max_completion_tokens,
-                temperature=0.4,
+                temperature=temp,
                 top_p=0.95,
                 stream=False,
             )
@@ -2946,7 +2949,7 @@ async def call_groq_raw(
             messages,
             use_model,
             max_tokens=max_completion_tokens,
-            temperature=0.4,
+            temperature=temp,
             reasoning=False,
         )
     except MinorsBlocked:

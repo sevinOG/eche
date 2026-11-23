@@ -592,6 +592,11 @@ class Eche(commands.Bot):
         # ⭐ START ENTERTAINER BACKGROUND LOOP
         self.loop.create_task(entertainer_background_loop(self))
 
+        # Long-term memory upkeep: idle folds, episode closing, nightly consolidation.
+        from core.memory_maintenance import memory_maintenance_loop
+
+        self.loop.create_task(memory_maintenance_loop(self))
+
         try:
             from core.audit_hooks import instrument_bot
             instrument_bot(self)

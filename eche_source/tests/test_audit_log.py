@@ -424,7 +424,8 @@ REVIEWED_ENTRYPOINTS = {
     "entertainer_background_loop": "entertainer background loop",
     "maybe_boo": "maybe_boo channel post",
     "write_pinned": "memory/pin write",
-    "summarize_context": "summarizer",
+    "fold_person": "summarizer (long-term memory update)",
+    "memory_maintenance_loop": "memory maintenance background loop",
     "audit_after_playback": "music after_playback",
     "clear_secrets": "settings clear secrets",
     "on_run_clicked": "GUI Run",
@@ -1598,13 +1599,23 @@ class AuditCompletenessTests(AuditLogTests):
             before = len(_records(self.audit))
             from core import context_summarizer
             try:
-                await context_summarizer.summarize_context(
+                await context_summarizer.fold_person(
                     None, SimpleNamespace(id=22), 11, username="bob"
                 )
             except Exception:
                 pass
             if len(_records(self.audit)) <= before:
-                gaps.append("summarize_context")
+                gaps.append("fold_person")
+
+            before = len(_records(self.audit))
+            from core import memory_maintenance
+            loop_bot = SimpleNamespace(wait_until_ready=mock.AsyncMock(), is_closed=lambda: True)
+            try:
+                await memory_maintenance.memory_maintenance_loop(loop_bot)
+            except Exception:
+                pass
+            if len(_records(self.audit)) <= before:
+                gaps.append("memory_maintenance_loop")
 
             before = len(_records(self.audit))
             from core.secrets import clear_secrets

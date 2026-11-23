@@ -88,39 +88,34 @@ class StoredBotRecord(unittest.TestCase):
 
 class BotFoldPrompt(unittest.TestCase):
     def setUp(self):
-        self.prompt = cs.fold_memory_prompt(
-            "bot", "- user asked about models.", ["Top pick is orcarouter."], 640
+        from core import summarizer_prompt as sp
+
+        self.sp = sp
+        self.prompt = sp.build_self_fold_prompt(
+            "b1 | stances | I said orcarouter is the pick.", "Them: which model?\nEche: Top pick is orcarouter."
         )
 
     def test_first_person_about_own_outputs(self):
         low = self.prompt.lower()
         self.assertIn("my own outputs", low)
         self.assertIn('starts with "i"', low)
-        self.assertIn('never start a bullet with "user"', low)
-        self.assertIn("running bits", low)
-        self.assertIn("pictures and videos i made", low)
-        self.assertIn("my recent outputs", low)
-        # Not the person-centric job from the user pin.
-        self.assertNotIn("who they are", low)
-        self.assertNotIn("recent messages:", low)
+        self.assertIn('never start a text with "user"', low)
+        self.assertIn("running jokes", low)
+        self.assertIn("commitments", low)
+        self.assertIn('"kept"', low)
+        # Not the person-centric job from the user memory.
+        self.assertNotIn("identity", low)
 
-    def test_caps_and_shared_rules_kept(self):
-        self.assertIn("at most 640 characters", self.prompt)
-        self.assertIn('"- " bullets', self.prompt)
-        self.assertIn("play-by-play", self.prompt)
+    def test_shared_rules_kept(self):
+        self.assertIn("play-by-play", self.sp.build_user_fold_prompt("", "Them: hi"))
         self.assertIn("@mentions", self.prompt)
         self.assertIn("refus", self.prompt)
+        self.assertIn("never store names of other people", self.prompt)
 
-    def test_condense_is_first_person(self):
-        text = cs.condense_memory_prompt("bot", "- A.", "- B.", 420).lower()
-        self.assertIn("my own outputs", text)
-        self.assertIn('never start a bullet with "user"', text)
-        self.assertIn("at most 420 characters", text)
-
-    def test_user_side_unchanged(self):
-        user = cs.fold_memory_prompt("user", "", ["hi"], 500)
-        self.assertIn("who they are", user)
-        self.assertIn("Recent messages:", user)
+    def test_user_side_is_about_them(self):
+        user = self.sp.build_user_fold_prompt("", "Them: hi")
+        self.assertIn("identity", user)
+        self.assertIn('"Them" is the person', user)
         self.assertNotIn("my own outputs", user)
 
 
@@ -138,79 +133,47 @@ def _run(coro):
     return asyncio.run(coro)
 
 
-class BotPinFold(TempRoot):
-    """The bug: every bot-pin line started with "user". The fold now retries
-    in first person and never writes a "user ..." bullet to the bot pin."""
+class BotMemoryEdits(TempRoot):
+    """Eche's own memory: first person only, promises kept move to "kept"."""
 
-    def _fold(self, replies):
-        live = SimpleNamespace(content=bot_memory_initial("sam"), pinned=True)
-        written = {}
+    def test_user_centric_texts_are_dropped(self):
+        from core import memory_store as ms
 
-        async def read_first(_channel, _headers):
-            return live, True
+        profile = ms.empty("bot")
+        stats = ms.apply_ops(profile, {"add": [
+            {"section": "stances", "text": "User asked for a cat video."},
+            {"section": "stances", "text": "the user likes tea"},
+            {"section": "commitments", "text": "I promised a dog video next."},
+            {"section": "bits", "text": "I keep calling them Captain Toast."},
+        ]}, "bot")
+        texts = [row["text"] for _k, row in ms._all(profile)]
+        self.assertEqual(stats["added"], 2)
+        self.assertIn("I promised a dog video next.", texts)
+        for text in texts:
+            self.assertFalse(text.lower().startswith("user"), text)
 
-        async def write(_channel, header, body):
-            written["header"] = header
-            written["body"] = body
-            return SimpleNamespace(id=1), "edited"
+    def test_kept_promise_moves(self):
+        from core import memory_store as ms
 
-        calls = []
+        profile = ms.empty("bot")
+        ms.apply_ops(profile, {"add": [{"section": "commitments", "text": "I promised a dog video."}]}, "bot")
+        pid = profile["sections"]["commitments"][0]["id"]
+        stats = ms.apply_ops(profile, {"kept": [pid]}, "bot")
+        self.assertEqual(stats["kept"], 1)
+        self.assertEqual(profile["sections"]["commitments"], [])
+        self.assertEqual(profile["sections"]["kept"][0]["text"], "I promised a dog video.")
+        rendered = ms.render(profile, 600, "bot")
+        self.assertIn("Promises I kept:", rendered)
 
-        async def completion(prompt, _limit):
-            calls.append(prompt)
-            return replies[min(len(calls) - 1, len(replies) - 1)]
+    def test_open_promises_render_first(self):
+        from core import memory_store as ms
 
-        pinned = SimpleNamespace(channel=object())
-        with mock.patch("core.discord_store.read_pinned_first", read_first), \
-                mock.patch("core.discord_store.write_pinned", write), \
-                mock.patch.object(cs, "_memory_completion", completion):
-            result = _run(
-                cs.fold_long_memory(
-                    pinned,
-                    "Eche with sam:\n\n",
-                    ["[I used duckduckgo: searched \"a cat\"] here you go"],
-                    side="bot",
-                )
-            )
-        return result, written, calls
-
-    def test_user_centric_fold_is_retried_in_first_person(self):
-        result, written, calls = self._fold([
-            "- user asked for a cat video.\n- user liked it.",
-            "- I made a cat video for them.\n- I promised a dog one next.",
-        ])
-        self.assertTrue(result)
-        self.assertEqual(len(calls), 2)
-        self.assertIn("my own outputs", calls[0])
-        self.assertEqual(written["header"], BOT_CONTEXT_HEADER)
-        body = written["body"]
-        self.assertTrue(body.startswith("Eche with sam:"))
-        self.assertIn("Summary:", body)
-        self.assertIn("- I made a cat video for them.", body)
-        for line in body.splitlines():
-            self.assertFalse(line.lower().lstrip("- ").startswith("user"), line)
-
-    def test_stubborn_user_bullets_are_dropped(self):
-        result, written, _calls = self._fold([
-            "- user asked for a cat video.\n- I made a cat video.",
-            "- user asked again.\n- I made a cat video.",
-        ])
-        self.assertTrue(result)
-        self.assertIn("- I made a cat video.", written["body"])
-        self.assertNotIn("user asked", written["body"])
-
-    def test_all_user_bullets_keep_the_buffer(self):
-        result, written, _calls = self._fold([
-            "- user asked for a cat video.",
-            "- user asked for a cat video.",
-        ])
-        self.assertFalse(result)
-        self.assertEqual(written, {})
-
-    def test_first_person_fold_is_one_call(self):
-        result, written, calls = self._fold(["- I made a cat video."])
-        self.assertTrue(result)
-        self.assertEqual(len(calls), 1)
+        profile = ms.empty("bot")
+        ms.apply_ops(profile, {"add": [
+            {"section": "stances", "text": "I said Linux beats Windows for servers."},
+            {"section": "commitments", "text": "I promised a dog video."},
+        ]}, "bot")
+        self.assertTrue(ms.render(profile, 600, "bot").startswith("- My open promises:"))
 
 
 class BotBufferStoresOwnWords(TempRoot):

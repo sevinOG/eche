@@ -552,6 +552,7 @@ class OnMessage(commands.Cog):
             media_note=media.text,
             image_count=len(all_images),
             server_id=getattr(message.guild, "id", None),
+            channel_id=getattr(getattr(message, "channel", None), "id", None),
         )
 
         # The chat pane is the conversation. The prompt stays off that pane.
@@ -753,10 +754,14 @@ class OnMessage(commands.Cog):
                 except Exception as e:
                     dprint(f"[on_message] bot memory store failed: {e}")
         if not refused_turn:
-            await self._record_server_line(message, asked, episode_lines)
+            await self._record_server_line(
+                message, asked, episode_lines, reply="\n".join(s for s in said_all if s)
+            )
 
-    async def _record_server_line(self, message, text: str, tool_lines: list[str] | None = None) -> None:
-        """One episode line for this server message, plus any tool that ran."""
+    async def _record_server_line(
+        self, message, text: str, tool_lines: list[str] | None = None, reply: str = ""
+    ) -> None:
+        """One turn of this channel's episode: the message, Eche's reply, and any tool that ran."""
         server_id = getattr(getattr(message, "guild", None), "id", None)
         if not server_id:
             return
@@ -774,6 +779,10 @@ class OnMessage(commands.Cog):
                     server_id,
                     getattr(message.guild, "name", None),
                     lines,
+                    channel_id=getattr(getattr(message, "channel", None), "id", None),
+                    author_id=getattr(getattr(message, "author", None), "id", None),
+                    text=body or "(attachment)",
+                    reply=reply,
                 )
         except Exception as e:
             print(f"[episodic] update failed: {e}", flush=True)

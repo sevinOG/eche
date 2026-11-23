@@ -203,14 +203,19 @@ def clear_local_memory() -> int:
         if not os.path.isdir(folder):
             continue
         if name.startswith("user-"):
-            targets = ("user.json", "bot.json")
+            from core.memory_store import store_names
+
+            targets = ("user.json", "bot.json", *store_names())
         elif name.isdigit():
-            targets = ("recent.txt",)
+            from core.episodic import store_names as episode_files
+
+            targets = episode_files()
         else:
             continue
         for target in targets:
-            path = os.path.join(folder, target)
-            if os.path.isfile(path):
+            for path in (os.path.join(folder, target), os.path.join(folder, target) + ".tmp"):
+                if not os.path.isfile(path):
+                    continue
                 try:
                     os.remove(path)
                     removed += 1

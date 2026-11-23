@@ -157,8 +157,15 @@ class MemoryHygieneTests(unittest.TestCase):
     def test_summarizer_prompt_tells_the_model_to_drop_them(self):
         from core import summarizer_prompt as sp
 
-        self.assertIn("to pass moderation filters", sp.DEFAULT_SUMMARIZER_PROMPT)
-        self.assertIn("realistic body proportions", sp.DEFAULT_SUMMARIZER_PROMPT)
+        # Fixed rules go in front of every memory prompt, custom ones too.
+        for prompt in (
+            sp.build_user_fold_prompt("", "Them: hi"),
+            sp.build_self_fold_prompt("", "Eche: hi"),
+            sp.build_migration_prompt("user", "- old"),
+            sp.build_episode_prompt("P1: hi", "today", 1),
+        ):
+            self.assertIn("to pass moderation filters", prompt)
+            self.assertIn("realistic body proportions", prompt)
 
 
 # ------------------------------------------------------------- tools, stubs
