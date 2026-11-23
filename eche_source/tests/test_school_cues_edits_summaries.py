@@ -176,19 +176,29 @@ class SummarySafetyTests(unittest.TestCase):
 
         prompts = []
 
-        async def raw(prompt, **_k):
-            prompts.append(prompt)
-            return "- I talked about jets."
+        temps = []
 
+        async def raw(prompt, **k):
+            prompts.append(prompt)
+            temps.append(k.get("temperature"))
+            return '{"summary": "P1 talked about jets.", "add": []}'
+
+        episode = {
+            "id": "ep_x", "guild": 1, "channel": 2, "start": 1.0, "end": 2.0,
+            "participants": [5], "turns": [{"at": 1.0, "author": 5, "text": "jets", "reply": "ok", "tools": []}],
+        }
+        old = {"id": "a", "end": "2026-01-01T00:00:00", "summary": "P1 liked jets.", "labels": {"P1": 5}}
         with mock.patch("core.client.call_groq_raw", new=raw), \
                 mock.patch.object(CS, "call_groq_raw", new=raw, create=True):
-            asyncio.run(CS._llm_summary("SUMMARY JOB", "m", retries=1))
             asyncio.run(CS._memory_completion("MEMORY JOB", 400))
-            asyncio.run(E._fold_stored("old", ["a line"], 400))
-            asyncio.run(E._condense_stored("old", "new", 400))
-        self.assertEqual(len(prompts), 4)
+            asyncio.run(CS._ask_ops("OPS JOB"))
+            asyncio.run(CS.migrate_profile("user", "- Likes jets."))
+            asyncio.run(E.summarize_episode(episode))
+            asyncio.run(E._merge_cluster([old, dict(old, id="b")], 1))
+        self.assertEqual(len(prompts), 5)
         for p in prompts:
             self.assertTrue(p.startswith(SS.SUMMARY_SAFETY_RULE), p[:80])
+        self.assertEqual(set(temps), {0.2})
 
     def test_outputs_are_scrubbed(self):
         from core import context_summarizer as CS
@@ -198,6 +208,12 @@ class SummarySafetyTests(unittest.TestCase):
         self.assertNotIn("schoolgirl", CS._clean_summary_text(bad))
         self.assertNotIn("schoolgirl", E.episode_summary_text(bad))
         self.assertIn("User likes jets.", E.episode_summary_text(bad))
+        # Structured memory entries and episode summaries are scrubbed too.
+        from core import memory_store as MS
+
+        self.assertEqual(MS.clean_text("Asked for a sexy schoolgirl."), "")
+        self.assertEqual(MS.clean_text("Likes jets"), "Likes jets.")
+        self.assertNotIn("schoolgirl", E.clean_summary("P1 liked jets. P1 asked for a sexy schoolgirl."))
 
 
 if __name__ == "__main__":

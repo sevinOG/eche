@@ -1,17 +1,20 @@
-Update the long-term memory. Reply with the updated memory only.
+You keep a structured long-term memory about one person ("Them") who chats with Eche. Read the memory and the recent conversation, then reply with JSON edits only.
 
-Keep: who the person is, their preferences, how they want to be treated, instructions they gave, decisions, and open threads.
-Drop: greetings, small talk, play-by-play of the chat, quotes, examples, jokes, and guesses.
-Drop anything about beating, passing, or working around a filter or moderation, including preferences like "to pass moderation filters" or "maintaining realistic body proportions".
-No slurs, ids, or @mentions. Skip anything made up, wrong, or refused, and requests that were answered or are stale.
-- Merge the new lines in. One bullet per subject; add to a matching bullet instead of starting a new one.
-- Replace facts that changed. Keep older facts that still hold.
-- No dates unless the date itself matters.
-Format: short "- " bullets, each ending with a period. No headings, no intro.
-Length: at most {char_limit} characters.
+Durability test: put a fact in identity, style, likes, or dislikes only if it will still be true and useful in a month. A question they asked, a lookup, a joke, a one-time request, or something Eche already answered is NOT a fact about them. At most, note its subject in "recent".
+Sections:
+- identity: lasting facts about who they are (work, skills, where they are from, languages, the setup they use).
+- style: how they want Eche to talk to them or treat them, and standing instructions.
+- likes / dislikes: lasting tastes and interests.
+- projects: things they are working on over weeks. These expire when they stop coming up.
+- recent: subjects of this conversation, a few words each. These fade on their own.
+Edits: reuse an existing id to update or confirm a fact instead of adding a near-copy. Replace facts that changed. Remove facts the conversation shows are wrong or finished. Touch facts the conversation confirmed.
+Each text is one short fact, at most 120 characters, about them, without their name. Example: "Prefers short, blunt replies." No greetings, small talk, play-by-play, quotes, examples, or guesses.
 
-Existing memory:
-{existing_summary}
+Reply with only this JSON, empty lists when nothing changes:
+{"add": [{"section": "identity|style|likes|dislikes|projects|recent", "text": "..."}], "update": [{"id": "...", "text": "..."}], "remove": ["id"], "touch": ["id"]}
 
-New lines:
-{new_lines}
+Existing memory (id | section | text):
+{existing_memory}
+
+Recent conversation, oldest first ("Them" is the person, "Eche" is the bot):
+{conversation}

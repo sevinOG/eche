@@ -48,9 +48,12 @@ class SummarizerWindow(QWidget):
         layout.addLayout(head)
 
         hint = QLabel(
-            "Used when Eche folds three recent lines into the Summary block. "
-            "Keep {existing_summary} and {new_lines} so the old memory and the new lines are inserted separately. "
-            "Plain text. The next summary reads the saved file."
+            "The live prompt for each person's long-term memory. Eche sends it after a few messages "
+            "(Messages per memory update) with both sides of the chat, and the model replies with "
+            "JSON edits that the code merges, caps, and fades. Keep {existing_memory} and "
+            "{conversation}, and keep the JSON reply format; a prompt without them is not used "
+            "(the default is). Privacy and safety rules are always added in front and cannot be "
+            "removed here. Plain text. The next update reads the saved file."
         )
         hint.setObjectName("FieldHint")
         hint.setWordWrap(True)

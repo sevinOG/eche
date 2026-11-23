@@ -142,7 +142,7 @@ class Persistence(TempRoot):
         self.assertEqual(cc.get("memory_prompt_chars"), 2200)
         self.assertEqual(cc.get("memory_recent_messages"), 5)
         self.assertEqual(cc.get("thread_posted_chars"), 4000)
-        self.assertEqual(cc.get("episode_fold_after"), 5)  # blank → default
+        self.assertEqual(cc.get("episode_fold_after"), 25)  # blank → default
 
     def test_settings_clamped_and_cache_follows_file(self):
         self.write_settings({"memory_prompt_chars": "50"})
@@ -151,11 +151,18 @@ class Persistence(TempRoot):
         self.assertEqual(cc.get("memory_prompt_chars"), 8000)
 
     def test_env_fallback_and_settings_win(self):
-        os.environ["ECHE_MEMORY_FOLD_EVERY"] = "7"
+        os.environ["ECHE_MEMORY_FOLD_EVERY"] = "12"
         cc.clear_cache()
-        self.assertEqual(cc.get("memory_fold_every"), 7)
-        self.write_settings({"memory_fold_every": "4"})
-        self.assertEqual(cc.get("memory_fold_every"), 4)
+        self.assertEqual(cc.get("memory_fold_every"), 12)
+        self.write_settings({"memory_fold_every": "9"})
+        self.assertEqual(cc.get("memory_fold_every"), 9)
+
+    def test_old_every_three_setting_is_raised(self):
+        # Saved settings from before the rework hold "3". The memory is now
+        # updated from both sides after at least 8 messages.
+        self.write_settings({"memory_fold_every": "3", "episode_fold_after": "5"})
+        self.assertEqual(cc.get("memory_fold_every"), 8)
+        self.assertEqual(cc.get("episode_fold_after"), 20)
 
 
 class Tokens(unittest.TestCase):
@@ -222,12 +229,18 @@ class PromptCaps(TempRoot):
         self.assertLessEqual(len(episodic.prompt_episode(summary)), 1200)
         self.assertGreater(len(episodic.prompt_episode(summary)), 600)
 
-    def test_episode_store_and_fold_follow_slider(self):
-        self.write_settings({"episode_summary_chars": "800", "episode_fold_after": "9"})
+    def test_episode_store_and_length_follow_slider(self):
+        self.write_settings({"episode_summary_chars": "800", "episode_fold_after": "30"})
         self.assertEqual(episodic.max_store(), 800)
-        self.assertLess(episodic.soft_store(), 800)
-        self.assertEqual(episodic.fold_after(), 9)
-        self.assertGreaterEqual(episodic.recent_cap(), 12)
+        self.assertEqual(episodic.max_turns(), 30)
+
+    def test_quiet_times_have_env_overrides(self):
+        self.assertEqual(pr.fold_idle_seconds(), 30 * 60)
+        self.assertEqual(episodic.gap_seconds(), 20 * 60)
+        os.environ["ECHE_MEMORY_FOLD_IDLE_MINUTES"] = "45"
+        os.environ["ECHE_EPISODE_GAP_MINUTES"] = "1"
+        self.assertEqual(pr.fold_idle_seconds(), 45 * 60)
+        self.assertEqual(episodic.gap_seconds(), 5 * 60)
 
     def test_pin_cap_follows_slider(self):
         from core import context_manager as cm
@@ -235,50 +248,63 @@ class PromptCaps(TempRoot):
         self.assertEqual(cm.pin_cap(), min(cm.PIN_CAP, 1900))
         self.write_settings({"memory_summary_chars": "700"})
         self.assertEqual(cm.pin_cap(), 700)
-        self.assertLessEqual(cs.cloud_target(), 700)
 
 
-class ConcisePrompts(unittest.TestCase):
-    FORBIDDEN = ("No bullet list", "Plain prose", "polar")
+class MemoryPrompts(unittest.TestCase):
+    """The summarizer is asked for JSON edits, never for a rewritten block."""
 
-    def check(self, prompt, room):
-        self.assertIn(f"at most {room} characters", prompt)
-        self.assertIn('"- " bullets', prompt)
-        self.assertIn("Drop", prompt)
-        for word in self.FORBIDDEN:
-            self.assertNotIn(word, prompt)
+    def test_user_prompt(self):
+        prompt = sp.build_user_fold_prompt("u1 | identity | Works nights.", "Them: hi\nEche: hey")
+        self.assertIn("u1 | identity | Works nights.", prompt)
+        self.assertIn("Them: hi", prompt)
+        self.assertIn('"add"', prompt)
+        self.assertIn('"touch"', prompt)
+        self.assertIn("Durability test", prompt)
+        self.assertIn("never store names of other people", prompt)
+        self.assertIn("play-by-play", prompt)
+        self.assertNotIn("{existing_memory}", prompt)
+        self.assertNotIn("{conversation}", prompt)
+        self.assertNotIn("One bullet per subject", prompt)
+        self.assertNotIn("Keep older facts that still hold", prompt)
+        # The fixed rules come first, before the editable part.
+        self.assertLess(prompt.index("Privacy"), prompt.index("Durability test"))
+
+    def test_self_prompt(self):
+        prompt = sp.build_self_fold_prompt("(none yet)", "Eche: I'll call you Captain.")
+        for word in ("stances", "bits", "commitments", '"kept"', 'starts with "I"'):
+            self.assertIn(word, prompt)
+        self.assertIn('Never start a text with "user"', prompt)
 
     def test_episode_prompts(self):
-        self.check(episodic.fold_prompt("- Old subject.", ["Mon past Dialog: hi"], 777), 777)
-        self.check(episodic.condense_prompt("- Old.", "- New.", 555), 555)
-        self.assertIn("quotes", episodic.fold_prompt("", [], 500))
+        prompt = sp.build_episode_prompt("P1: hi\nEche: hey", "today", 1)
+        for word in ("salience", "outcome", "tone", "topics", "P1", "Never use a person's name"):
+            self.assertIn(word, prompt)
+        merged = sp.build_consolidate_prompt("- a\n- b", "this week")
+        self.assertIn("Never use a person's name", merged)
+        self.assertIn("- a", merged)
 
-    def test_personal_prompts(self):
-        for side in ("user", "bot"):
-            with self.subTest(side=side):
-                fold = cs.fold_memory_prompt(side, "- Likes tea.", ["hello"], 640)
-                self.check(fold, 640)
-                self.assertIn("play-by-play", fold)
-                self.check(cs.condense_memory_prompt(side, "- A.", "- B.", 420), 420)
+    def test_placeholders_are_filled_once(self):
+        prompt = sp.build_user_fold_prompt("{conversation}", "Them: {existing_memory}")
+        self.assertIn("Them: {existing_memory}", prompt)
+        self.assertIn("{conversation}", prompt)
 
-    def test_legacy_templates(self):
-        merge = sp.build_merge_prompt("- Old.", "user: hi", char_limit=900)
-        self.assertIn("900 characters", merge)
-        self.assertNotIn("{char_limit}", merge)
-        self.assertNotIn("No bullet list", sp.DEFAULT_SUMMARIZER_PROMPT)
-        self.assertIn("{char_limit}", sp.DEFAULT_CONDENSE_PROMPT)
+    def test_old_format_custom_prompt_falls_back(self):
+        with mock.patch.object(sp, "get_summarizer_prompt", return_value="Old {existing_summary} {new_lines}"):
+            self.assertEqual(sp.live_user_template(), sp.DEFAULT_SUMMARIZER_PROMPT.strip())
+        custom = "Mine. {existing_memory} / {conversation}"
+        with mock.patch.object(sp, "get_summarizer_prompt", return_value=custom):
+            self.assertEqual(sp.live_user_template(), custom)
 
-    def test_prompts_shorter_than_before(self):
-        # Shorter than the long pre-caps default. Recent additions are one or
-        # two short rule lines on top of the previous default.
-        concise, verbose = sp._OLD_DEFAULT_SUMMARIZER_PROMPTS[0], sp._OLD_DEFAULT_SUMMARIZER_PROMPTS[-1]
-        self.assertLess(len(sp.DEFAULT_SUMMARIZER_PROMPT), len(verbose))
-        self.assertLess(len(sp.DEFAULT_SUMMARIZER_PROMPT) - len(concise), 250)
+    def test_previous_default_is_upgraded(self):
+        self.assertTrue(sp.is_old_default(sp._OLD_DEFAULT_SUMMARIZER_PROMPTS[0]))
+        self.assertIn("One bullet per subject", sp._OLD_DEFAULT_SUMMARIZER_PROMPTS[0])
 
     def test_prompt_echo_is_rejected(self):
-        echo = "Reply with the updated memory only.\n- Likes tea."
-        self.assertFalse(cs._usable_fold(echo))
-        self.assertTrue(cs._usable_fold("- Likes tea.\n- Lives in Oslo."))
+        self.assertIsNone(cs.parse_ops("Reply with the updated memory only.\n- Likes tea."))
+        self.assertIsNone(cs.parse_ops("ERROR: rate limit"))
+        self.assertIsNone(cs.parse_ops('{"summary": "x"}'))
+        ops = cs.parse_ops('Sure!\n```json\n{"add": [{"section": "likes", "text": "Likes tea."}]}\n```')
+        self.assertEqual(ops, {"add": [{"section": "likes", "text": "Likes tea."}]})
 
 
 class OldPromptMigration(TempRoot):
@@ -305,7 +331,7 @@ class OldPromptMigration(TempRoot):
 
 class PersonalBuffer(TempRoot):
     def test_keep_and_fold_follow_sliders(self):
-        self.write_settings({"memory_recent_messages": "2", "memory_fold_every": "5"})
+        self.write_settings({"memory_recent_messages": "2", "memory_fold_every": "9"})
         uid = 42
         for i in range(4):
             pr.push(uid, "user", f"message {i}")

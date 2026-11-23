@@ -4,7 +4,7 @@ import discord
 from discord.ext import commands
 
 from core.context_manager import ensure_context_channel, get_home_guild, read_raw_context
-from core.context_summarizer import summarize_context
+from core.context_summarizer import fold_person, replace_memory
 
 
 async def _send_fenced(ctx, heading: str, body: str) -> None:
@@ -54,41 +54,32 @@ class ContextDebug(commands.Cog):
         channel, pinned = await ensure_context_channel(
             self.bot, guild, member.id, member.name
         )
-
-        content = pinned.content or ""
+        if not channel or not pinned:
+            return await ctx.send("Could not reach that user's context pin.")
 
         # 1. Extract clean summary text
         cleaned = new_summary
         for header in ["Context for", "Summary:", "New:", "USER:"]:
             cleaned = cleaned.replace(header, "")
-        cleaned = cleaned.strip() or "(none yet)"
+        cleaned = cleaned.strip()
 
-        # 2. Keep any old recent lines. A summary-only pin stays summary-only.
-        from core.context_manager import parse_pin_sections, summary_only, title_from_label
+        # 2. Old recent lines on the pin wait in the local buffer.
+        from core.context_manager import parse_pin_sections
 
-        if "Summary:" not in content:
-            content = f"Context for {member.name}:\nSummary:\n(none yet)\n"
-        label, _summary, recent = parse_pin_sections(
-            content, f"Context for {member.name}:\n"
-        )
+        content = pinned.content or ""
+        _label, _summary, recent = parse_pin_sections(content, f"Context for {member.name}:\n")
         if recent:
             from core.personal_recent import add_stash
 
             add_stash(member.id, "user", recent)
-        new_content = summary_only(title_from_label(label), cleaned)
 
-        # 5. Apply update
-        from core.discord_store import edit_record
-        await edit_record(pinned, new_content)
-
-        # 6. Summarize
-        await summarize_context(
-            self.bot,
-            guild,
-            member.id,
-            member.name
-        )
-
+        # 3. Start the structured memory over from the given text. It is
+        # sorted into sections under the same durability and privacy rules.
+        ok = await replace_memory(self.bot, guild, member.id, member.name, cleaned, side="user")
+        if not ok:
+            return await ctx.send(
+                f"Could not update the memory for **{member.name}**. Nothing was changed."
+            )
         await ctx.send(f"Updated Summary for **{member.name}**.")
 
     # ---------------------------------------------------------
@@ -101,35 +92,22 @@ class ContextDebug(commands.Cog):
         channel, pinned = await ensure_context_channel(
             self.bot, guild, member.id, member.name
         )
+        if not channel or not pinned:
+            return await ctx.send("Could not reach that user's context pin.")
 
         content = pinned.content or ""
-        from core.context_manager import (
-            parse_pin_sections,
-            summary_only,
-            title_from_label,
-        )
+        from core.context_manager import parse_pin_sections
 
         if "Summary:" not in content:
             return await ctx.send("Context format is malformed.")
-        label, _summary, recent = parse_pin_sections(
+        _label, _summary, recent = parse_pin_sections(
             content, f"Context for {member.name}:\n"
         )
         if recent:
             from core.personal_recent import add_stash
 
             add_stash(member.id, "user", recent)
-        new_content = summary_only(title_from_label(label), "(none yet)")
-
-        from core.discord_store import edit_record
-        await edit_record(pinned, new_content)
-
-        await summarize_context(
-            self.bot,
-            guild,
-            member.id,
-            member.name
-        )
-
+        await replace_memory(self.bot, guild, member.id, member.name, "", side="user")
         await ctx.send(f"Cleared Summary for **{member.name}**.")
 
     # ---------------------------------------------------------
@@ -168,7 +146,7 @@ class ContextDebug(commands.Cog):
 
         # Keep any old New: lines in the local buffer. The pin is the long-term block.
         from core.context_manager import parse_pin_sections, summary_only
-        from core.personal_recent import add_stash, clear_folded, notes_for_fold
+        from core.personal_recent import add_stash
 
         _label, summary, bot_lines = parse_pin_sections(content, header)
         if bot_lines:
@@ -179,25 +157,11 @@ class ContextDebug(commands.Cog):
                 from core.discord_store import edit_record
                 await edit_record(pinned, rebuilt)
 
-        notes = notes_for_fold(member.id, "bot")
-        if not notes:
-            return await ctx.send(
-                f"Bot memory for **{member.name}** is already a summary."
-            )
-
-        from core.context_summarizer import fold_long_memory
-
-        folded = await fold_long_memory(
-            pinned,
-            header,
-            notes,
-            side="bot",
-        )
+        folded = await fold_person(self.bot, guild, member.id, member.name, reason="repair", force=True)
         if not folded:
             return await ctx.send(
-                f"Could not rebuild bot memory for **{member.name}**. The summary was left in place."
+                f"Could not rebuild bot memory for **{member.name}**. The memory was left in place."
             )
-        clear_folded(member.id, "bot")
         await ctx.send(f"Bot memory for **{member.name}** has been fully repaired and rebuilt.")
 
     # ---------------------------------------------------------

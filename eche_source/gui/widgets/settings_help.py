@@ -188,28 +188,33 @@ FIELD_HELP: dict[str, tuple[str, str]] = {
     "summarizer_model": (
         "Summarizer model",
         "### What is this?\n"
-        "Every third turn, Eche asks an SI to fold the recent lines into the "
-        "long-term summary. A new detail is added to the subject it already "
-        "belongs to. The summary is shortened only when it nears Discord's "
-        "pin limit. That call can use a **different** model than chat.\n\n"
+        "Every few messages (Messages per memory update), Eche asks an SI for "
+        "edits to its structured long-term memory: add, update, remove, or "
+        "confirm a fact. The merging, caps, and fading happen in code. That call "
+        "can use a **different** model than chat and runs at a low temperature.\n\n"
         "### Leave blank?\n"
-        "Uses the same Model ID as chat.\n\n"
+        "Uses qwen/qwen3.6-27b. A router such as openrouter/auto is never used "
+        "for memory, because it picks a different model on every call. With the "
+        "local Ollama provider, blank uses the chat model.\n\n"
         "### Why separate?\n"
         "You might want a cheap/fast model for summaries and a smarter one for replies.",
     ),
     "summarizer_prompt": (
         "Summarizer prompt file",
         "### What is this?\n"
-        "The instruction sheet the bot gives the SI when it folds recent lines "
-        "into long-term memory. Same idea as Personality, but for memory only.\n\n"
+        "The instruction sheet the bot gives the SI when it updates a person's "
+        "long-term memory. Same idea as Personality, but for memory only. The "
+        "privacy and safety rules are always added in front of it.\n\n"
         "### Default path\n"
         "`config/summarizer_prompt.txt` in this package.\n\n"
         "### Custom path\n"
         "Optional: point at another `.txt` file. Relative paths are from the package root.\n\n"
         "### Placeholders\n"
-        "Keep `{existing_summary}` and `{new_lines}` so the old cloud and the "
-        "three new lines are inserted separately. An older sheet may still use "
-        "`{combined_for_summary}`.",
+        "Keep `{existing_memory}` (the stored facts with their ids) and "
+        "`{conversation}` (both sides of the recent chat), and keep the JSON "
+        "edit reply format. A sheet from the older format (`{existing_summary}` / "
+        "`{new_lines}`) is not used; the default is used instead and the log says so. "
+        "Use Reset to Default to get the new sheet.",
     ),
     "personality": (
         "Personality (the bot’s character sheet)",
@@ -469,9 +474,12 @@ _CAP_HELP: dict[str, str] = {
         "**Attachments & embeds** cap instead."
     ),
     "memory_fold_every": (
-        "How many new messages from one side wait before the summarizer updates "
-        "that side's long-term summary. Higher means fewer summarizer calls and "
-        "bigger batches. Messages waiting on a summary are never dropped."
+        "How many of a person's messages wait before Eche updates the long-term "
+        "memory about them and about itself. The update reads both sides of the "
+        "chat, so it can tell a one-off question from a lasting fact. After 30 "
+        "quiet minutes the waiting messages are folded anyway. Higher means fewer "
+        "summarizer calls and bigger batches. Messages waiting on an update are "
+        "never dropped. The old every-3-lines setting is gone: 8 is the least."
     ),
     "memory_summary_chars": (
         "The size of each person's long-term summary pin, and the length target "
@@ -480,12 +488,15 @@ _CAP_HELP: dict[str, str] = {
         "A smaller number gives tighter summaries."
     ),
     "episode_fold_after": (
-        "How many server lines collect in the local file before the summarizer "
-        "updates the server's episode summary."
+        "An episode is one stretch of conversation with Eche in one channel. It "
+        "ends after a 20-minute pause, a change of topic, or this many turns, "
+        "whichever comes first. Each finished episode gets one summary with its "
+        "outcome, tone, and a salience score."
     ),
     "episode_summary_chars": (
-        "The size of each server's episode pin, and the length target the "
-        "summarizer is given. The output-token cap follows it."
+        "The size of each server's episode pin. The pin is a readable copy of "
+        "the server's most important recent episodes; the episodes themselves "
+        "are kept in memories/{server id}/episodes.jsonl."
     ),
     "thread_notes_chars": (
         "Search results gathered before a thread's posts are written. Each post "
@@ -577,8 +588,11 @@ def _cap_help() -> dict[str, tuple[str, str]]:
         "### What it does\n"
         "Empties every memory pin Eche keeps on the home server: each person's "
         "**Context for** pin and **Eche with** pin, and every server's "
-        "**Episodic** pin. The local rolling buffers (memories/user-*/ and each "
-        "server's recent.txt) are cleared too.\n\n"
+        "**Episodic** pin. The local files are cleared too: the rolling buffers "
+        "and structured memory in memories/user-*/ (user.json, bot.json, "
+        "profile.json, self.json) and each server's episodes (episodes.jsonl, "
+        "open_episodes.json, episodes_meta.json, episodes_legacy.json, and the "
+        "older recent.txt).\n\n"
         "### What it does not do\n"
         "Channels and threads stay. Pins are edited, not deleted. Bank, items, "
         "workers, music, and reminders are not touched. Nobody is pinged.\n\n"
