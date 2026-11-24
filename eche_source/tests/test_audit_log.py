@@ -567,12 +567,12 @@ class AuditLogTests(unittest.TestCase):
     def test_every_tool_path_writes_an_audit_line(self):
         import core.tools_admin  # noqa: F401
         import core.tools_context  # noqa: F401
-        import core.tools_duckduckgo  # noqa: F401
+        import core.tools_web_search  # noqa: F401
         import core.tools_thread  # noqa: F401
         from core.tools import ToolContext, ToolResult, execute, registered_names
 
         names = sorted(registered_names())
-        self.assertIn("duckduckgo", names)
+        self.assertIn("web_search", names)
         self.assertIn("thread", names)
         self.assertIn("context_raw", names)
         for required in ("kick", "ban", "timeout", "mute"):
@@ -983,7 +983,7 @@ class AuditCompletenessTests(AuditLogTests):
     def test_runtime_discovery_success_and_error_paths(self):
         import core.tools_admin  # noqa: F401
         import core.tools_context  # noqa: F401
-        import core.tools_duckduckgo  # noqa: F401
+        import core.tools_web_search  # noqa: F401
         import core.tools_thread  # noqa: F401
         from core.bot import Eche
         from core.tools import ToolContext, ToolResult, execute, registered_names

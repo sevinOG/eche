@@ -282,7 +282,7 @@ class NoStrikeSystemTests(unittest.TestCase):
                 for _ in range(4):
                     with self.assertRaises(ImagineError) as err:
                         asyncio.run(S.check_generated_media(FRAME, "image/jpeg", footer_hash=FOOTER, user_id=6, mode=SFW))
-                    self.assertEqual((err.exception.text, err.exception.status), (S.OUTPUT_REFUSAL, "safety_block"))
+                    self.assertEqual((err.exception.text, err.exception.status), (S.AGE_CHECK_REFUSAL, "safety_block"))
                 self.assertIsNone(IM.refuse_speaker(False, user_id=6, guild_id=1, channel_id=1, asset_mode=SFW))
 
     def test_old_lock_fields_are_ignored_and_dropped_on_next_write(self):

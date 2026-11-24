@@ -86,7 +86,7 @@ def tool_action(name: str, arguments: dict | None = None, posted: str = "", stat
     """
     tool = " ".join(str(name or "").split()).lower() or "a tool"
     detail = ""
-    if tool == "duckduckgo":
+    if tool in ("web_search", "duckduckgo"):
         query = _arg(arguments, "query")
         detail = f'searched "{query}"' if query else "searched the web"
     elif tool == "thread":

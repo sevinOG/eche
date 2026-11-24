@@ -67,6 +67,9 @@ class ToolResult:
     declined: bool = False
     # The tool already posted its own "Eche used" line.
     announced: bool = False
+    # Posted under the chat reply written from `text` (web search: the Google
+    # search links for the queries that ran).
+    footer: str = ""
 
 
 @dataclass
@@ -80,9 +83,15 @@ class Tool:
     # "anyone" — any speaker. The handler still limits what they can touch.
     # "owner" — bot owner only. Checked again at execute time.
     access: str = ACCESS_ANYONE
+    # When set and it returns False, the tool is not offered (web search
+    # without a Gemini key). The handler still answers if it is called.
+    available: Callable[[], bool] | None = None
 
 
 _TOOLS: dict[str, Tool] = {}
+# Old tool names that still resolve, never offered. duckduckgo -> web_search
+# is kept for one release so older memory lines that name it still work.
+_ALIASES = {"duckduckgo": "web_search"}
 
 
 def register(tool: Tool) -> None:
@@ -122,7 +131,7 @@ def prompt_choice(stored, *, default: bool) -> bool:
 
 
 PROMPT_TOOLS = (
-    ("duckduckgo", "Lookup"),
+    ("web_search", "Web search"),
     ("thread", "Thread"),
     ("context_raw", "Own context"),
 )
@@ -135,6 +144,9 @@ def tool_prompt_enabled(name: str) -> bool:
     try:
         from core.secrets import public_value
         stored = public_value(f"tool_{name}")
+        if name == "web_search" and not str(stored or "").strip():
+            # The Lookup box saved before web search replaced DuckDuckGo.
+            stored = public_value("tool_duckduckgo")
     except Exception as exc:
         dprint(f"[tools] prompt toggle unreadable for {name}: {exc}")
         return True
@@ -146,6 +158,12 @@ def _offered(tool: Tool, *, public_on: bool, speaker_is_owner: bool, admin_enabl
         return False
     if tool.name != "asset" and tool.access != ACCESS_OWNER and not tool_prompt_enabled(tool.name):
         return False
+    if tool.available is not None:
+        try:
+            if not tool.available():
+                return False
+        except Exception:
+            return False
     if tool.name == "asset":
         try:
             from core.asset_safety import asset_enabled
@@ -178,6 +196,9 @@ def _resolve(name: str) -> Tool | None:
     for key, tool in _TOOLS.items():
         if key.casefold() == folded:
             return tool
+    alias = _ALIASES.get(folded)
+    if alias and alias in _TOOLS:
+        return _TOOLS[alias]
     return None
 
 
@@ -305,7 +326,7 @@ def tool_call_note(name: str, arguments: dict | None, body: str = "") -> str:
         title = " ".join(str(args.get("title") or "").split())
         if title:
             extra = f' title "{title[:80]}"'
-    elif label == "duckduckgo":
+    elif label in ("web_search", "duckduckgo"):
         query = " ".join(str(args.get("query") or "").split())
         if query:
             extra = f' query "{query[:120]}"'

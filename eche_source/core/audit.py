@@ -51,7 +51,8 @@ _bound: contextvars.ContextVar[dict[str, Any]] = contextvars.ContextVar(
 _SECRET_KEYS = (
     "authorization", "api_key", "apikey", "access_token", "secret", "password",
     "token", "nonce", "client_secret", "client_id", "bearer", "discord_token",
-    "groq_api_key", "openrouter_api_key", "xai_api_key", "google_api_key",
+    "groq_api_key", "openrouter_api_key", "xai_api_key", "google_api_key", "gemini_api_key",
+    "x-goog-api-key",
     "us_access_token", "us_secret_token", "inf_api_key",
     # Prompt and media bytes never belong in the log (ids, categories, rule
     # ids, footer hash, and sha256 prefixes only).
@@ -64,7 +65,7 @@ _SECRET_ASSIGN = re.compile(
 )
 _SECRET_TOKEN = re.compile(
     r"(?i)\b(?:bearer\s+[A-Za-z0-9\-._~+/]+=*|sk-[A-Za-z0-9\-._]+|gsk_[A-Za-z0-9]+|"
-    r"sk-or-[A-Za-z0-9\-._]+|xai-[A-Za-z0-9\-._]+)\b"
+    r"sk-or-[A-Za-z0-9\-._]+|xai-[A-Za-z0-9\-._]+|AIza[0-9A-Za-z\-_]{30,})\b"
 )
 # Discord webhooks, including /api/v9/ and /api/v10/ REST URLs, bare or hook=...
 _WEBHOOK_RE = re.compile(
@@ -124,6 +125,23 @@ def _id(value) -> str:
     return str(value)
 
 
+_command_error: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "eche_audit_command_error", default=False
+)
+
+
+def mark_command_error() -> None:
+    """The command failed without a guardrail firing; completion should log error."""
+    _command_error.set(True)
+
+
+def consume_command_error() -> bool:
+    if _command_error.get(False):
+        _command_error.set(False)
+        return True
+    return False
+
+
 def mark_refusal() -> None:
     """A guardrail fired during this command; completion should log refusal."""
     _refusal.set(True)
@@ -146,7 +164,7 @@ def _configured_secret_values() -> list[str]:
         # names, or other public settings (HOME_SERVER_ID, ECHE_OWNER_ID).
         secret_keys = set(SECRET_KEYS) | {
             "discord_token", "inf_api_key", "openrouter_api_key",
-            "us_access_token", "us_secret_token", "xai_api_key",
+            "us_access_token", "us_secret_token", "xai_api_key", "gemini_api_key",
         }
         for key in secret_keys:
             val = str(cfg.get(key) or "").strip()
@@ -155,6 +173,11 @@ def _configured_secret_values() -> list[str]:
         for settings_key, env_name in ENV_MAP.items():
             if settings_key not in secret_keys:
                 continue
+            val = str(os.environ.get(env_name) or "").strip()
+            if len(val) >= 8:
+                values.append(val)
+        # Read straight from the environment (not exported through ENV_MAP).
+        for env_name in ("GEMINI_API_KEY",):
             val = str(os.environ.get(env_name) or "").strip()
             if len(val) >= 8:
                 values.append(val)
@@ -718,8 +741,13 @@ def _merge_ids(ids: dict, extra: dict) -> dict:
 
 
 def command(name: str, outcome: str, *, ctx=None, **extra) -> dict:
-    if consume_refusal() and (outcome or "").lower() == "success":
-        outcome = "refusal"
+    refused = consume_refusal()
+    failed = consume_command_error()
+    if (outcome or "").lower() == "success":
+        if refused:
+            outcome = "refusal"
+        elif failed:
+            outcome = "error"
     ids = _merge_ids(_ids_from_ctx(ctx), extra)
     return record(
         "command",

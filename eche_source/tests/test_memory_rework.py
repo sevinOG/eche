@@ -405,6 +405,135 @@ class FoldPerson(TempRoot):
         self.assertEqual(rows, [])
 
 
+class FoldRetries(TempRoot):
+    """Live 2026-11-23 15:08-16:39 ET: the bot side answered {} seven times;
+    each retry applied the user side again from the same messages."""
+
+    UID = 4343
+    _run_fold = FoldPerson._run_fold
+    _chat = FoldPerson._chat
+
+    def setUp(self):
+        super().setUp()
+        ms.save(self.UID, "user", ms.empty("user"))
+        ms.save(self.UID, "bot", ms.empty("bot"))
+
+    def test_empty_reply_is_no_change(self):
+        self.assertEqual(cs.parse_ops("{}"), {})
+        self.assertEqual(cs.parse_ops('{"add": [], "kept": []}'), {"add": [], "kept": []})
+        self.assertIsNone(cs.parse_ops('{"summary": "x"}'))
+        self.assertIsNone(cs.parse_ops("I can't help with that."))
+        self._chat()
+        user_ops = json.dumps({"add": [{"section": "identity", "text": "Maintains a Discord bot called Eche."}]})
+        result, _written, prompts = self._run_fold([user_ops, "{}"])
+        self.assertTrue(result)
+        self.assertEqual(len(prompts), 2)
+        self.assertEqual(pr.pending_count(self.UID, "user"), 0)
+        self.assertIn("If nothing should change, reply {}.", prompts[0][0])
+
+    def test_rule_is_in_every_memory_prompt(self):
+        self.assertIn("reply {}", sp.build_user_fold_prompt("none", "Them: hi"))
+        self.assertIn("reply {}", sp.build_self_fold_prompt("none", "Eche: hi"))
+
+    def test_saved_side_is_not_applied_again(self):
+        self._chat()
+        user_ops = json.dumps({"add": [{"section": "identity", "text": "Maintains a Discord bot called Eche."}]})
+        bot_ops = json.dumps({"add": [{"section": "commitments", "text": "I promised to check the HLS fix."}]})
+        result, _w, prompts = self._run_fold([user_ops, "not json"])
+        self.assertFalse(result)
+        self.assertEqual(len(prompts), 2)
+        self.assertEqual(pr.pending_count(self.UID, "user"), 8)
+        self.assertEqual(pr.load_fold_state(self.UID)["done"], {"user": [8, 8]})
+        # The retry asks only the side that failed.
+        result, _w, prompts = self._run_fold([bot_ops])
+        self.assertTrue(result)
+        self.assertEqual(len(prompts), 1)
+        self.assertIn("my own outputs", prompts[0][0])
+        self.assertEqual(len(ms.load(self.UID, "user")["sections"]["identity"]), 1)
+        self.assertEqual(pr.pending_count(self.UID, "user"), 0)
+        self.assertEqual(pr.load_fold_state(self.UID), {"done": {}, "fails": 0, "retry_at": 0.0})
+
+    def test_new_messages_mean_a_new_batch(self):
+        self._chat()
+        user_ops = json.dumps({"add": [{"section": "identity", "text": "Maintains a Discord bot called Eche."}]})
+        self._run_fold([user_ops, "not json"])
+        pr.push(self.UID, "user", "one more thing")
+        _r, _w, prompts = self._run_fold(["{}", "{}"])
+        self.assertEqual(len(prompts), 2)
+
+    def test_backoff_then_drop(self):
+        self._chat()
+        start = 1_800_000_000.0
+        with mock.patch.object(cs.time, "time", return_value=start):
+            for attempt in range(1, 3):
+                self.assertFalse(self._run_fold(["no", "no"])[0])
+                self.assertEqual(pr.load_fold_state(self.UID)["fails"], attempt)
+                self.assertEqual(pr.load_fold_state(self.UID)["retry_at"], 0.0)
+            self.assertFalse(self._run_fold(["no", "no"])[0])
+            state = pr.load_fold_state(self.UID)
+            self.assertEqual(state["fails"], 3)
+            self.assertEqual(state["retry_at"], start + 3600)
+            # While backing off: no model call, no idle/count reason.
+            _r, _w, prompts = self._run_fold(["no", "no"])
+            self.assertEqual(prompts, [])
+            self.assertEqual(cs.fold_reason(self.UID, start + 60), "")
+        for attempt in range(4, 6):
+            with mock.patch.object(cs.time, "time", return_value=start + attempt * 4000):
+                self.assertFalse(self._run_fold(["no", "no"])[0])
+            self.assertEqual(pr.pending_count(self.UID, "user"), 8)
+        with mock.patch.object(cs.time, "time", return_value=start + 30000):
+            self.assertFalse(self._run_fold(["no", "no"])[0])
+        self.assertEqual(pr.pending_count(self.UID, "user"), 0)
+        self.assertEqual(pr.pending_count(self.UID, "bot"), 0)
+        self.assertEqual(pr.load_fold_state(self.UID)["fails"], 0)
+        self.assertEqual(ms.load(self.UID, "user"), ms.load(self.UID, "user"))
+
+    def test_owner_repair_ignores_backoff(self):
+        self._chat()
+        recent_state = {"done": {}, "fails": 3, "retry_at": 9e12}
+        pr.save_fold_state(self.UID, recent_state)
+        result, _w, prompts = self._run_fold(["{}", "{}"], force=True)
+        self.assertTrue(result)
+        self.assertEqual(len(prompts), 2)
+
+    def test_push_print_is_debug_only(self):
+        import io
+        from contextlib import redirect_stdout
+
+        out = io.StringIO()
+        with redirect_stdout(out):
+            pr.push(self.UID, "user", "hello there")
+        self.assertNotIn("since the last summary", out.getvalue())
+
+    def test_wipe_removes_fold_state(self):
+        from core import memory_wipe
+
+        pr.save_fold_state(self.UID, {"done": {}, "fails": 2, "retry_at": 0.0})
+        memory_wipe.clear_local_memory()
+        self.assertFalse(os.path.exists(pr._fold_state_path(self.UID)))
+
+
+class EpisodeAuthors(TempRoot):
+    def test_other_bots_are_not_recorded(self):
+        from cogs.events import on_message as om
+
+        calls = []
+
+        async def fake_append(*a, **k):
+            calls.append(k.get("author_id"))
+
+        cog = om.OnMessage.__new__(om.OnMessage)
+        cog.bot = SimpleNamespace()
+        guild = SimpleNamespace(id=1, name="g")
+        channel = SimpleNamespace(id=2)
+        with mock.patch("core.episodic.append_episodic", fake_append):
+            for is_bot, uid in ((True, 10), (False, 11)):
+                msg = SimpleNamespace(guild=guild, channel=channel, attachments=[],
+                                      author=SimpleNamespace(id=uid, bot=is_bot))
+                run(cog._record_server_line(msg, "now playing something"))
+        self.assertEqual(calls, [11])
+
+
 class RememberSide(TempRoot):
     UID = 77
 

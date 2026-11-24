@@ -26,7 +26,7 @@ from core.client import (
 
 # --- CHAT TOOLS ---
 import core.tools_context  # noqa: F401  registers context_raw
-import core.tools_duckduckgo  # noqa: F401  registers duckduckgo
+import core.tools_web_search  # noqa: F401  registers web_search (Gemini + Google Search)
 import core.tools_thread  # noqa: F401  registers thread
 import core.tools_admin  # noqa: F401  registers mute, timeout, kick, ban
 import core.tools_asset  # noqa: F401  registers asset
@@ -301,6 +301,9 @@ class OnMessage(commands.Cog):
                     "sorry, i'm being rate limited"
                 ):
                     lookup_quota = True
+                footer = (getattr(result, "footer", "") or "").strip()
+                if footer and (spoken or "").strip() and not this_quota:
+                    spoken = f"{spoken.rstrip()}\n{footer}"
             if image_tool and not result.quiet and is_blocked(spoken, user_id=user_id, channel_id=channel_id):
                 block_note(f"{name} reply", **block_detail(spoken))
                 spoken = BLOCK_REFUSAL
@@ -761,7 +764,12 @@ class OnMessage(commands.Cog):
     async def _record_server_line(
         self, message, text: str, tool_lines: list[str] | None = None, reply: str = ""
     ) -> None:
-        """One turn of this channel's episode: the message, Eche's reply, and any tool that ran."""
+        """One turn of this channel's episode: the message, Eche's reply, and any tool that ran.
+
+        Other bots' posts (music bots, game bots) are not part of an episode.
+        """
+        if getattr(getattr(message, "author", None), "bot", False) is True:
+            return
         server_id = getattr(getattr(message, "guild", None), "id", None)
         if not server_id:
             return

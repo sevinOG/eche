@@ -26,6 +26,7 @@ SECRET_KEYS = (
     "us_access_token",   # US_ACCESS_TOKEN (Unsplash)
     "us_secret_token",   # US_SECRET_TOKEN (Unsplash)
     "xai_api_key",       # stored encrypted; read via load_all only, not ENV_MAP
+    "gemini_api_key",    # web search (Gemini + Google Search); like xai_api_key, not exported via ENV_MAP
 )
 
 PUBLIC_KEYS = (
@@ -45,7 +46,9 @@ PUBLIC_KEYS = (
     "owner_id",             # Discord user ids for owner commands and admin tools
     "channel_completion_tokens",  # channel reply budget; blank uses 64
     "thread_completion_tokens",   # one thread post; blank uses 316
-    "tool_duckduckgo",            # "0" leaves lookup out of the prompt. Blank stays on.
+    "tool_web_search",            # "0" leaves web search out of the prompt. Blank reads tool_duckduckgo, then on.
+    "tool_duckduckgo",            # the old Lookup box; read only when tool_web_search is blank
+    "gemini_search_model",        # web search model; blank uses gemini-3.5-flash-lite
     "tool_thread",                # "0" leaves thread out of the prompt. Blank stays on.
     "tool_context_raw",           # "0" leaves context out of the prompt. Blank stays on.
     "prompt_episodic",            # "0" leaves the server episode out of the prompt. Blank stays on.

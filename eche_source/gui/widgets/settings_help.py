@@ -56,6 +56,28 @@ FIELD_HELP: dict[str, tuple[str, str]] = {
         "A second secret Unsplash sometimes uses. Treat it like a password. "
         "Most simple searches only need the Access Token.",
     ),
+    "gemini_api_key": (
+        "Gemini API key (web search)",
+        "### What is this?\n"
+        "The key Eche uses for **web search**: one Gemini call with Grounding with Google "
+        "Search per lookup. Get one at aistudio.google.com/apikey. It is stored encrypted "
+        "with your other secrets and is never written to the log.\n\n"
+        "### Do I need it?\n"
+        "Only for web search. With no key the search tool is left out of chat, and a "
+        "lookup says web search is off.\n\n"
+        "### Billing\n"
+        "Google Search grounding is not in the Gemini free tier for current models. Turn on "
+        "billing for the key's project: the first 5,000 searches a month are free, then "
+        "$14 per 1,000 (at most 1,500 a day), plus a small token cost.",
+    ),
+    "gemini_search_model": (
+        "Web search model",
+        "### What is this?\n"
+        "The Gemini text model that runs the search. Blank uses **gemini-3.5-flash-lite**.\n\n"
+        "### Allowed\n"
+        "Text Gemini models with Google Search grounding (for example gemini-3.8-flash or "
+        "gemini-4-hydrogen). Image, video, audio, and live models are refused and the default is used.",
+    ),
     "xai_api_key": (
         "xAI API key",
         "### What is this?\n"
@@ -111,7 +133,7 @@ FIELD_HELP: dict[str, tuple[str, str]] = {
         "### What these boxes do\n"
         "Each box puts that tool in the prompt Eche sees. Off, and the model is not offered it. "
         "A blank install leaves them on.\n\n"
-        "The main window **Default tools** switch still turns lookup, thread, and context off together. "
+        "The main window **Default tools** switch still turns web search, thread, and context off together. "
         "These boxes can turn one of them off while the switch stays on.\n\n"
         "### Episodic memory\n"
         "Off, and this server's episode is left out of the prompt. Eche still stores it, "

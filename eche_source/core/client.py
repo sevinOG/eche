@@ -281,9 +281,28 @@ def tool_use_note(tools: list | None = None) -> str:
     return tool_catalog(tools)
 
 
-# Posted as the tool result when DuckDuckGo does not return a page. The
-# second completion still answers the person. These lines are not a search.
+# Posted as the tool result when web search (core/tools_web_search) does not
+# produce an answer. The second completion still answers the person. These
+# lines are not a search.
+LOOKUP_NO_KEY = "Web search is off — add a Gemini API key in Settings → Web search."
+LOOKUP_BAD_KEY = "The Gemini key was rejected. Check it in Settings → Web search."
+LOOKUP_NO_GROUNDING = (
+    "This Gemini key can't use Google Search grounding. Turn on billing for the key's "
+    "project, or pick a supported model in Settings → Web search."
+)
+LOOKUP_QUOTA = "Web search is out of quota for today."
+LOOKUP_MODEL = "The web search model isn't available. Check the model in Settings → Web search."
+LOOKUP_UNREACHABLE = "I couldn't reach Google search."
+LOOKUP_REFUSED = "Google search didn't answer that one."
 _LOOKUP_FAILED = (
+    LOOKUP_NO_KEY,
+    LOOKUP_BAD_KEY,
+    LOOKUP_NO_GROUNDING,
+    LOOKUP_QUOTA,
+    LOOKUP_MODEL,
+    LOOKUP_UNREACHABLE,
+    LOOKUP_REFUSED,
+    # Older lines that may still sit in memory.
     "DuckDuckGo blocked that lookup.",
     "I couldn't reach DuckDuckGo.",
 )
@@ -1787,7 +1806,7 @@ _INSTRUCTION_ECHO = re.compile(
     r"^(?:"
     r"write the next part of the assignment\b|"
     r"do not announce a thread\b|"
-    r"call duckduckgo when\b|"
+    r"call (?:web_search|duckduckgo) when\b|"
     r"every search has to name\b|"
     r"do not invent reviews\b|"
     r"a writing assignment is written\b|"

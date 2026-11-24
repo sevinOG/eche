@@ -160,6 +160,13 @@ _STATUS_LINE = re.compile(
     r"^(?:"
     r"duckduckgo blocked that lookup\.?"
     r"|i couldn't reach duckduckgo\.?"
+    r"|web search is off\b.*"
+    r"|the gemini key was rejected\b.*"
+    r"|this gemini key can't use\b.*"
+    r"|web search is out of quota\b.*"
+    r"|the web search model isn't available\b.*"
+    r"|i couldn't reach google search\.?"
+    r"|google search didn't answer that one\.?"
     r"|i found the notes, but i couldn't answer from them\.?"
     r"|i couldn't turn that into an answer\.?"
     r"|sorry, i(?:'m| am) being rate limited\b.*"
@@ -455,8 +462,11 @@ async def _create_thread(message, title: str):
     return None
 
 
+# The search tool, and its old name that still resolves for one release.
+_SEARCH_NAMES = {"web_search", "duckduckgo"}
+
 _SEARCH_TOOL_DESCRIPTION = (
-    "Call duckduckgo with the query in the message. Do not change it."
+    "Call web_search with the query in the message. Do not change it."
 )
 
 
@@ -470,13 +480,13 @@ def _search_tool_spec(spec: dict) -> dict:
     return copied
 
 
-def _duckduckgo_tools() -> list[dict]:
+def _search_tools() -> list[dict]:
     from core.tools import specs_for
 
     return [
         _search_tool_spec(spec)
         for spec in specs_for(speaker_is_owner=False, admin_enabled=False)
-        if spec.get("function", {}).get("name") == "duckduckgo"
+        if spec.get("function", {}).get("name") == "web_search"
     ]
 
 
@@ -790,11 +800,11 @@ def _lookup_note(query: str, text: str) -> str:
 
 
 def _only_tool_reply(text: str) -> bool:
-    """True when the reply is a duckduckgo call and nothing else."""
+    """True when the reply is a web_search call and nothing else."""
     from core.tools import calls_from_model_text
 
     raw = (text or "").strip()
-    if not raw or not calls_from_model_text(raw, {"duckduckgo"}):
+    if not raw or not calls_from_model_text(raw, _SEARCH_NAMES):
         return False
     fence = re.fullmatch(
         r"```(?:json)?\s*(.*?)\s*```",
@@ -810,8 +820,8 @@ def _drop_tool_lines(text: str) -> str:
     from core.tools import calls_from_model_text, without_tool_calls
 
     kept: list[str] = []
-    for line in without_tool_calls(text or "", {"duckduckgo"}).splitlines():
-        if calls_from_model_text(line.strip(), {"duckduckgo"}):
+    for line in without_tool_calls(text or "", _SEARCH_NAMES).splitlines():
+        if calls_from_model_text(line.strip(), _SEARCH_NAMES):
             continue
         kept.append(line)
     return "\n".join(kept)
@@ -855,7 +865,7 @@ async def _run_planned_lookup(ctx: ToolContext, query: str) -> str:
     from core.tools import execute
 
     try:
-        result = await execute("duckduckgo", {"query": query}, ctx)
+        result = await execute("web_search", {"query": query}, ctx)
     except Exception as exc:
         dprint(f"[tools] thread lookup failed: {exc}")
         return ""
@@ -885,7 +895,7 @@ async def _execute(
     notes = ""
     resume_after = ""
     need_sentence = False
-    search_tools = _duckduckgo_tools()
+    search_tools = _search_tools()
 
 
     for query in searches or []:

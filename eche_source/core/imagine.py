@@ -113,10 +113,14 @@ class AssetFile:
 
 
 class ImagineError(Exception):
-    def __init__(self, text: str, *, status: str = ""):
+    def __init__(self, text: str, *, status: str = "", category: str = "", label: str = ""):
         super().__init__(text)
         self.text = text
         self.status = status
+        # Output-check blocks: the fixed block category and the checker's fixed
+        # label (core/asset_safety). Never prompt text.
+        self.category = category
+        self.label = label
 
 
 # What happened, for the chat model and the audit log:
@@ -138,6 +142,7 @@ def error_status(exc) -> str:
     try:
         from core.asset_limits import DM_REFUSAL, is_cap_refusal
         from core.asset_safety import (
+            AGE_CHECK_REFUSAL,
             CHANNEL_CHANGED_REFUSAL,
             KILL_SWITCH_OFF,
             MISSING_KEY,
@@ -153,7 +158,7 @@ def error_status(exc) -> str:
         return "provider_filtered"
     if is_cap_refusal(text):
         return "capped"
-    if text in (OUTPUT_REFUSAL, SOURCE_REFUSAL, REFUSAL, BYPASS_REFUSAL):
+    if text in (OUTPUT_REFUSAL, AGE_CHECK_REFUSAL, SOURCE_REFUSAL, REFUSAL, BYPASS_REFUSAL):
         return "safety_block"
     if text in (KILL_SWITCH_OFF, MISSING_KEY, DM_REFUSAL, CHANNEL_CHANGED_REFUSAL, MODE_CHANGED_REFUSAL, ADULT_CHANNEL_REFUSAL):
         return "not_allowed"
@@ -1030,6 +1035,69 @@ async def run_asset(
         raise
 
 
+async def _revised_for_retry(exc, plan, prepared, snap, ids, prepare_generation, *, source=None):
+    """The checked PreparedPrompt for the one retry, or raise exc (the block stands)."""
+    import hashlib
+
+    from core.asset_safety import rewrite_for_retry
+    from core.audit import record
+
+    category = str(getattr(exc, "category", "") or "")
+    label = str(getattr(exc, "label", "") or "")
+    original = getattr(prepared, "user_prompt", "") or getattr(plan, "prompt", "") or ""
+
+    def _row(outcome: str, reason: str, **extra) -> None:
+        # A safety record: a failed write means no retry.
+        record(
+            "asset",
+            outcome=outcome,
+            category="output-block-retry",
+            attempt="2",
+            footer_hash=getattr(prepared, "footer_hash", ""),
+            reason=reason,
+            block_category=category,
+            block_label=label,
+            safety=True,
+            **extra,
+            **ids,
+        )
+
+    try:
+        revised = await rewrite_for_retry(original, category, label, adult=bool(getattr(snap, "adult", False)))
+    except Exception:
+        revised = ""
+    if not revised:
+        try:
+            _row("refusal", "rewrite-failed")
+        except Exception:
+            pass
+        raise exc from None
+    digest = hashlib.sha256(revised.encode("utf-8")).hexdigest()[:16]
+    try:
+        _row("retry", "rewrite", rewrite_sha256=digest)
+    except Exception:
+        raise exc from None
+    try:
+        return await prepare_generation(
+            revised,
+            user_id=ids.get("user_id"),
+            guild_id=ids.get("guild_id"),
+            channel_id=ids.get("channel_id"),
+            mode=snap,
+            user_text=getattr(plan, "user_text", "") or "",
+            model_prompt=getattr(plan, "model_prompt", "") or "",
+            edit=source is not None or getattr(plan, "mode", "") in ("image_edit", "video_edit"),
+        )
+    except Exception:
+        # The revision did not pass the input checks (their refusal rows are
+        # already written). The original block and its message stand.
+        try:
+            _row("refusal", "rewrite-blocked", rewrite_sha256=digest)
+        except Exception:
+            pass
+        raise exc from None
+
+
 async def _run_asset_reserved(plan, key, snap, ids, get_backend, prepare_generation, check_generated_media, *, notify=None):
     from core.asset_safety import require_enabled, _audit
 
@@ -1180,33 +1248,14 @@ async def _run_asset_reserved(plan, key, snap, ids, get_backend, prepare_generat
             if attempt > 1 or not retry_ok or getattr(exc, "status", "") != "safety_block":
                 raise
             # The blocked output is never returned or posted; its verdict rows
-            # are already logged. The retry row is a safety record, so a failed
-            # write stops here and the block stands.
-            # The retry carries stronger adult cues instead of the same prompt
-            # (owner 2026-11-19). The output checks are unchanged. If the cues
-            # cannot be added with the footer still last, there is no retry.
-            try:
-                from core.asset_safety import RETRY_ADULT_CUES, strengthen_for_retry
-
-                prepared = strengthen_for_retry(prepared)
-            except Exception:
-                raise exc from None
-            try:
-                from core.audit import record
-
-                record(
-                    "asset",
-                    outcome="retry",
-                    category="output-block-retry",
-                    attempt=str(attempt + 1),
-                    footer_hash=prepared.footer_hash,
-                    reason="retry-adult-cues",
-                    added=RETRY_ADULT_CUES,
-                    safety=True,
-                    **ids,
-                )
-            except Exception:
-                raise exc from None
+            # are already logged. One retry (owner 2026-11-23): the text model
+            # revises the prompt from the block category and the checker's
+            # label, the revision goes through every input check again
+            # (prepare_generation), and the output checks run again. Any
+            # failure keeps the block. Only ids and hashes are logged.
+            prepared = await _revised_for_retry(
+                exc, plan, prepared, snap, ids, prepare_generation, source=source,
+            )
             await _notify(notify, "retrying")
             require_enabled(snap, user_id=user_id, guild_id=guild_id, channel_id=channel_id)
     require_enabled(snap, user_id=user_id, guild_id=guild_id, channel_id=channel_id)

@@ -151,6 +151,9 @@ def parse_ops(raw: str) -> dict | None:
     if data is None:
         return None
     known = {"add", "update", "remove", "touch", "kept"}
+    # {} (or only empty lists) is a valid "nothing to change".
+    if not data:
+        return {}
     if not any(key in data for key in known):
         return None
     return {key: data[key] for key in known if isinstance(data.get(key), list)}
@@ -351,10 +354,12 @@ async def fold_person(bot, guild, user_id, username=None, *, reason: str = "coun
 
     guild is the home server (where the pins live). True when both memories
     were updated; the waiting messages are then cleared. Anything else keeps
-    them for the next try.
+    them for the next try. A side that already saved this batch is not asked
+    again on that retry. Failures back off (personal_recent.BACKOFF_AFTER)
+    and the batch is dropped after personal_recent.DROP_AFTER.
     """
     from core import memory_store
-    from core.personal_recent import clear_folded, pending_count, pending_rows
+    from core import personal_recent as recent
     from core.summarizer_prompt import build_self_fold_prompt, build_user_fold_prompt
 
     _audit(user_id, guild)
@@ -363,12 +368,17 @@ async def fold_person(bot, guild, user_id, username=None, *, reason: str = "coun
     except (TypeError, ValueError):
         return False
     async with _lock(uid):
-        user_rows = pending_rows(uid, "user")
-        bot_rows = pending_rows(uid, "bot")
-        user_pending = pending_count(uid, "user")
-        bot_pending = pending_count(uid, "bot")
+        state = recent.load_fold_state(uid)
+        now = time.time()
+        if not force and state["retry_at"] > now:
+            return False
+        user_rows = recent.pending_rows(uid, "user")
+        bot_rows = recent.pending_rows(uid, "bot")
+        user_pending = recent.pending_count(uid, "user")
+        bot_pending = recent.pending_count(uid, "bot")
         if not user_rows and not bot_rows and not force:
             return False
+        batch = [user_pending, bot_pending]
         conversation = conversation_text(user_rows, bot_rows)
         own = _own_names(bot, guild, uid, username)
         known = _known_names(bot)
@@ -380,6 +390,9 @@ async def fold_person(bot, guild, user_id, username=None, *, reason: str = "coun
         )
         done = True
         for side in ("user", "bot"):
+            if conversation and state["done"].get(side) == batch:
+                # This side already saved this exact batch on an earlier try.
+                continue
             thread, content, fallback, readable = pins[side]
             profile = memory_store.load(uid, side)
             if profile is None:
@@ -408,25 +421,52 @@ async def fold_person(bot, guild, user_id, username=None, *, reason: str = "coun
             else:
                 memory_store.maintain(profile, side)
             memory_store.save(uid, side, profile)
+            if conversation:
+                state["done"][side] = list(batch)
             try:
                 await write_memory_pin(thread, side, content, fallback, profile)
             except Exception as exc:
                 print(f"[context_summarizer] {side} pin copy failed: {type(exc).__name__}", flush=True)
         if done:
-            clear_folded(uid, "user", user_pending)
-            clear_folded(uid, "bot", bot_pending)
+            recent.clear_folded(uid, "user", user_pending)
+            recent.clear_folded(uid, "bot", bot_pending)
+            recent.reset_fold_state(uid)
             print(f"[memory] summary stored for {uid}", flush=True)
+            return True
+        state["fails"] = int(state["fails"]) + 1
+        if state["fails"] >= recent.DROP_AFTER:
+            recent.clear_folded(uid, "user", user_pending)
+            recent.clear_folded(uid, "bot", bot_pending)
+            recent.reset_fold_state(uid)
+            print(
+                f"[memory] dropped the waiting batch for {uid} after {state['fails']} failed "
+                "updates; the memory that did not update stays as it was",
+                flush=True,
+            )
+            return False
+        if state["fails"] >= recent.BACKOFF_AFTER:
+            state["retry_at"] = now + recent.BACKOFF_SECONDS
+            print(
+                f"[memory] summary did not land for {uid} ({state['fails']} in a row); "
+                f"next try in {recent.BACKOFF_SECONDS // 60} minutes",
+                flush=True,
+            )
         else:
             print(f"[memory] summary did not land; keeping the buffer for {uid}", flush=True)
-        return done
+        recent.save_fold_state(uid, state)
+        return False
 
 
 def fold_reason(user_id: int, now: float | None = None) -> str:
     """"count", "idle", or "" (not yet)."""
     from core.personal_recent import fold_every, fold_idle_seconds, has_stash, last_at, pending_count
 
+    from core.personal_recent import backing_off
+
     now = time.time() if now is None else float(now)
     uid = int(user_id)
+    if backing_off(uid, now):
+        return ""
     user_p = pending_count(uid, "user")
     bot_p = pending_count(uid, "bot")
     every = fold_every()

@@ -90,8 +90,15 @@ class FrameSampleTests(unittest.TestCase):
         self.assertEqual(m.await_count, 1)
 
 
+def ImagineErrorFor(text):
+    from core.imagine import ImagineError
+    return ImagineError(text, status="safety_block")
+
+
 class RetryTests(unittest.TestCase):
-    def _run(self, outcomes, *, prompt="a burger", record_fails=False):
+    REVISED = "a woman in her 30s eating a burger, realistic photo"
+
+    def _run(self, outcomes, *, prompt="a burger", record_fails=False, revised=REVISED, prepare=None):
         from core import imagine as I
 
         plan = SimpleNamespace(prompt=prompt, user_text=prompt, model_prompt=prompt, mode="image", source=None)
@@ -107,7 +114,21 @@ class RetryTests(unittest.TestCase):
 
         async def check(*a, **k):
             if seq.pop(0) == "block":
-                raise I.ImagineError("blocked", status="safety_block")
+                raise I.ImagineError("blocked", status="safety_block",
+                                     category="output-age-vision-unsure", label="uncertain age")
+
+        self.prepare_calls = []
+
+        async def default_prepare(text, **kw):
+            self.prepare_calls.append((text, kw))
+            return S.PreparedPrompt(
+                user_prompt=text,
+                sent_prompt=S.build_sent_prompt(text)[0],
+                footer_hash="h",
+                diffusion_prompt=S.build_diffusion_prompt(text),
+            )
+
+        self.rewrite = mock.AsyncMock(return_value=revised)
 
         backend = mock.Mock()
         backend.api_base.return_value = "https://x"
@@ -136,41 +157,93 @@ class RetryTests(unittest.TestCase):
              mock.patch.object(I, "http_bytes", return_value=(b"\xff\xd8\xffdata", "image/jpeg")), \
              mock.patch("core.asset_safety.require_enabled"), \
              mock.patch("core.asset_safety._audit"), \
-             mock.patch("core.audit.record", side_effect=fake_record):
+             mock.patch("core.audit.record", side_effect=fake_record), \
+             mock.patch("core.asset_safety.rewrite_for_retry", new=self.rewrite):
             try:
                 out = run(I._run_asset_reserved(
-                    plan, "k", mock.Mock(), {"user_id": 1, "guild_id": 2, "channel_id": 3},
-                    lambda: backend, mock.AsyncMock(return_value=prepared), check, notify=notify,
+                    plan, "k", mock.Mock(adult=False), {"user_id": 1, "guild_id": 2, "channel_id": 3},
+                    lambda: backend, prepare or default_prepare, check, notify=notify,
                 ))
                 return out, None, notes, records, seq
             except Exception as exc:
                 return None, exc, notes, records, seq
 
-    def test_block_then_pass_retries_once(self):
+    def test_block_then_pass_retries_once_with_the_rewrite(self):
         out, exc, notes, records, _ = self._run(["block", "pass"])
         self.assertIsNone(exc)
         self.assertIsNotNone(out)
         self.assertEqual(notes, ["retrying"])
+        # The text model is told only the category and the checker's label.
+        args, kwargs = self.rewrite.await_args
+        self.assertEqual(args, ("a burger", "output-age-vision-unsure", "uncertain age"))
+        # The revision went through prepare_generation (every input check).
+        self.assertEqual([t for t, _ in self.prepare_calls], ["a burger", self.REVISED])
         rows = [kw for ev, kw in records if kw.get("outcome") == "retry"]
         self.assertEqual(len(rows), 1)
         self.assertTrue(rows[0]["safety"])
         self.assertEqual(rows[0]["category"], "output-block-retry")
-        # The retry carries stronger adult cues; the footer stays last.
+        self.assertEqual(rows[0]["reason"], "rewrite")
+        self.assertEqual(rows[0]["block_label"], "uncertain age")
+        # Ids and hashes only: no prompt text in the row.
+        self.assertEqual(len(rows[0]["rewrite_sha256"]), 16)
+        for value in rows[0].values():
+            self.assertNotIn("burger", str(value))
         from core.safety import SAFETY_FOOTER
-        self.assertEqual(rows[0]["reason"], "retry-adult-cues")
-        self.assertEqual(rows[0]["added"], S.RETRY_ADULT_CUES)
         first, second = self.sent_prompts
-        self.assertNotIn(S.RETRY_ADULT_LINE, first)
-        self.assertIn(S.RETRY_ADULT_LINE, second)
+        self.assertNotIn("30s", first)
+        self.assertIn(self.REVISED, second)
         self.assertTrue(second.endswith(SAFETY_FOOTER))
         self.assertEqual(second.count(SAFETY_FOOTER), 1)
-        # Imagine is sent the diffusion body: retry cues, no footer.
         d_first, d_second = self.diffusion_prompts
-        self.assertNotIn(S.RETRY_ADULT_LINE, d_first)
-        self.assertIn(S.RETRY_ADULT_LINE, d_second)
-        self.assertNotIn(SAFETY_FOOTER, d_first)
+        self.assertIn(self.REVISED, d_second)
         self.assertNotIn(SAFETY_FOOTER, d_second)
         self.assertIn(S.ADULT_WORDING, d_first)
+        self.assertIn("aged 25 or older", d_second)  # the adult line was added again
+
+    def test_rewrite_blocked_by_input_checks_keeps_the_block(self):
+        calls = []
+
+        async def prepare(text, **kw):
+            calls.append(text)
+            if len(calls) > 1:
+                raise ImagineErrorFor("blocked by input checks")
+            return S.PreparedPrompt(user_prompt=text, sent_prompt=S.build_sent_prompt(text)[0],
+                                    footer_hash="h", diffusion_prompt=S.build_diffusion_prompt(text))
+
+        out, exc, notes, records, seq = self._run(["block", "pass"], prepare=prepare)
+        self.assertIsNone(out)
+        self.assertEqual(str(exc), "blocked")  # the original block and its message
+        self.assertEqual(getattr(exc, "status", ""), "safety_block")
+        self.assertEqual(calls, ["a burger", self.REVISED])
+        self.assertEqual(notes, [])
+        self.assertEqual(seq, ["pass"])  # no second generation
+        reasons = [kw.get("reason") for _, kw in records if kw.get("category") == "output-block-retry"]
+        self.assertEqual(reasons, ["rewrite", "rewrite-blocked"])
+
+    def test_rewrite_failure_fails_closed(self):
+        for bad in ("", None):
+            out, exc, notes, records, seq = self._run(["block", "pass"], revised=bad)
+            self.assertIsNone(out)
+            self.assertEqual(getattr(exc, "status", ""), "safety_block")
+            self.assertEqual(notes, [])
+            self.assertEqual(seq, ["pass"])
+            self.assertEqual([t for t, _ in self.prepare_calls], ["a burger"])
+            reasons = [kw.get("reason") for _, kw in records if kw.get("category") == "output-block-retry"]
+            self.assertEqual(reasons, ["rewrite-failed"])
+
+    def test_rewrite_call_exception_fails_closed(self):
+        from core import imagine as I
+        with mock.patch("core.client.call_groq_raw", new=mock.AsyncMock(side_effect=RuntimeError("down"))):
+            self.assertEqual(run(S.rewrite_for_retry("a burger", "output-age-vision-unsure", "uncertain age")), "")
+        _ = I
+
+    def test_only_one_retry(self):
+        out, exc, notes, _, seq = self._run(["block", "block", "pass"])
+        self.assertEqual(getattr(exc, "status", ""), "safety_block")
+        self.assertEqual(seq, ["pass"])
+        self.assertEqual(self.rewrite.await_count, 1)
+        self.assertEqual(len(self.prepare_calls), 2)
+        self.assertEqual(notes, ["retrying"])
 
     def test_second_block_refuses(self):
         out, exc, notes, _, seq = self._run(["block", "block", "pass"])

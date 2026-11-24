@@ -10,8 +10,24 @@ from discord.ext import commands
 from core.asset_review import require_owner_review
 from core.asset_safety import KILL_SWITCH_OFF, confirm_asset_delivery, require_enabled
 from core.debuglog import dprint
-from core.imagine import AssetFile, ImagineError, api_key, plan_asset, refuse_speaker, run_asset
+from core.imagine import AssetFile, ImagineError, api_key, error_status, plan_asset, refuse_speaker, run_asset
 from core.tools_asset import asset_text, audit_request
+
+
+def _mark_outcome(exc) -> None:
+    """The command's completion row says refusal or error, not success, when
+    no asset was delivered (live 2026-11-23 03:00 ET: xAI moderation refused
+    and the ?asset row still said success)."""
+    try:
+        from core.audit import mark_command_error, mark_refusal
+
+        status = error_status(exc) if exc is not None else "error"
+        if status == "error":
+            mark_command_error()
+        else:
+            mark_refusal()
+    except Exception:
+        pass
 
 
 class Asset(commands.Cog):
@@ -72,13 +88,16 @@ class Asset(commands.Cog):
             confirm_asset_delivery(mode, channel, **ids)
             require_enabled(mode, **ids)
         except ImagineError as exc:
+            _mark_outcome(exc)
             await ctx.reply(exc.text, mention_author=False)
             return
         except Exception as exc:
             dprint(f"[asset] command failed: {type(exc).__name__}")
+            _mark_outcome(None)
             await ctx.reply(asset_text("I couldn't make that."), mention_author=False)
             return
         if not isinstance(result, AssetFile):
+            _mark_outcome(None)
             await ctx.reply(asset_text("I couldn't make that."), mention_author=False)
             return
         caption = plan.prompt
@@ -96,10 +115,12 @@ class Asset(commands.Cog):
             from core.asset_review import audit_posted
             audit_posted(**ids)
         except ImagineError as exc:
+            _mark_outcome(exc)
             await ctx.reply(exc.text, mention_author=False)
             return
         except Exception as exc:
             dprint(f"[asset] send failed: {type(exc).__name__}")
+            _mark_outcome(None)
             await ctx.reply("I made it, but Discord would not take the file.", mention_author=False)
             return
 
