@@ -1035,11 +1035,47 @@ async def run_asset(
         raise
 
 
+def _note_retry_skipped(exc, plan, prepared, ids) -> None:
+    """Log why an output block was not retried: cue category names only."""
+    try:
+        from core.asset_filter import school_sexual_cues
+        from core.audit import record
+
+        school: set = set()
+        sexual: set = set()
+        for text in (getattr(plan, "prompt", ""), getattr(plan, "user_text", ""), getattr(plan, "model_prompt", "")):
+            found = school_sexual_cues(text or "")
+            school.update(found[0])
+            sexual.update(found[1])
+        record(
+            "asset",
+            outcome="refusal",
+            category="output-block-retry",
+            reason="retry-not-allowed",
+            school_cues=",".join(sorted(school)),
+            sexual_cues=",".join(sorted(sexual)),
+            block_category=str(getattr(exc, "category", "") or ""),
+            block_label=str(getattr(exc, "label", "") or ""),
+            footer_hash=getattr(prepared, "footer_hash", ""),
+            safety=True,
+            **ids,
+        )
+    except Exception:
+        pass
+
+
 async def _revised_for_retry(exc, plan, prepared, snap, ids, prepare_generation, *, source=None):
-    """The checked PreparedPrompt for the one retry, or raise exc (the block stands)."""
+    """The checked PreparedPrompt for the one retry, or raise exc (the block stands).
+
+    The retry prompt always ends with FORCED_ADULT_AGE (added here, not by
+    the model). First choice: the text model's revision. When the rewrite
+    fails, is junk, or its revision is blocked by the input checks, the
+    original prompt plus FORCED_ADULT_AGE. Each candidate goes through the
+    full input pipeline (prepare_generation); if none passes, no retry.
+    """
     import hashlib
 
-    from core.asset_safety import rewrite_for_retry
+    from core.asset_safety import force_adult_age, rewrite_for_retry
     from core.audit import record
 
     category = str(getattr(exc, "category", "") or "")
@@ -1062,40 +1098,48 @@ async def _revised_for_retry(exc, plan, prepared, snap, ids, prepare_generation,
             **ids,
         )
 
+    def _soft_row(outcome: str, reason: str, **extra) -> None:
+        try:
+            _row(outcome, reason, **extra)
+        except Exception:
+            pass
+
     try:
         revised = await rewrite_for_retry(original, category, label, adult=bool(getattr(snap, "adult", False)))
     except Exception:
         revised = ""
-    if not revised:
+    candidates = []
+    if revised:
+        candidates.append(("rewrite", force_adult_age(revised)))
+    else:
+        _soft_row("refusal", "rewrite-failed")
+    fallback = force_adult_age(original)
+    if fallback and all(text != fallback for _, text in candidates):
+        candidates.append(("fallback", fallback))
+    for kind, text in candidates:
+        if not text:
+            continue
+        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
         try:
-            _row("refusal", "rewrite-failed")
+            _row("retry", kind, rewrite_sha256=digest, forced_adult_age=True)
         except Exception:
-            pass
-        raise exc from None
-    digest = hashlib.sha256(revised.encode("utf-8")).hexdigest()[:16]
-    try:
-        _row("retry", "rewrite", rewrite_sha256=digest)
-    except Exception:
-        raise exc from None
-    try:
-        return await prepare_generation(
-            revised,
-            user_id=ids.get("user_id"),
-            guild_id=ids.get("guild_id"),
-            channel_id=ids.get("channel_id"),
-            mode=snap,
-            user_text=getattr(plan, "user_text", "") or "",
-            model_prompt=getattr(plan, "model_prompt", "") or "",
-            edit=source is not None or getattr(plan, "mode", "") in ("image_edit", "video_edit"),
-        )
-    except Exception:
-        # The revision did not pass the input checks (their refusal rows are
-        # already written). The original block and its message stand.
+            raise exc from None
         try:
-            _row("refusal", "rewrite-blocked", rewrite_sha256=digest)
+            return await prepare_generation(
+                text,
+                user_id=ids.get("user_id"),
+                guild_id=ids.get("guild_id"),
+                channel_id=ids.get("channel_id"),
+                mode=snap,
+                user_text=getattr(plan, "user_text", "") or "",
+                model_prompt=getattr(plan, "model_prompt", "") or "",
+                edit=source is not None or getattr(plan, "mode", "") in ("image_edit", "video_edit"),
+            )
         except Exception:
-            pass
-        raise exc from None
+            # This retry prompt did not pass the input checks (their refusal
+            # rows are already written). It is never generated.
+            _soft_row("refusal", f"{kind}-blocked", rewrite_sha256=digest)
+    raise exc from None
 
 
 async def _run_asset_reserved(plan, key, snap, ids, get_backend, prepare_generation, check_generated_media, *, notify=None):
@@ -1245,14 +1289,19 @@ async def _run_asset_reserved(plan, key, snap, ids, get_backend, prepare_generat
             data, mime, name, job_ids = await _attempt_once()
             break
         except ImagineError as exc:
-            if attempt > 1 or not retry_ok or getattr(exc, "status", "") != "safety_block":
+            if attempt > 1 or getattr(exc, "status", "") != "safety_block":
+                raise
+            if not retry_ok:
+                _note_retry_skipped(exc, plan, prepared, ids)
                 raise
             # The blocked output is never returned or posted; its verdict rows
             # are already logged. One retry (owner 2026-11-23): the text model
             # revises the prompt from the block category and the checker's
-            # label, the revision goes through every input check again
-            # (prepare_generation), and the output checks run again. Any
-            # failure keeps the block. Only ids and hashes are logged.
+            # label, code adds FORCED_ADULT_AGE (the original prompt plus that
+            # line when the rewrite is unusable), the retry prompt goes through
+            # every input check again (prepare_generation), and the output
+            # checks run again. A retry prompt that is blocked is never
+            # generated. Only ids and hashes are logged.
             prepared = await _revised_for_retry(
                 exc, plan, prepared, snap, ids, prepare_generation, source=source,
             )

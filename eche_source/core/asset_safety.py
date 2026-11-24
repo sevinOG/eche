@@ -161,11 +161,11 @@ VISION_UNAVAILABLE = (
     "The safety checker is unavailable right now, so nothing was posted. " + _NOT_COUNTED
 )
 # Output age check said YES or unsure (owner 2026-11-23: say which check and what helps).
+# Owner 2026-11-23 20:26 ET: Eche retries with a forced adult age itself and
+# never tells the user how to reword it.
 AGE_CHECK_REFUSAL = (
     "The finished picture didn't pass the age check: it couldn't confirm that everyone "
-    "in it clearly looks like an adult, so it was not posted. Try describing the people "
-    "explicitly as adults (for example \"a woman in her 30s\") in a realistic or "
-    "semi-realistic style. " + _NOT_COUNTED
+    "in it clearly looks like an adult, so it was not posted. " + _NOT_COUNTED
 )
 SOURCE_REFUSAL = "The picture or video you replied to did not pass the safety check, so it was not edited."
 SOURCE_UNCHECKED = "I could not check the file you replied to, so nothing was edited."
@@ -549,8 +549,27 @@ def require_enabled(mode: AssetMode | None = None, **ids) -> None:
 # block category and the checker's fixed label plus fixed guidance. The
 # revised prompt then goes through prepare_generation again (every input
 # check, adult line, footer) and the output checks run again unchanged. The
-# checkers' own prompts and rules are never sent. Anything unusable fails
-# closed: no retry, the block stands.
+# checkers' own prompts and rules are never sent.
+# Owner 2026-11-23 20:26 ET: the retry prompt always carries FORCED_ADULT_AGE,
+# added by code, whatever the model returns. When the rewrite fails or is
+# junk, the retry uses the original prompt plus that line instead of giving
+# up. A retry prompt the input checks block is not generated (fail closed).
+FORCED_ADULT_AGE = (
+    "Every person or character shown is 30 years old and clearly an adult, "
+    "with adult faces and adult proportions."
+)
+
+
+def force_adult_age(prompt: str) -> str:
+    """The prompt with FORCED_ADULT_AGE added once at the end ('' for an empty prompt)."""
+    text = " ".join((prompt or "").split())
+    if not text:
+        return ""
+    if FORCED_ADULT_AGE in text:
+        return text
+    return f"{text.rstrip(' .,;:')}. {FORCED_ADULT_AGE}"
+
+
 RETRY_ADULT_FEATURES = (
     "Show every person or character clearly as an adult (in their 30s or older) "
     "with clear adult features and adult proportions."

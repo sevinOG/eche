@@ -5,11 +5,11 @@
 # owned by Administrators, the bot running as a standard account,
 # and the updater running elevated. Signing the manifest with a key
 # kept outside eche_source is the planned real anchor.
-# manifest-sha256: acd61ab942d5d46ffa8bf2dd6360be85c4e09d6dd83cca35016dfd451cfa908f
-d7ee7580cc6607eaabd9304a440a7da88f710022dcd34832c5d6397aa53cb1a6  cogs/asset.py
-adb2fc522e061056d9bd72f31fd91ac4ee1be2ed3253bcdb9aedbe243d3164d7  core/imagine.py
+# manifest-sha256: 1d5ef53f63c54054ce73ae5e0a137f27773bc41c315b79ee3f06d4ce5233af6a
+9ab534d3f6a7f453849c20c99d13df0f9e95a6380f2bf153de2471982f49b894  cogs/asset.py
+d557ab32ca55e6d15a187bb3207b2beda02553f864c38048d152a056ea203eaf  core/imagine.py
 2f00b2fdf565fb71ac57b95a4d627c5847c06fe4609072f0c26146632dd8f8ca  core/tools_asset.py
-36e0ff807c738db2d7b5d469fd3ce0f0ca5a6d9470f102ac6628009e1d5baa3d  core/asset_safety.py
+187453f2a457fe2cde064a3cbad0bfd56a60c235b013ca50318082b75ed775f5  core/asset_safety.py
 ba5399d4ddefdb45fa087d8bee21de18ed5d5db79642f7f8053b1f3aa83cba63  core/asset_filter.py
 42fda4092afd8117d9ef21bf060eef771babb4665918b9a3ab554f37e24c078d  core/burn.py
 e2a177e6492c0fdb56fe6213b264b73d12fa41bcbc4d915cfed4c241142db697  core/asset_backend.py

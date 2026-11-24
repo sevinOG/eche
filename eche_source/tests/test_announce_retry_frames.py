@@ -176,13 +176,15 @@ class RetryTests(unittest.TestCase):
         # The text model is told only the category and the checker's label.
         args, kwargs = self.rewrite.await_args
         self.assertEqual(args, ("a burger", "output-age-vision-unsure", "uncertain age"))
-        # The revision went through prepare_generation (every input check).
-        self.assertEqual([t for t, _ in self.prepare_calls], ["a burger", self.REVISED])
+        # The revision plus the code-added adult age went through prepare_generation.
+        forced = self.REVISED + ". " + S.FORCED_ADULT_AGE
+        self.assertEqual([t for t, _ in self.prepare_calls], ["a burger", forced])
         rows = [kw for ev, kw in records if kw.get("outcome") == "retry"]
         self.assertEqual(len(rows), 1)
         self.assertTrue(rows[0]["safety"])
         self.assertEqual(rows[0]["category"], "output-block-retry")
         self.assertEqual(rows[0]["reason"], "rewrite")
+        self.assertTrue(rows[0]["forced_adult_age"])
         self.assertEqual(rows[0]["block_label"], "uncertain age")
         # Ids and hashes only: no prompt text in the row.
         self.assertEqual(len(rows[0]["rewrite_sha256"]), 16)
@@ -190,17 +192,36 @@ class RetryTests(unittest.TestCase):
             self.assertNotIn("burger", str(value))
         from core.safety import SAFETY_FOOTER
         first, second = self.sent_prompts
-        self.assertNotIn("30s", first)
-        self.assertIn(self.REVISED, second)
+        self.assertNotIn("30 years old", first)
+        self.assertIn(forced, second)
         self.assertTrue(second.endswith(SAFETY_FOOTER))
         self.assertEqual(second.count(SAFETY_FOOTER), 1)
         d_first, d_second = self.diffusion_prompts
-        self.assertIn(self.REVISED, d_second)
+        self.assertIn(S.FORCED_ADULT_AGE, d_second)
         self.assertNotIn(SAFETY_FOOTER, d_second)
         self.assertIn(S.ADULT_WORDING, d_first)
         self.assertIn("aged 25 or older", d_second)  # the adult line was added again
 
-    def test_rewrite_blocked_by_input_checks_keeps_the_block(self):
+    def test_rewrite_blocked_by_input_checks_falls_back_then_retries(self):
+        calls = []
+
+        async def prepare(text, **kw):
+            calls.append(text)
+            if len(calls) == 2:
+                raise ImagineErrorFor("blocked by input checks")
+            return S.PreparedPrompt(user_prompt=text, sent_prompt=S.build_sent_prompt(text)[0],
+                                    footer_hash="h", diffusion_prompt=S.build_diffusion_prompt(text))
+
+        out, exc, notes, records, seq = self._run(["block", "pass"], prepare=prepare)
+        self.assertIsNone(exc)
+        self.assertIsNotNone(out)
+        self.assertEqual(calls, ["a burger", self.REVISED + ". " + S.FORCED_ADULT_AGE,
+                                 "a burger. " + S.FORCED_ADULT_AGE])
+        self.assertEqual(notes, ["retrying"])
+        reasons = [kw.get("reason") for _, kw in records if kw.get("category") == "output-block-retry"]
+        self.assertEqual(reasons, ["rewrite", "rewrite-blocked", "fallback"])
+
+    def test_every_retry_prompt_blocked_fails_closed(self):
         calls = []
 
         async def prepare(text, **kw):
@@ -214,22 +235,28 @@ class RetryTests(unittest.TestCase):
         self.assertIsNone(out)
         self.assertEqual(str(exc), "blocked")  # the original block and its message
         self.assertEqual(getattr(exc, "status", ""), "safety_block")
-        self.assertEqual(calls, ["a burger", self.REVISED])
+        self.assertEqual(len(calls), 3)
         self.assertEqual(notes, [])
-        self.assertEqual(seq, ["pass"])  # no second generation
+        self.assertEqual(seq, ["pass"])  # nothing blocked was generated
         reasons = [kw.get("reason") for _, kw in records if kw.get("category") == "output-block-retry"]
-        self.assertEqual(reasons, ["rewrite", "rewrite-blocked"])
+        self.assertEqual(reasons, ["rewrite", "rewrite-blocked", "fallback", "fallback-blocked"])
 
-    def test_rewrite_failure_fails_closed(self):
+    def test_rewrite_failure_falls_back_to_original_plus_forced_age(self):
         for bad in ("", None):
             out, exc, notes, records, seq = self._run(["block", "pass"], revised=bad)
-            self.assertIsNone(out)
-            self.assertEqual(getattr(exc, "status", ""), "safety_block")
-            self.assertEqual(notes, [])
-            self.assertEqual(seq, ["pass"])
-            self.assertEqual([t for t, _ in self.prepare_calls], ["a burger"])
+            self.assertIsNone(exc)
+            self.assertIsNotNone(out)
+            self.assertEqual(notes, ["retrying"])
+            self.assertEqual([t for t, _ in self.prepare_calls], ["a burger", "a burger. " + S.FORCED_ADULT_AGE])
             reasons = [kw.get("reason") for _, kw in records if kw.get("category") == "output-block-retry"]
-            self.assertEqual(reasons, ["rewrite-failed"])
+            self.assertEqual(reasons, ["rewrite-failed", "fallback"])
+            self.assertIn(S.FORCED_ADULT_AGE, self.diffusion_prompts[1])
+
+    def test_rewrite_failure_then_second_block_refuses(self):
+        out, exc, notes, _, seq = self._run(["block", "block", "pass"], revised="")
+        self.assertEqual(getattr(exc, "status", ""), "safety_block")
+        self.assertEqual(seq, ["pass"])
+        self.assertEqual(notes, ["retrying"])
 
     def test_rewrite_call_exception_fails_closed(self):
         from core import imagine as I
@@ -254,9 +281,16 @@ class RetryTests(unittest.TestCase):
         from core.asset_filter import school_sexual_cues
         for word in ("nude", "school"):
             if any(school_sexual_cues(f"a {word} scene")):
-                _, exc, notes, _, _ = self._run(["block", "pass"], prompt=f"a {word} scene")
+                _, exc, notes, records, _ = self._run(["block", "pass"], prompt=f"a {word} scene")
                 self.assertIsNotNone(exc)
                 self.assertEqual(notes, [])
+                self.assertEqual(self.rewrite.await_count, 0)
+                skipped = [kw for _, kw in records if kw.get("reason") == "retry-not-allowed"]
+                self.assertEqual(len(skipped), 1)
+                self.assertNotIn(word, str(skipped[0].get("block_label")))
+                self.assertTrue(skipped[0]["school_cues"] or skipped[0]["sexual_cues"])
+                for key in ("prompt", "user_text"):
+                    self.assertNotIn(key, skipped[0])
 
     def test_failed_retry_log_keeps_block(self):
         _, exc, notes, _, seq = self._run(["block", "pass"], record_fails=True)
