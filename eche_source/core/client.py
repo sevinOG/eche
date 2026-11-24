@@ -291,6 +291,15 @@ LOOKUP_NO_GROUNDING = (
     "project, or pick a supported model in Settings → Web search."
 )
 LOOKUP_QUOTA = "Web search is out of quota for today."
+LOOKUP_QUOTA_FREE_ZERO = (
+    "Web search isn't available on this Gemini key's free tier (limit 0). Turn on "
+    "billing for the key's Google Cloud project."
+)
+LOOKUP_QUOTA_FREE = (
+    "Web search hit the Gemini free-tier limit for today. Turn on billing for the "
+    "key's project to raise it."
+)
+LOOKUP_QUOTA_RATE = "Web search is busy (Gemini rate limit). Try again in a minute."
 LOOKUP_MODEL = "The web search model isn't available. Check the model in Settings → Web search."
 LOOKUP_UNREACHABLE = "I couldn't reach Google search."
 LOOKUP_REFUSED = "Google search didn't answer that one."
@@ -299,6 +308,9 @@ _LOOKUP_FAILED = (
     LOOKUP_BAD_KEY,
     LOOKUP_NO_GROUNDING,
     LOOKUP_QUOTA,
+    LOOKUP_QUOTA_FREE_ZERO,
+    LOOKUP_QUOTA_FREE,
+    LOOKUP_QUOTA_RATE,
     LOOKUP_MODEL,
     LOOKUP_UNREACHABLE,
     LOOKUP_REFUSED,

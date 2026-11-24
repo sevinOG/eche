@@ -164,6 +164,7 @@ _STATUS_LINE = re.compile(
     r"|the gemini key was rejected\b.*"
     r"|this gemini key can't use\b.*"
     r"|web search is out of quota\b.*"
+    r"|web search (?:isn't available on|hit the gemini|is busy)\b.*"
     r"|the web search model isn't available\b.*"
     r"|i couldn't reach google search\.?"
     r"|google search didn't answer that one\.?"
