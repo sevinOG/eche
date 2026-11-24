@@ -30,6 +30,10 @@ from core.tools import ACCESS_ANYONE, Tool, ToolContext, ToolResult, register
 TOOL_NAME = "web_search"
 LEGACY_NAME = "duckduckgo"  # hidden alias for one release (core/tools._ALIASES)
 DEFAULT_MODEL = "gemini-3.5-flash-lite"
+# Tried once when the configured model answers HTTP 429, or 403/400 saying
+# grounding or billing is unavailable: the model with free-tier grounding.
+FALLBACK_MODEL = "gemini-2.5-flash-lite"
+_ERROR_MESSAGE_LIMIT = 300
 _ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 _TIMEOUT = 15
 _QUERY_LIMIT = 300
@@ -157,6 +161,9 @@ class SearchFailure(Exception):
         self.status = status
         self.outcome = outcome
         self.text = text
+        self.http = 0
+        self.reason = ""
+        self.lines: list[str] = []
 
 
 def parse_response(data) -> dict:
@@ -256,47 +263,148 @@ def _detail(query: str, model: str, parsed: dict | None = None, status: str = ""
     return "\n".join(lines)
 
 
-def _error_reason(payload) -> str:
-    """Google's machine reason (API_KEY_INVALID, ...) or status word. Never the message text."""
+_KEY_TOKEN = re.compile(r"AIza[0-9A-Za-z\-_]{20,}")
+_KEY_URL = re.compile(r"\S*[?&]key=\S*", re.IGNORECASE)
+_KEY_PARAM = re.compile(r"(?i)\bkey=\S+")
+_REASON_CODE = re.compile(r"[^A-Za-z0-9_\-.]")
+
+
+def scrub(text, key: str = "") -> str:
+    """Error text safe for the log: no key, no URL carrying key=, one line, ~300 chars."""
+    out = " ".join(str(text or "").split())
+    if key:
+        out = out.replace(key, "[key]")
+    out = _KEY_URL.sub("[url removed]", out)
+    out = _KEY_PARAM.sub("key=[redacted]", out)
+    out = _KEY_TOKEN.sub("[key]", out)
+    if len(out) > _ERROR_MESSAGE_LIMIT:
+        out = out[: _ERROR_MESSAGE_LIMIT - 1].rstrip() + "…"
+    return out
+
+
+def _code(value, limit: int = 80) -> str:
+    return _REASON_CODE.sub("", str(value or ""))[:limit]
+
+
+def error_info(payload, key: str = "") -> dict:
+    """Google's error body: status, message (scrubbed), ErrorInfo reason,
+    QuotaFailure violations, RetryInfo delay. Empty fields when absent."""
+    info = {"status": "", "message": "", "reason": "", "violations": [], "retry": ""}
     if not isinstance(payload, dict):
-        return ""
+        return info
     err = payload.get("error") if isinstance(payload.get("error"), dict) else {}
+    info["status"] = _code(err.get("status"), 40)
+    info["message"] = scrub(err.get("message"), key)
     for item in err.get("details") or []:
-        if isinstance(item, dict) and item.get("reason"):
-            return str(item["reason"])[:60]
-    return str(err.get("status") or "")[:60]
+        if not isinstance(item, dict):
+            continue
+        kind = str(item.get("@type") or "")
+        if item.get("reason") and not info["reason"]:
+            info["reason"] = _code(item.get("reason"), 60)
+        if kind.endswith("QuotaFailure") or "violations" in item:
+            for v in item.get("violations") or []:
+                if not isinstance(v, dict):
+                    continue
+                info["violations"].append({
+                    "quotaMetric": scrub(v.get("quotaMetric"), key)[:120],
+                    "quotaId": _code(v.get("quotaId"), 120),
+                    "limit": _code(v.get("quotaValue", v.get("limit", "")), 20),
+                })
+        if kind.endswith("RetryInfo") and item.get("retryDelay"):
+            info["retry"] = _code(item.get("retryDelay"), 20)
+    return info
 
 
-def _error_message(payload) -> str:
-    if not isinstance(payload, dict):
-        return ""
-    err = payload.get("error") if isinstance(payload.get("error"), dict) else {}
-    return str(err.get("message") or "").lower()
+def quota_kind(info: dict) -> str:
+    """free_zero (no free-tier access: billing), rate, free (free-tier daily
+    limit used up), daily (a real daily quota), or '' when unknown."""
+    violations = info.get("violations") or []
+    message = (info.get("message") or "").lower()
+    if any(v.get("limit") == "0" for v in violations) or re.search(r"\blimit:\s*0\b", message):
+        return "free_zero"
+    # quotaId names the limit (…PerDay…-FreeTier); the metric only when it is missing.
+    ids = " ".join((v.get("quotaId") or v.get("quotaMetric") or "") for v in violations).lower()
+    if "perminute" in ids or "per_minute" in ids:
+        return "rate"
+    if "freetier" in ids or "free_tier" in ids:
+        return "free"
+    if "perday" in ids or "per_day" in ids:
+        return "daily"
+    return ""
 
 
-def classify_http(status: int, payload) -> SearchFailure:
+def _quota_failure(kind: str) -> "SearchFailure":
     msgs = _messages()
-    reason = _error_reason(payload)
-    message = _error_message(payload)
+    text = {
+        "free_zero": msgs.LOOKUP_QUOTA_FREE_ZERO,
+        "free": msgs.LOOKUP_QUOTA_FREE,
+        "rate": msgs.LOOKUP_QUOTA_RATE,
+    }.get(kind, msgs.LOOKUP_QUOTA)
+    fail = SearchFailure("quota", "refusal", text)
+    fail.reason = kind or "quota"
+    return fail
+
+
+def error_lines(model: str, http: int, info: dict) -> list[str]:
+    """What the log shows for a failed call. Never the key or headers."""
+    head = f"[web_search] {model} HTTP {http}"
+    bits = [b for b in (info.get("status"), info.get("reason")) if b]
+    if bits:
+        head += " " + " ".join(bits)
+    if info.get("message"):
+        head += f": {info['message']}"
+    lines = [head]
+    for v in info.get("violations") or []:
+        lines.append(
+            f"[web_search]   quota: metric={v.get('quotaMetric') or '-'} id={v.get('quotaId') or '-'} "
+            f"limit={v.get('limit') or '-'}"
+        )
+    if info.get("retry"):
+        lines.append(f"[web_search]   retry after {info['retry']}")
+    return lines
+
+
+def _log_lines(lines: list[str]) -> None:
+    for line in lines:
+        try:
+            print(line, flush=True)
+        except Exception:
+            pass
+
+
+def classify_http(status: int, payload, info: dict | None = None) -> SearchFailure:
+    msgs = _messages()
+    info = info if info is not None else error_info(payload)
+    reason = info.get("reason") or info.get("status") or ""
+    message = (info.get("message") or "").lower()
     key_problem = "API_KEY" in reason or "api key" in message
     if status in (400, 401, 403) and key_problem:
-        return SearchFailure("bad_key", "refusal", msgs.LOOKUP_BAD_KEY)
-    if status == 429:
-        return SearchFailure("quota", "refusal", msgs.LOOKUP_QUOTA)
-    if status == 404:
-        return SearchFailure("model_missing", "error", msgs.LOOKUP_MODEL)
-    if status in (400, 403):
-        if status == 403 or any(w in message for w in ("google_search", "grounding", "billing", "free tier", "search tool")):
-            return SearchFailure("no_grounding", "refusal", msgs.LOOKUP_NO_GROUNDING)
-        return SearchFailure("bad_request", "error", msgs.LOOKUP_UNREACHABLE)
-    return SearchFailure("unreachable", "error", msgs.LOOKUP_UNREACHABLE)
+        fail = SearchFailure("bad_key", "refusal", msgs.LOOKUP_BAD_KEY)
+    elif status == 429:
+        fail = _quota_failure(quota_kind(info))
+    elif status == 404:
+        fail = SearchFailure("model_missing", "error", msgs.LOOKUP_MODEL)
+    elif status in (400, 403) and (
+        status == 403 or any(w in message for w in ("google_search", "grounding", "billing", "free tier", "search tool"))
+    ):
+        fail = SearchFailure("no_grounding", "refusal", msgs.LOOKUP_NO_GROUNDING)
+    elif status in (400, 403):
+        fail = SearchFailure("bad_request", "error", msgs.LOOKUP_UNREACHABLE)
+    else:
+        fail = SearchFailure("unreachable", "error", msgs.LOOKUP_UNREACHABLE)
+    if not fail.reason:
+        fail.reason = _code(reason, 40)
+    fail.http = status
+    fail.lines = error_lines("", status, info)
+    return fail
 
 
-def _audit_api(outcome: str, model: str, status: str, http: int = 0) -> None:
+def _audit_api(outcome: str, model: str, status: str, http: int = 0, reason: str = "") -> None:
     try:
         from core.audit import api as audit_api
 
-        audit_api("gemini-search", outcome=outcome, model=model, status=status, http_status=str(http or ""))
+        extra = {"reason": _code(reason, 40)} if reason else {}
+        audit_api("gemini-search", outcome=outcome, model=model, status=status, http_status=str(http or ""), **extra)
     except Exception:
         pass
 
@@ -329,6 +437,72 @@ async def web_search(ctx: ToolContext, arguments: dict) -> ToolResult:
             text=msgs.LOOKUP_NO_KEY, fence=False, for_model=True, outcome="refusal",
             status="no_key", detail=_detail(query, model, status="no_key"),
         )
+    first = await _search_once(query, model, key)
+    result = first
+    note = ""
+    if isinstance(first, SearchFailure) and _wants_fallback(first) and model != FALLBACK_MODEL:
+        second = await _search_once(query, FALLBACK_MODEL, key)
+        note = f"fallback after HTTP {first.http} on {model}"
+        if not isinstance(second, SearchFailure):
+            _log_lines([f"[web_search] answered by {FALLBACK_MODEL} ({note})"])
+            model, result = FALLBACK_MODEL, second
+        else:
+            result = _final_failure(first, second)
+            _log_lines([f"[web_search] {FALLBACK_MODEL} also failed (HTTP {second.http or '-'}); no answer"])
+    if isinstance(result, SearchFailure):
+        return ToolResult(
+            text=result.text, fence=False, for_model=True, outcome=result.outcome,
+            status=result.status,
+            detail=_detail(query, model, status=result.status, http=result.http) + _failure_detail(first, result, note),
+        )
+    parsed = result
+    detail = _detail(query, model, parsed)
+    if note:
+        detail = detail.replace(f"model: {model}", f"model: {model} ({note})", 1)
+    return ToolResult(
+        text=notes_text(parsed),
+        fence=False,
+        for_model=True,
+        footer=links_footer(parsed),
+        detail=detail,
+    )
+
+
+def _wants_fallback(fail: SearchFailure) -> bool:
+    return fail.http == 429 or fail.status == "no_grounding"
+
+
+_PRIORITY = ("free_zero", "free", "daily", "rate")
+
+
+def _final_failure(first: SearchFailure, second: SearchFailure) -> SearchFailure:
+    """The more useful of the two failures: billing/free-tier limit 0 first,
+    then a used-up free tier, a daily quota, a rate limit; else the first."""
+    best = None
+    for kind in _PRIORITY:
+        for fail in (first, second):
+            if fail.status == "quota" and getattr(fail, "reason", "") == kind:
+                best = fail
+                break
+        if best is not None:
+            break
+    if best is None and first.status == "no_grounding" and second.status == "quota":
+        best = second
+    return best or first
+
+
+def _failure_detail(first: SearchFailure, result: SearchFailure, note: str) -> str:
+    lines = list(getattr(first, "lines", []) or [])
+    if note and result is not first:
+        lines += list(getattr(result, "lines", []) or [])
+    if note:
+        lines.append(f"tried: {note}")
+    return ("\n" + "\n".join(lines)) if lines else ""
+
+
+async def _search_once(query: str, model: str, key: str):
+    """One call: parsed result dict, or a SearchFailure (logged and audited)."""
+    msgs = _messages()
     url, headers, body = build_request(query, model)
     http = 0
     try:
@@ -337,23 +511,19 @@ async def web_search(ctx: ToolContext, arguments: dict) -> ToolResult:
         except Exception as exc:
             dprint(f"[web_search] request failed: {type(exc).__name__}")
             raise SearchFailure("unreachable", "error", msgs.LOOKUP_UNREACHABLE) from None
-        if http != 200:
-            raise classify_http(http, data)
+        if not 200 <= http < 300:
+            info = error_info(data, key)
+            fail = classify_http(http, data, info)
+            fail.lines = error_lines(model, http, info)
+            _log_lines(fail.lines)
+            raise fail
         parsed = parse_response(data)
     except SearchFailure as fail:
-        _audit_api(fail.outcome, model, fail.status, http)
-        return ToolResult(
-            text=fail.text, fence=False, for_model=True, outcome=fail.outcome,
-            status=fail.status, detail=_detail(query, model, status=fail.status, http=http),
-        )
+        fail.http = fail.http or http
+        _audit_api(fail.outcome, model, fail.status, http, getattr(fail, "reason", ""))
+        return fail
     _audit_api("success", model, "grounded" if parsed["grounded"] else "ungrounded", http)
-    return ToolResult(
-        text=notes_text(parsed),
-        fence=False,
-        for_model=True,
-        footer=links_footer(parsed),
-        detail=_detail(query, model, parsed),
-    )
+    return parsed
 
 
 def register_web_search_tool() -> None:
