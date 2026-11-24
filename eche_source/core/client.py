@@ -287,8 +287,8 @@ def tool_use_note(tools: list | None = None) -> str:
 LOOKUP_NO_KEY = "Web search is off — add a Gemini API key in Settings → Web search."
 LOOKUP_BAD_KEY = "The Gemini key was rejected. Check it in Settings → Web search."
 LOOKUP_NO_GROUNDING = (
-    "This Gemini key can't use Google Search grounding. Turn on billing for the key's "
-    "project, or pick a supported model in Settings → Web search."
+    "This Gemini key can't use Google Search grounding. Switch the search provider to "
+    "Grok in Settings → Web search."
 )
 LOOKUP_QUOTA = "Web search is out of quota for today."
 LOOKUP_QUOTA_FREE_ZERO = (
@@ -300,9 +300,16 @@ LOOKUP_QUOTA_FREE = (
     "key's project to raise it."
 )
 LOOKUP_QUOTA_RATE = "Web search is busy (Gemini rate limit). Try again in a minute."
-LOOKUP_MODEL = "The web search model isn't available. Check the model in Settings → Web search."
+LOOKUP_MODEL = "The web search model isn't available right now."
 LOOKUP_UNREACHABLE = "I couldn't reach Google search."
 LOOKUP_REFUSED = "Google search didn't answer that one."
+# Grok provider (core/search_grok): the xAI key is the picture-command key.
+LOOKUP_NO_XAI_KEY = "Web search is off — add the xAI API key in Settings."
+LOOKUP_XAI_BAD_KEY = "The xAI key was rejected. Check it in Settings."
+LOOKUP_XAI_CREDITS = "Web search is off until the xAI account has credits."
+LOOKUP_XAI_RATE = "Web search is busy (xAI rate limit). Try again in a minute."
+LOOKUP_XAI_UNREACHABLE = "I couldn't reach Grok search."
+LOOKUP_XAI_REFUSED = "Grok search didn't answer that one."
 _LOOKUP_FAILED = (
     LOOKUP_NO_KEY,
     LOOKUP_BAD_KEY,
@@ -314,7 +321,16 @@ _LOOKUP_FAILED = (
     LOOKUP_MODEL,
     LOOKUP_UNREACHABLE,
     LOOKUP_REFUSED,
+    LOOKUP_NO_XAI_KEY,
+    LOOKUP_XAI_BAD_KEY,
+    LOOKUP_XAI_CREDITS,
+    LOOKUP_XAI_RATE,
+    LOOKUP_XAI_UNREACHABLE,
+    LOOKUP_XAI_REFUSED,
     # Older lines that may still sit in memory.
+    "This Gemini key can't use Google Search grounding. Turn on billing for the key's "
+    "project, or pick a supported model in Settings → Web search.",
+    "The web search model isn't available. Check the model in Settings → Web search.",
     "DuckDuckGo blocked that lookup.",
     "I couldn't reach DuckDuckGo.",
 )

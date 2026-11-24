@@ -56,33 +56,34 @@ FIELD_HELP: dict[str, tuple[str, str]] = {
         "A second secret Unsplash sometimes uses. Treat it like a password. "
         "Most simple searches only need the Access Token.",
     ),
+    "search_provider": (
+        "Search provider",
+        "### What is this?\n"
+        "Which service runs Eche's **web search** tool. There is no model setting.\n\n"
+        "### Grok (xAI) — default\n"
+        "Grok on the xAI API with its web and X search tools. Uses the **xAI API key** "
+        "(the same key as ?asset). xAI bills about $5 per 1,000 web searches and $5 per "
+        "1,000 X posts read, plus a small token cost.\n\n"
+        "### Gemini — Google Search (free tier)\n"
+        "Gemini 2.5 Flash-Lite with Grounding with Google Search, free up to 500 searches "
+        "a day. Needs the **Gemini API key**; no billing.\n\n"
+        "With no key for the chosen provider, the search tool is left out of chat.",
+    ),
     "gemini_api_key": (
         "Gemini API key (web search)",
         "### What is this?\n"
-        "The key Eche uses for **web search**: one Gemini call with Grounding with Google "
-        "Search per lookup. Get one at aistudio.google.com/apikey. It is stored encrypted "
-        "with your other secrets and is never written to the log.\n\n"
+        "The key for the **Gemini** search provider: one Gemini 2.5 Flash-Lite call with "
+        "Grounding with Google Search per lookup. Get one at aistudio.google.com/apikey. "
+        "It is stored encrypted with your other secrets and is never written to the log.\n\n"
         "### Do I need it?\n"
-        "Only for web search. With no key the search tool is left out of chat, and a "
-        "lookup says web search is off.\n\n"
-        "### Billing\n"
-        "Google Search grounding is not in the Gemini free tier for current models. Turn on "
-        "billing for the key's project: the first 5,000 searches a month are free, then "
-        "$14 per 1,000 (at most 1,500 a day), plus a small token cost.",
-    ),
-    "gemini_search_model": (
-        "Web search model",
-        "### What is this?\n"
-        "The Gemini text model that runs the search. Blank uses **gemini-3.5-flash-lite**.\n\n"
-        "### Allowed\n"
-        "Text Gemini models with Google Search grounding (for example gemini-3.8-flash or "
-        "gemini-4-hydrogen). Image, video, audio, and live models are refused and the default is used.",
+        "Only when Search provider is Gemini. The free tier covers up to 500 searches a day.",
     ),
     "xai_api_key": (
         "xAI API key",
         "### What is this?\n"
         "The key for Grok Imagine, the only backend ?asset uses. "
         "It is stored encrypted with your other secrets.\n\n"
+        "Web search also uses it when Search provider is Grok (the default).\n\n"
         "### Do I need it?\n"
         "Yes, if you turn ?asset on. There is no fallback generator. "
         "A missing key fails closed with an owner-facing message.\n\n"

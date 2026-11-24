@@ -47,7 +47,7 @@ class Base(unittest.TestCase):
         self.audits = []
         patches = [
             mock.patch.object(W, "gemini_key", return_value=KEY),
-            mock.patch.object(W, "search_model", return_value=W.DEFAULT_MODEL),
+            mock.patch.object(W, "search_provider", return_value="gemini"),
             mock.patch("core.audit.api", side_effect=lambda *a, **k: self.audits.append((a, k))),
         ]
         for p in patches:
@@ -73,7 +73,7 @@ class RequestShape(unittest.TestCase):
     def test_grounded_text_request_key_not_in_url_or_body(self):
         url, headers, body = W.build_request("capital of france", W.DEFAULT_MODEL)
         self.assertEqual(
-            url, "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent")
+            url, "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent")
         self.assertEqual(body["tools"], [{"google_search": {}}])
         self.assertNotIn("key=", url)
         self.assertNotIn("x-goog-api-key", headers)
@@ -217,21 +217,12 @@ class Registry(unittest.TestCase):
     def setUp(self):
         W.register_web_search_tool()
 
-    def test_model_allowlist(self):
-        for ok in ("gemini-3.5-flash-lite", "gemini-2.5-flash", "gemini-3-pro-preview"):
-            self.assertTrue(W.text_model_ok(ok), ok)
-        for bad in ("gemini-2.5-flash-image", "gemini-3-pro-image-preview", "imagen-4", "veo-3",
-                    "gemini-2.5-flash-preview-tts", "gemini-live-2.5", "gemini-embedding-001",
-                    "gpt-4o", "", "gemini-x/../y", "nano-banana"):
-            self.assertFalse(W.text_model_ok(bad), bad)
-
-    def test_bad_saved_model_falls_back(self):
-        with mock.patch("core.secrets.public_value", return_value="gemini-2.5-flash-image"):
-            self.assertEqual(W.search_model(), W.DEFAULT_MODEL)
-        with mock.patch("core.secrets.public_value", return_value=""):
-            self.assertEqual(W.search_model(), W.DEFAULT_MODEL)
-        with mock.patch("core.secrets.public_value", return_value="Gemini-2.5-Flash"):
-            self.assertEqual(W.search_model(), "gemini-2.5-flash")
+    def test_gemini_model_is_locked_to_the_free_tier(self):
+        self.assertEqual(W.GEMINI_MODEL, "gemini-2.5-flash-lite")
+        with mock.patch("core.secrets.public_value", return_value="gemini-3.5-flash-lite"):
+            self.assertEqual(W.search_model(), "gemini-2.5-flash-lite")
+        self.assertFalse(hasattr(W, "FALLBACK_MODEL"))
+        self.assertFalse(hasattr(W, "text_model_ok"))
 
     def test_duckduckgo_alias_resolves(self):
         self.assertIs(T._resolve("duckduckgo"), T._resolve("web_search"))
@@ -247,7 +238,8 @@ class Registry(unittest.TestCase):
 
     def test_not_offered_without_a_key(self):
         tool = T._resolve("web_search")
-        with mock.patch.object(T, "tool_prompt_enabled", return_value=True):
+        with mock.patch.object(T, "tool_prompt_enabled", return_value=True), \
+                mock.patch.object(W, "search_provider", return_value="gemini"):
             with mock.patch.object(W, "gemini_key", return_value=""):
                 self.assertFalse(T._offered(tool, public_on=True, speaker_is_owner=False, admin_enabled=False))
             with mock.patch.object(W, "gemini_key", return_value=KEY):
@@ -258,6 +250,7 @@ class Registry(unittest.TestCase):
         with mock.patch.object(T, "default_tools_enabled", return_value=True), \
                 mock.patch.object(T, "tool_prompt_enabled", return_value=True), \
                 mock.patch.object(T, "_audit_tool", side_effect=lambda name, outcome, ctx, **kw: rows.append(outcome)), \
+                mock.patch.object(W, "search_provider", return_value="gemini"), \
                 mock.patch.object(W, "gemini_key", return_value=""):
             run(T.execute("duckduckgo", {"query": "q"}, CTX))
         self.assertEqual(rows, ["refusal"])
@@ -266,7 +259,7 @@ class Registry(unittest.TestCase):
         from core import secrets as S
         self.assertIn("gemini_api_key", S.SECRET_KEYS)
         self.assertNotIn("gemini_api_key", S.PUBLIC_KEYS)
-        self.assertIn("gemini_search_model", S.PUBLIC_KEYS)
+        self.assertIn("search_provider", S.PUBLIC_KEYS)
         self.assertIn("tool_web_search", S.PUBLIC_KEYS)
         self.assertNotIn("gemini_api_key", repr(getattr(S, "ENV_MAP", {})))
 
