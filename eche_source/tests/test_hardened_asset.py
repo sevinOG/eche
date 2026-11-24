@@ -370,7 +370,10 @@ class HardenedAssetTests(unittest.TestCase):
              mock.patch("core.classifier.age_vision_async", new=mock.AsyncMock(return_value="age-vision-unsure")):
             with self.assertRaises(ImagineError) as raised:
                 asyncio.run(check_generated_media(frame, "image/jpeg", footer_hash=FOOTER_HASH))
-            self.assertEqual(raised.exception.text, OUTPUT_REFUSAL)
+            # Unsure still blocks; the age block says which check and what helps.
+            from core.asset_safety import AGE_CHECK_REFUSAL
+            self.assertEqual(raised.exception.text, AGE_CHECK_REFUSAL)
+            self.assertEqual(raised.exception.status, "safety_block")
 
     @unittest.skipUnless(HAS_FFMPEG, "real ffmpeg is required")
     def test_extract_video_frames_uses_real_ffmpeg_review_frames(self):

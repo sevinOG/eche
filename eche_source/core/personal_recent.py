@@ -172,11 +172,11 @@ def push(user_id: int, side: str, text: str) -> tuple[list[str], int]:
     state["messages"] = state["messages"][-held:]
     state["times"] = state["times"][-held:]
     _save(int(user_id), side, state)
-    path = _path(int(user_id), side)
-    print(
-        f"[memory] {path} has {len(state['messages'])} message(s), "
-        f"{state['pending']} since the last summary",
-        flush=True,
+    from core.debuglog import dprint
+
+    dprint(
+        f"[memory] user-{int(user_id)} {side}: {len(state['messages'])} message(s), "
+        f"{state['pending']} since the last summary"
     )
     return list(state["messages"]), int(state["pending"])
 
@@ -317,3 +317,79 @@ def clear_folded(user_id: int, side: str, count: int | None = None) -> None:
     state["messages"] = state["messages"][-held:]
     state["times"] = state["times"][-held:]
     _save(int(user_id), side, state)
+
+
+# ---------------------------------------------------------------------------
+# Fold progress: which memory side already took the waiting batch, and how
+# many updates in a row have failed. memories/user-{id}/fold_state.json.
+# A side that already saved this batch is not asked again on a retry (its
+# edits would be applied twice). After BACKOFF_AFTER failures in a row the
+# next try waits BACKOFF_SECONDS; after DROP_AFTER the waiting batch is
+# dropped (memory stays as it was).
+BACKOFF_AFTER = 3
+BACKOFF_SECONDS = 3600
+DROP_AFTER = 6
+FOLD_STATE = "fold_state.json"
+
+
+def _fold_state_path(user_id: int) -> str:
+    return os.path.join(_directory(user_id), FOLD_STATE)
+
+
+def load_fold_state(user_id: int) -> dict:
+    """{"done": {side: [user_pending, bot_pending]}, "fails": n, "retry_at": t}."""
+    empty = {"done": {}, "fails": 0, "retry_at": 0.0}
+    path = _fold_state_path(int(user_id))
+    if not os.path.isfile(path):
+        return empty
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return empty
+    if not isinstance(data, dict):
+        return empty
+    done: dict[str, list[int]] = {}
+    raw = data.get("done") if isinstance(data.get("done"), dict) else {}
+    for side in ("user", "bot"):
+        pair = raw.get(side)
+        if isinstance(pair, list) and len(pair) == 2:
+            try:
+                done[side] = [int(pair[0]), int(pair[1])]
+            except (TypeError, ValueError):
+                pass
+    try:
+        fails = max(0, int(data.get("fails") or 0))
+    except (TypeError, ValueError):
+        fails = 0
+    try:
+        retry_at = float(data.get("retry_at") or 0.0)
+    except (TypeError, ValueError):
+        retry_at = 0.0
+    return {"done": done, "fails": fails, "retry_at": retry_at}
+
+
+def save_fold_state(user_id: int, state: dict) -> None:
+    path = _fold_state_path(int(user_id))
+    temporary = path + ".tmp"
+    with open(temporary, "w", encoding="utf-8") as handle:
+        json.dump(state, handle, ensure_ascii=False, indent=2)
+        handle.write("\n")
+    os.replace(temporary, path)
+
+
+def reset_fold_state(user_id: int) -> None:
+    path = _fold_state_path(int(user_id))
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        pass
+
+
+def backing_off(user_id: int, now: float | None = None) -> bool:
+    """True while a failing person's memory update is waiting out its backoff."""
+    now = _now() if now is None else float(now)
+    try:
+        return load_fold_state(int(user_id))["retry_at"] > now
+    except (TypeError, ValueError):
+        return False

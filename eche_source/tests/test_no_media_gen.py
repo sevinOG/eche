@@ -101,6 +101,13 @@ _ENDPOINT_OK = {
     ROOT / "gui" / "widgets" / "settings_help.py",
     *_OFFICIAL_IMAGINE,
 }
+# Web search (Gemini + Google Search grounding) is a TEXT call to the Gemini
+# API host. Only that one needle, only in that one module; the module is
+# checked below to never ask for or accept images.
+_WEB_SEARCH = ROOT / "core" / "tools_web_search.py"
+_ENDPOINT_NEEDLE_OK = {
+    _WEB_SEARCH: {"generativelanguage.googleapis.com"},
+}
 # The minors matcher still recognizes a leftover "?asset …" prompt. That is
 # not a generation client.
 _MODULE_NEEDLE_OK = {
@@ -151,7 +158,7 @@ class NoMediaGenerationTests(unittest.TestCase):
 
     def test_tool_registry_has_only_official_asset(self):
         from core import tools  # noqa: F401
-        from core import tools_admin, tools_context, tools_duckduckgo, tools_thread  # noqa: F401
+        from core import tools_admin, tools_context, tools_thread, tools_web_search  # noqa: F401
         import core.tools_asset  # noqa: F401
 
         self.assertIn("asset", tools.registered_names())
@@ -187,8 +194,9 @@ class NoMediaGenerationTests(unittest.TestCase):
         for path in _iter_source_files():
             text = path.read_text(encoding="utf-8", errors="replace")
             if path not in _ENDPOINT_OK:
+                ok = _ENDPOINT_NEEDLE_OK.get(path, set())
                 for needle in _ENDPOINT_NEEDLES:
-                    if needle in text:
+                    if needle in text and needle not in ok:
                         hits.append(f"{path.relative_to(ROOT)}: {needle}")
             if path in _MODULE_NAME_OK:
                 continue

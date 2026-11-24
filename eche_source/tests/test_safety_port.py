@@ -50,13 +50,9 @@ class DiffusionPromptTests(unittest.TestCase):
         self.assertNotIn(SAFETY_FOOTER, body["prompt"])
         self.assertTrue(S.footer_is_last(prepared.sent_prompt))
 
-    def test_retry_cues_apply_to_diffusion_body(self):
-        prepared = _prep("a painterly woman")
-        stronger = S.strengthen_for_retry(prepared)
-        self.assertIn(S.RETRY_ADULT_LINE, stronger.diffusion_prompt)
-        self.assertNotIn(SAFETY_FOOTER, stronger.diffusion_prompt)
-        self.assertTrue(S.footer_is_last(stronger.sent_prompt))
-        self.assertEqual(stronger.footer_hash, prepared.footer_hash)
+    def test_old_retry_cue_path_is_gone(self):
+        self.assertFalse(hasattr(S, "strengthen_for_retry"))
+        self.assertTrue(callable(S.rewrite_for_retry))
 
 
 class StylizedSexualTests(unittest.TestCase):

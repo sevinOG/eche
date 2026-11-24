@@ -25,7 +25,8 @@ MEMORY_RULES = (
     "including preferences like \"to pass moderation filters\" or \"maintaining realistic body "
     "proportions\". No slurs, no Discord ids or long id numbers, and no @mentions. "
     "Do not record anything that was made up, wrong, or a refusal. "
-    "Drop requests that were answered, refused, or are stale."
+    "Drop requests that were answered, refused, or are stale. "
+    "If nothing should change, reply {}."
 )
 
 DEFAULT_SUMMARIZER_PROMPT = """You keep a structured long-term memory about one person ("Them") who chats with Eche. Read the memory and the recent conversation, then reply with JSON edits only.

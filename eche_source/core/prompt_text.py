@@ -8,8 +8,8 @@ SPEAKING_JOBS = frozenset({"channel", "plain", "lookup", "execute"})
 
 # Channel catalog. One line each. A job that is not channel does not receive this list.
 TOOL_LINES = {
-    "duckduckgo": (
-        "duckduckgo: a fact, score, news, date, or definition. query is their question. "
+    "web_search": (
+        "web_search: a fact, score, news, date, or definition. query is their question. "
         "Also when they ask to try a search again or reword it. "
         "Say you looked something up only after this tool runs on this turn."
     ),
@@ -108,7 +108,7 @@ _LOOKUP_SHAPE = (
     "Do not call a tool. Do not ask for a thread."
 )
 _SEARCH_SHAPE = (
-    "This round is one duckduckgo call for the query in the message. "
+    "This round is one web_search call for the query in the message. "
     "Do not answer. Do not write DONE."
 )
 

@@ -10,7 +10,7 @@
 #   * the #bot channel's "episodic" thread: every "Episodic {server id}:" pin
 #     is edited to an empty Summary.
 # and locally:
-#   * memories/user-{id}/user.json and bot.json (the rolling buffers)
+#   * memories/user-{id}/user.json and bot.json (the rolling buffers) and fold_state.json
 #   * memories/{server id}/recent.txt (episode lines waiting on a summary)
 #   * this process's pin and thread caches
 #
@@ -205,7 +205,7 @@ def clear_local_memory() -> int:
         if name.startswith("user-"):
             from core.memory_store import store_names
 
-            targets = ("user.json", "bot.json", *store_names())
+            targets = ("user.json", "bot.json", "fold_state.json", *store_names())
         elif name.isdigit():
             from core.episodic import store_names as episode_files
 

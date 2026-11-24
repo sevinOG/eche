@@ -539,6 +539,24 @@ class SettingsWindow(QWidget):
             "Optional photo search via Unsplash (free developer keys).",
             body,
         ))
+        search_body = QVBoxLayout()
+        search_body.setSpacing(12)
+        search_body.addLayout(self._field_block(
+            "Gemini API key",
+            "Web search: Gemini with Google Search grounding. Needs billing on the key's "
+            "project (first 5,000 searches a month are free). Blank leaves search out of chat.",
+            secret=True, key="gemini_api_key", help_key="gemini_api_key",
+        ))
+        search_body.addLayout(self._field_block(
+            "Web search model",
+            "Default: gemini-3.5-flash-lite. Text Gemini models only.",
+            secret=False, key="gemini_search_model", help_key="gemini_search_model",
+        ))
+        layout.addWidget(self._card(
+            "Web search",
+            "Lookups in chat and threads. The key is stored encrypted and never logged.",
+            search_body,
+        ))
         asset_body = QVBoxLayout()
         asset_body.setSpacing(12)
         asset_body.addLayout(self._field_block(
@@ -1643,7 +1661,10 @@ class SettingsWindow(QWidget):
         if hasattr(self, "_prompt_tool_boxes"):
             from core.tools import prompt_choice
             for name, box in self._prompt_tool_boxes.items():
-                box.setChecked(prompt_choice(self.data.get(f"tool_{name}"), default=True))
+                stored = self.data.get(f"tool_{name}")
+                if name == "web_search" and not str(stored or "").strip():
+                    stored = self.data.get("tool_duckduckgo")
+                box.setChecked(prompt_choice(stored, default=True))
             self.prompt_episodic_box.setChecked(
                 prompt_choice(self.data.get("prompt_episodic"), default=True)
             )
@@ -1915,6 +1936,7 @@ class SettingsWindow(QWidget):
             payload["prompt_episodic"] = "1" if self.prompt_episodic_box.isChecked() else "0"
         else:
             for key in (
+                "tool_web_search",
                 "tool_duckduckgo",
                 "tool_thread",
                 "tool_context_raw",

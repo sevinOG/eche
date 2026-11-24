@@ -19,6 +19,7 @@ CHANNEL_MAX = 6
 # Friendlier names for the registry tools. Anything else shows its
 # registered name, which is a fixed identifier, never user text.
 _DISPLAY = {
+    "web_search": "search",
     "duckduckgo": "search",
     "context_raw": "context",
 }

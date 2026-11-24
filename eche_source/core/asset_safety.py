@@ -160,6 +160,13 @@ OUTPUT_UNCHECKED = (
 VISION_UNAVAILABLE = (
     "The safety checker is unavailable right now, so nothing was posted. " + _NOT_COUNTED
 )
+# Output age check said YES or unsure (owner 2026-11-23: say which check and what helps).
+AGE_CHECK_REFUSAL = (
+    "The finished picture didn't pass the age check: it couldn't confirm that everyone "
+    "in it clearly looks like an adult, so it was not posted. Try describing the people "
+    "explicitly as adults (for example \"a woman in her 30s\") in a realistic or "
+    "semi-realistic style. " + _NOT_COUNTED
+)
 SOURCE_REFUSAL = "The picture or video you replied to did not pass the safety check, so it was not edited."
 SOURCE_UNCHECKED = "I could not check the file you replied to, so nothing was edited."
 MEDIA_FILTER_REFUSAL = OUTPUT_REFUSAL
@@ -537,48 +544,133 @@ def require_enabled(mode: AssetMode | None = None, **ids) -> None:
         raise ImagineError(KILL_SWITCH_OFF)
 
 
-# Owner 2026-11-19: after the output age check flags a file, the one retry
-# adds stronger adult cues instead of re-rolling the same prompt. The output
-# checks themselves are unchanged ("uncertain" still blocks). No youth words.
-RETRY_ADULT_LINE = (
-    "Retry note: the previous attempt did not read clearly as adults. Show every "
-    "person or character as an adult in their mid-30s, with mature adult faces "
-    "and realistic adult proportions rather than exaggerated cartoon or doll-like "
-    "proportions, while keeping the requested art style."
+# Owner 2026-11-23: after an output check blocks a file, the one retry asks
+# the text model (the summarizer model) to revise the prompt, told only the
+# block category and the checker's fixed label plus fixed guidance. The
+# revised prompt then goes through prepare_generation again (every input
+# check, adult line, footer) and the output checks run again unchanged. The
+# checkers' own prompts and rules are never sent. Anything unusable fails
+# closed: no retry, the block stands.
+RETRY_ADULT_FEATURES = (
+    "Show every person or character clearly as an adult (in their 30s or older) "
+    "with clear adult features and adult proportions."
 )
-RETRY_ADULT_CUES = "mid-30s,mature adult faces,realistic adult proportions,no cartoon or doll-like proportions"
+RETRY_REALISTIC = (
+    "Use a realistic or semi-realistic rendering with lifelike adult faces "
+    "instead of a cartoon look."
+)
+RETRY_KEEP_STYLE = "Keep the requested art style if it allows clearly adult features."
+# Age-check labels where the look of the art is the problem: the retry asks
+# for realistic or semi-realistic rendering instead of keeping the style.
+_STYLE_LABELS = frozenset({"uncertain age", "youthful style", "anime or chibi style", "stylized"})
+_LABEL_WORDS = re.compile(r"^[a-z ]{1,40}$")
+_CATEGORY_WORDS = re.compile(r"^[a-z0-9\-]{1,60}$")
+REWRITE_TEMPERATURE = 0.3
+REWRITE_TOKENS = 300
+REWRITE_MAX_CHARS = 1200
+REWRITE_PROMPT = (
+    "You revise an image-generation prompt that a safety check on the finished "
+    "picture stopped. Write ONE revised prompt that fixes the problem below. Keep "
+    "the subject, setting, action, and mood.\n"
+    "Problem: {problem}.\n"
+    "Fix: {guidance}\n"
+    "Never add anything that could make anyone look younger, and remove any wording "
+    "that does. Never add sexual or suggestive content. "
+    "Do not mention safety checks, filters, or moderation.\n"
+    "Reply with only the revised prompt on one line, no quotes and no explanation.\n\n"
+    "Prompt: {prompt}"
+)
 
 
-def strengthen_for_retry(prepared: "PreparedPrompt") -> "PreparedPrompt":
-    """Add RETRY_ADULT_LINE to the Imagine body and just before the footer.
+def _is_age_category(category: str) -> bool:
+    return "age-vision" in (category or "")
 
-    The footer stays last and unchanged (same footer hash) and is still not
-    sent to Imagine. Raises when the footer order cannot be kept or the
-    diffusion body is missing, so the caller does not retry.
-    """
+
+# The checker's label in words the text model's own input checks accept
+# (some raw labels are on the minors list, which would block the call).
+_LABEL_TEXT = {
+    "uncertain age": "uncertain age",
+    "youthful style": "the art style did not read clearly as adult",
+    "anime or chibi style": "a cartoon style that did not read clearly as adult",
+    "stylized": "a stylized look that did not read clearly as adult",
+    "sexualized stylized": "a stylized look that did not read clearly as adult",
+    "apparent minor": "people did not look clearly like adults",
+}
+
+
+def retry_problem(category: str, label: str) -> str:
+    """Fixed words only: the block category and the checker's fixed label."""
+    category = category if _CATEGORY_WORDS.match(category or "") else "output-check"
+    label = label if _LABEL_WORDS.match(label or "") else ""
+    if _is_age_category(category):
+        said = _LABEL_TEXT.get(label, "") or "could not confirm everyone looks like an adult"
+        return f"output age check: {said}"
+    return f"output image check: {category}"
+
+
+def retry_guidance(category: str, label: str, *, adult: bool = False) -> str:
+    parts = [RETRY_ADULT_FEATURES]
+    if _is_age_category(category) and (adult or label in _STYLE_LABELS or not label):
+        parts.append(RETRY_REALISTIC)
+    else:
+        parts.append(RETRY_KEEP_STYLE)
+    return " ".join(parts)
+
+
+def build_rewrite_prompt(prompt: str, category: str, label: str, *, adult: bool = False) -> str:
+    return REWRITE_PROMPT.format(
+        problem=retry_problem(category, label),
+        guidance=retry_guidance(category, label, adult=adult),
+        prompt=" ".join((prompt or "").split()),
+    )
+
+
+def clean_rewrite(raw: str) -> str:
+    """The one revised prompt, or '' when the reply is empty, a refusal, or junk."""
     from core.safety import SAFETY_FOOTER
 
-    sent = prepared.sent_prompt or ""
-    if not footer_is_last(sent):
-        raise ValueError("footer is not last")
-    body = (prepared.diffusion_prompt or "").strip()
-    if not body:
-        raise ValueError("missing diffusion prompt")
-    if SAFETY_FOOTER in body:
-        raise ValueError("footer leaked into diffusion prompt")
-    already = RETRY_ADULT_LINE in sent and RETRY_ADULT_LINE in body
-    if already:
-        return prepared
-    stronger_body = body if RETRY_ADULT_LINE in body else f"{body}\n\n{RETRY_ADULT_LINE}"
-    if SAFETY_FOOTER in stronger_body:
-        raise ValueError("footer leaked into diffusion prompt")
-    stronger_sent = sent
-    if RETRY_ADULT_LINE not in sent:
-        head = sent[: -len(SAFETY_FOOTER)].rstrip()
-        stronger_sent = f"{head}\n\n{RETRY_ADULT_LINE}\n\n{SAFETY_FOOTER}"
-        if not footer_is_last(stronger_sent):
-            raise ValueError("footer is not last")
-    return _dc_replace(prepared, sent_prompt=stronger_sent, diffusion_prompt=stronger_body)
+    text = str(raw or "").replace("\r", "\n").strip()
+    if not text or text.upper().startswith("ERROR"):
+        return ""
+    footer_head = SAFETY_FOOTER.strip().split("\n", 1)[0].strip()
+    if SAFETY_FOOTER in text or (footer_head and footer_head in text):
+        return ""
+    try:
+        from core.blocklist import REFUSAL
+        from core.guardrails import is_refusal_text
+
+        if text == REFUSAL or is_refusal_text(text):
+            return ""
+    except Exception:
+        return ""
+    lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
+    if not lines:
+        return ""
+    line = lines[0]
+    line = re.sub(r"^(?:revised prompt|prompt)\s*:\s*", "", line, flags=re.IGNORECASE)
+    line = line.strip().strip('"\'`“”‘’').strip()
+    if len(line) < 8 or len(line) > REWRITE_MAX_CHARS:
+        return ""
+    if SAFETY_FOOTER in line or "{" in line or "}" in line:
+        return ""
+    return line
+
+
+async def rewrite_for_retry(prompt: str, category: str, label: str, *, adult: bool = False) -> str:
+    """One revised prompt from the text model, or '' (fail closed)."""
+    from core.client import call_groq_raw
+    from core.summarizer_prompt import get_summarizer_model
+
+    try:
+        raw = await call_groq_raw(
+            build_rewrite_prompt(prompt, category, label, adult=adult),
+            model=get_summarizer_model(),
+            max_completion_tokens=REWRITE_TOKENS,
+            temperature=REWRITE_TEMPERATURE,
+        )
+    except Exception:
+        return ""
+    return clean_rewrite(raw)
 
 
 def footer_is_last(sent: str) -> bool:
@@ -1242,7 +1334,7 @@ async def _classify_image_checks(data: bytes, mime: str, *, ids: dict, snap: Ass
         if verdict.endswith("-error"):
             # A checker that failed still blocks, but says so.
             raise ImagineError(unchecked, status="error")
-        raise ImagineError(refused, status="safety_block")
+        raise ImagineError(refused, status="safety_block", category=tag + verdict)
     signals = collect_signals()
     try:
         age = await age_vision_async([part], adult=snap.adult)
@@ -1254,7 +1346,15 @@ async def _classify_image_checks(data: bytes, mime: str, *, ids: dict, snap: Ass
         _audit("refusal", category=tag + age, reason=",".join(str(x) for x in labels), **ids)
         if age.endswith("-error"):
             raise ImagineError(unchecked, status="error")
-        raise ImagineError(refused, status="safety_block")
+        from core.classifier import AGE_REASON_LABELS
+
+        label = next((str(x) for x in labels if str(x) in AGE_REASON_LABELS), "")
+        raise ImagineError(
+            refused if source else AGE_CHECK_REFUSAL,
+            status="safety_block",
+            category=tag + age,
+            label=label,
+        )
 
 
 def check_frame_indexes(total: int, stage: str = "output") -> list[int]:
