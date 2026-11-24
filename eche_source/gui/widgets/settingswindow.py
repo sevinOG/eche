@@ -541,16 +541,28 @@ class SettingsWindow(QWidget):
         ))
         search_body = QVBoxLayout()
         search_body.setSpacing(12)
+        provider_lab = QLabel("Search provider")
+        provider_lab.setObjectName("FieldLabel")
+        search_body.addWidget(provider_lab)
+        provider_hint = QLabel(
+            "Grok (default) searches the web and X with the xAI API key below in ?asset. "
+            "Gemini uses Google Search on the free tier with the Gemini key."
+        )
+        provider_hint.setObjectName("FieldHint")
+        provider_hint.setWordWrap(True)
+        search_body.addWidget(provider_hint)
+        self.search_provider_combo = QComboBox()
+        self.search_provider_combo.setObjectName("search_provider")
+        self.search_provider_combo.setMinimumHeight(34)
+        self.search_provider_combo.addItem("Grok (xAI) — web + X", "grok")
+        self.search_provider_combo.addItem("Gemini — Google Search (free tier)", "gemini")
+        search_body.addWidget(self.search_provider_combo)
+        search_body.addWidget(self._info_button("search_provider"))
         search_body.addLayout(self._field_block(
             "Gemini API key",
-            "Web search: Gemini with Google Search grounding. Needs billing on the key's "
-            "project (first 5,000 searches a month are free). Blank leaves search out of chat.",
+            "Only for the Gemini provider. Free-tier Google Search grounding. "
+            "Blank leaves Gemini search off.",
             secret=True, key="gemini_api_key", help_key="gemini_api_key",
-        ))
-        search_body.addLayout(self._field_block(
-            "Web search model",
-            "Default: gemini-3.5-flash-lite. Text Gemini models only.",
-            secret=False, key="gemini_search_model", help_key="gemini_search_model",
         ))
         layout.addWidget(self._card(
             "Web search",
@@ -1619,6 +1631,11 @@ class SettingsWindow(QWidget):
             self.data.get("ollama_model") or _OLLAMA_DEFAULT
         ).strip() or _OLLAMA_DEFAULT
 
+        if hasattr(self, "search_provider_combo"):
+            choice = (self.data.get("search_provider") or "grok").strip().lower()
+            idx = self.search_provider_combo.findData(choice)
+            self.search_provider_combo.setCurrentIndex(idx if idx >= 0 else 0)
+
         if hasattr(self, "provider_combo"):
             backend = (self.data.get("provider_backend") or "cloud").strip().lower()
             if backend not in ("cloud", "ollama", "openrouter"):
@@ -1847,6 +1864,10 @@ class SettingsWindow(QWidget):
         if hasattr(self, "provider_combo"):
             backend = self.provider_combo.currentData() or "cloud"
         payload["provider_backend"] = backend
+        if hasattr(self, "search_provider_combo"):
+            payload["search_provider"] = self.search_provider_combo.currentData() or "grok"
+        else:
+            payload["search_provider"] = str(self.data.get("search_provider") or "").strip()
 
         cloud_m = ""
         if "cloud_model" in self._public_edits:

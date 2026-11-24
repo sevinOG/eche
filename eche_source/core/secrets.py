@@ -48,7 +48,8 @@ PUBLIC_KEYS = (
     "thread_completion_tokens",   # one thread post; blank uses 316
     "tool_web_search",            # "0" leaves web search out of the prompt. Blank reads tool_duckduckgo, then on.
     "tool_duckduckgo",            # the old Lookup box; read only when tool_web_search is blank
-    "gemini_search_model",        # web search model; blank uses gemini-3.5-flash-lite
+    "search_provider",            # web search: "grok" (blank = grok) or "gemini"; no model setting
+    "gemini_search_model",        # legacy, ignored: Gemini search is locked to the free-tier model
     "tool_thread",                # "0" leaves thread out of the prompt. Blank stays on.
     "tool_context_raw",           # "0" leaves context out of the prompt. Blank stays on.
     "prompt_episodic",            # "0" leaves the server episode out of the prompt. Blank stays on.

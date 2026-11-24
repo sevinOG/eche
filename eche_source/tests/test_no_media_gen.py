@@ -105,8 +105,12 @@ _ENDPOINT_OK = {
 # API host. Only that one needle, only in that one module; the module is
 # checked below to never ask for or accept images.
 _WEB_SEARCH = ROOT / "core" / "tools_web_search.py"
+# Grok search provider (owner 2026-11-24): a TEXT Responses call with only
+# the web_search and x_search tools. The xAI host, only in that one module.
+_GROK_SEARCH = ROOT / "core" / "search_grok.py"
 _ENDPOINT_NEEDLE_OK = {
     _WEB_SEARCH: {"generativelanguage.googleapis.com"},
+    _GROK_SEARCH: {"api.x.ai"},
 }
 # The minors matcher still recognizes a leftover "?asset …" prompt. That is
 # not a generation client.

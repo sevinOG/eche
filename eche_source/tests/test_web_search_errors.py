@@ -1,4 +1,4 @@
-"""Gemini web search: error-body logging and the one free-tier fallback.
+"""Gemini web search: error-body logging; the model is locked to the free tier.
 
 No network: post_search is mocked."""
 from __future__ import annotations
@@ -49,13 +49,13 @@ class Base(unittest.TestCase):
         self.audits = []
         for p in (
             mock.patch.object(W, "gemini_key", return_value=KEY),
-            mock.patch.object(W, "search_model", return_value=W.DEFAULT_MODEL),
+            mock.patch.object(W, "search_provider", return_value="gemini"),
             mock.patch("core.audit.api", side_effect=lambda *a, **k: self.audits.append((a, k))),
         ):
             p.start()
             self.addCleanup(p.stop)
 
-    def search(self, responses, model=None):
+    def search(self, responses):
         """responses: {model: (status, body)}; records the models called."""
         self.models = []
 
@@ -68,8 +68,6 @@ class Base(unittest.TestCase):
 
         out = io.StringIO()
         patches = [mock.patch.object(W, "post_search", new=post)]
-        if model:
-            patches.append(mock.patch.object(W, "search_model", return_value=model))
         with contextlib.ExitStack() as stack:
             for p in patches:
                 stack.enter_context(p)
@@ -118,65 +116,42 @@ class ErrorBody(unittest.TestCase):
             self.assertEqual(W.classify_http(500, body).status, "unreachable")
 
 
-class Fallback(Base):
-    def test_429_falls_back_once_and_logs_which_model_answered(self):
-        result = self.search({
-            W.DEFAULT_MODEL: (429, quota_body()),
-            W.FALLBACK_MODEL: (200, reply()),
-        })
-        self.assertEqual(self.models, [W.DEFAULT_MODEL, W.FALLBACK_MODEL])
-        self.assertEqual(result.outcome, "")
-        self.assertIn("Paris", result.text)
-        self.assertIn(f"model: {W.FALLBACK_MODEL} (fallback after HTTP 429 on {W.DEFAULT_MODEL})", result.detail)
-        self.assertIn(f"[web_search] answered by {W.FALLBACK_MODEL}", self.log)
-        self.assertIn(f"[web_search] {W.DEFAULT_MODEL} HTTP 429 RESOURCE_EXHAUSTED RATE_LIMIT_EXCEEDED:", self.log)
-        self.assertIn("quota: metric=", self.log)
-        self.assertIn("id=GenerateRequestsPerDayPerProjectPerModel-FreeTier limit=0", self.log)
-        self.assertIn("retry after 34s", self.log)
-        rows = [k for _, k in self.audits]
-        self.assertEqual([(r["model"], r["outcome"], r["http_status"]) for r in rows],
-                         [(W.DEFAULT_MODEL, "refusal", "429"), (W.FALLBACK_MODEL, "success", "200")])
-        self.assertEqual(rows[0]["reason"], "free_zero")
-
-    def test_403_no_grounding_falls_back(self):
-        body = {"error": {"code": 403, "status": "PERMISSION_DENIED",
-                          "message": "Grounding with Google Search is not available on the free tier."}}
-        self.search({W.DEFAULT_MODEL: (403, body), W.FALLBACK_MODEL: (200, reply())})
-        self.assertEqual(self.models, [W.DEFAULT_MODEL, W.FALLBACK_MODEL])
-
-    def test_no_fallback_for_other_errors(self):
-        for http, body in ((404, {"error": {"message": "not found"}}), (500, {}),
-                           (400, {"error": {"message": "API key not valid", "details": [{"reason": "API_KEY_INVALID"}]}})):
-            self.search({W.DEFAULT_MODEL: (http, body)})
-            self.assertEqual(self.models, [W.DEFAULT_MODEL], http)
-
-    def test_no_loop_when_the_fallback_model_is_configured(self):
-        result = self.search({W.FALLBACK_MODEL: (429, quota_body("500"))}, model=W.FALLBACK_MODEL)
-        self.assertEqual(self.models, [W.FALLBACK_MODEL])
-        self.assertEqual(result.text, C.LOOKUP_QUOTA_FREE)
-
-    def test_fallback_failure_says_billing_when_limit_is_zero(self):
-        result = self.search({
-            W.DEFAULT_MODEL: (429, quota_body("0")),
-            W.FALLBACK_MODEL: (429, quota_body("500")),
-        })
-        self.assertEqual(self.models, [W.DEFAULT_MODEL, W.FALLBACK_MODEL])  # exactly two calls
+class GeminiErrors(Base):
+    def test_429_logs_the_real_reason_and_does_not_fall_back(self):
+        result = self.search({W.GEMINI_MODEL: (429, quota_body())})
+        self.assertEqual(self.models, [W.GEMINI_MODEL])  # one call, no other model
         self.assertEqual((result.outcome, result.status), ("refusal", "quota"))
         self.assertEqual(result.text, C.LOOKUP_QUOTA_FREE_ZERO)
-        self.assertIn("billing", result.text)
-        self.assertIn(f"[web_search] {W.FALLBACK_MODEL} also failed (HTTP 429)", self.log)
-        self.assertIn(f"tried: fallback after HTTP 429 on {W.DEFAULT_MODEL}", result.detail)
+        self.assertIn(f"[web_search] {W.GEMINI_MODEL} HTTP 429 RESOURCE_EXHAUSTED RATE_LIMIT_EXCEEDED:", self.log)
+        self.assertIn("id=GenerateRequestsPerDayPerProjectPerModel-FreeTier limit=0", self.log)
+        self.assertIn("retry after 34s", self.log)
+        self.assertIn("RESOURCE_EXHAUSTED", result.detail)
+        rows = [k for _, k in self.audits]
+        self.assertEqual([(r["model"], r["outcome"], r["http_status"], r["reason"]) for r in rows],
+                         [(W.GEMINI_MODEL, "refusal", "429", "free_zero")])
 
-    def test_fallback_failure_real_daily_quota(self):
-        daily = quota_body("1500", "GenerateRequestsPerDayPerProjectPerModel")
-        result = self.search({W.DEFAULT_MODEL: (429, daily), W.FALLBACK_MODEL: (429, daily)})
-        self.assertEqual(result.text, C.LOOKUP_QUOTA)
+    def test_free_tier_daily_limit_message(self):
+        result = self.search({W.GEMINI_MODEL: (429, quota_body("500"))})
+        self.assertEqual(result.text, C.LOOKUP_QUOTA_FREE)
+
+    def test_403_no_grounding_points_at_grok(self):
+        body = {"error": {"code": 403, "status": "PERMISSION_DENIED",
+                          "message": "Grounding with Google Search is not available on the free tier."}}
+        result = self.search({W.GEMINI_MODEL: (403, body)})
+        self.assertEqual(self.models, [W.GEMINI_MODEL])
+        self.assertEqual(result.text, C.LOOKUP_NO_GROUNDING)
+        self.assertIn("Grok", result.text)
+
+    def test_other_errors(self):
+        for http, body, status in ((404, {"error": {"message": "not found"}}, "model_missing"), (500, {}, "unreachable"),
+                                   (400, {"error": {"message": "API key not valid",
+                                                    "details": [{"reason": "API_KEY_INVALID"}]}}, "bad_key")):
+            result = self.search({W.GEMINI_MODEL: (http, body)})
+            self.assertEqual(self.models, [W.GEMINI_MODEL], http)
+            self.assertEqual(result.status, status, http)
 
     def test_key_never_in_log_detail_text_or_audit(self):
-        for responses in (
-            {W.DEFAULT_MODEL: (429, quota_body()), W.FALLBACK_MODEL: (429, quota_body())},
-            {W.DEFAULT_MODEL: (429, quota_body()), W.FALLBACK_MODEL: (200, reply())},
-        ):
+        for responses in ({W.GEMINI_MODEL: (429, quota_body())}, {W.GEMINI_MODEL: (200, reply())}):
             result = self.search(responses)
             for blob in (self.log, result.text, result.detail, repr(self.audits)):
                 self.assertNotIn(KEY, blob)

@@ -1,21 +1,23 @@
 # core/tools_web_search.py
-# Chat tool: web search through the Gemini API with Grounding with Google
-# Search. Replaces the DuckDuckGo lookup (scraping its lite page started
-# getting a bot check on every call, live 2026-11-21 .. 11-23).
+# Chat tool: web search. Two providers, picked in Settings -> Web search ->
+# Search provider (owner 2026-11-24): Grok (default; core/search_grok, xAI
+# Responses API with web_search + x_search) or Gemini (this module, Gemini
+# API with Grounding with Google Search). No model setting for either.
 #
+# Gemini is locked to the free-tier grounding model (GEMINI_MODEL): Gemini 3+
+# grounding needs a paid tier, and billing never took on the owner's key.
 # One generateContent call: the question goes in, a short grounded answer
-# and its sources come out. The answer is handed back to the chat model as
-# lookup notes; the Google search links for the queries Gemini ran are added
-# under the chat reply (Discord cannot show Gemini's search-suggestion chip).
+# and its sources come out. Google search links for the queries Gemini ran
+# are added under the chat reply.
 #
-# Key: Settings -> Web search -> Gemini API key (gemini_api_key, DPAPI like
-# the other keys). It is sent only in the x-goog-api-key header, never in a
-# URL, and never logged. Without a key the tool is not offered.
+# Keys: gemini_api_key / xai_api_key (DPAPI like the other keys). Each is sent
+# only in its auth header, never in a URL, and never logged. Without the
+# selected provider's key the tool is not offered.
 #
-# This is a TEXT model call. The request never asks for images
-# (no output-modality field), the model id must be a text Gemini model, and a
-# reply with image or file data is refused. This is the only module allowed
-# to name the Gemini API host (tests/test_no_media_gen.py).
+# These are TEXT model calls. The Gemini request never asks for images
+# (no output-modality field) and a reply with image or file data is refused.
+# This is the only module allowed to name the Gemini API host
+# (tests/test_no_media_gen.py).
 
 from __future__ import annotations
 
@@ -29,10 +31,12 @@ from core.tools import ACCESS_ANYONE, Tool, ToolContext, ToolResult, register
 
 TOOL_NAME = "web_search"
 LEGACY_NAME = "duckduckgo"  # hidden alias for one release (core/tools._ALIASES)
-DEFAULT_MODEL = "gemini-3.5-flash-lite"
-# Tried once when the configured model answers HTTP 429, or 403/400 saying
-# grounding or billing is unavailable: the model with free-tier grounding.
-FALLBACK_MODEL = "gemini-2.5-flash-lite"
+# The free-tier Google Search grounding model (Gemini API pricing, 2026-11-24:
+# "Free of charge, up to 500 RPD"). The only Gemini model used.
+GEMINI_MODEL = "gemini-2.5-flash-lite"
+DEFAULT_MODEL = GEMINI_MODEL
+PROVIDERS = ("grok", "gemini")
+DEFAULT_PROVIDER = "grok"
 _ERROR_MESSAGE_LIMIT = 300
 _ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 _TIMEOUT = 15
@@ -47,12 +51,8 @@ _SYSTEM = (
     "Answer the question in 2 to 4 factual sentences using Google Search. "
     "Say plainly when the results do not answer it. No speculation."
 )
-# Text models only. Anything that names an image, video, audio or live model is refused.
-_MODEL_RE = re.compile(r"^gemini-[0-9a-z][0-9a-z.\-]*$")
-_NOT_TEXT = ("image", "banana", "imagen", "veo", "tts", "live", "audio", "embedding", "robotics", "omni")
-
 _DESCRIPTION = (
-    "Search the web (Google) for a fact, score, news, date, or definition. "
+    "Search the web for a fact, score, news, date, or definition. "
     "Pass their question as query."
 )
 
@@ -79,41 +79,33 @@ def gemini_key() -> str:
     return key
 
 
-def has_key() -> bool:
-    return bool(gemini_key())
-
-
-def text_model_ok(model: str) -> bool:
-    name = (model or "").strip().lower()
-    if not _MODEL_RE.match(name):
-        return False
-    if any(word in name for word in _NOT_TEXT):
-        return False
-    try:
-        from core.media_scan import is_image_model_id
-
-        if is_image_model_id(name):
-            return False
-    except Exception:
-        return False
-    return True
-
-
-def search_model() -> str:
-    """Settings -> Web search -> Model. Blank or not a text Gemini model uses the default."""
-    stored = ""
+def search_provider() -> str:
+    """Settings -> Web search -> Search provider: "grok" (default) or "gemini"."""
     try:
         from core.secrets import public_value
 
-        stored = str(public_value("gemini_search_model") or "").strip()
+        stored = str(public_value("search_provider") or "").strip().lower()
     except Exception:
         stored = ""
-    if not stored:
-        return DEFAULT_MODEL
-    if not text_model_ok(stored):
-        dprint(f"[web_search] model {stored!r} is not a text Gemini model; using {DEFAULT_MODEL}")
-        return DEFAULT_MODEL
-    return stored.lower()
+    return stored if stored in PROVIDERS else DEFAULT_PROVIDER
+
+
+def provider_key(provider: str | None = None) -> str:
+    provider = provider or search_provider()
+    if provider == "gemini":
+        return gemini_key()
+    from core.search_grok import xai_key
+
+    return xai_key()
+
+
+def has_key() -> bool:
+    return bool(provider_key())
+
+
+def search_model() -> str:
+    """The locked Gemini model. There is no model setting."""
+    return GEMINI_MODEL
 
 
 def build_request(query: str, model: str) -> tuple[str, dict, dict]:
@@ -249,8 +241,9 @@ def links_footer(parsed: dict) -> str:
     return f"-# Google Search: {links}"
 
 
-def _detail(query: str, model: str, parsed: dict | None = None, status: str = "", http: int = 0) -> str:
-    lines = [f"query: {query}", f"model: {model}"]
+def _detail(query: str, model: str, parsed: dict | None = None, status: str = "", http: int = 0,
+            provider: str = "gemini") -> str:
+    lines = [f"query: {query}", f"provider: {provider}", f"model: {model}"]
     if status:
         lines.append(f"status: {status}" + (f" (HTTP {http})" if http else ""))
     if parsed:
@@ -263,7 +256,7 @@ def _detail(query: str, model: str, parsed: dict | None = None, status: str = ""
     return "\n".join(lines)
 
 
-_KEY_TOKEN = re.compile(r"AIza[0-9A-Za-z\-_]{20,}")
+_KEY_TOKEN = re.compile(r"AIza[0-9A-Za-z\-_]{20,}|xai-[A-Za-z0-9\-._]{12,}")
 _KEY_URL = re.compile(r"\S*[?&]key=\S*", re.IGNORECASE)
 _KEY_PARAM = re.compile(r"(?i)\bkey=\S+")
 _REASON_CODE = re.compile(r"[^A-Za-z0-9_\-.]")
@@ -399,12 +392,13 @@ def classify_http(status: int, payload, info: dict | None = None) -> SearchFailu
     return fail
 
 
-def _audit_api(outcome: str, model: str, status: str, http: int = 0, reason: str = "") -> None:
+def _audit_api(outcome: str, model: str, status: str, http: int = 0, reason: str = "",
+               service: str = "gemini-search") -> None:
     try:
         from core.audit import api as audit_api
 
         extra = {"reason": _code(reason, 40)} if reason else {}
-        audit_api("gemini-search", outcome=outcome, model=model, status=status, http_status=str(http or ""), **extra)
+        audit_api(service, outcome=outcome, model=model, status=status, http_status=str(http or ""), **extra)
     except Exception:
         pass
 
@@ -424,80 +418,48 @@ async def post_search(url: str, headers: dict, body: dict, key: str) -> tuple[in
 
 
 async def web_search(ctx: ToolContext, arguments: dict) -> ToolResult:
-    """Run one grounded search and return notes for the chat model."""
+    """Run one search with the selected provider and return notes for the chat model."""
     del ctx
     msgs = _messages()
     query = _query_text(arguments)
     if not query:
         return ToolResult(text="Tell me what to look up.", fence=False, detail="query: (empty)", declined=True)
-    model = search_model()
-    key = gemini_key()
+    provider = search_provider()
+    if provider == "gemini":
+        model = GEMINI_MODEL
+        no_key = msgs.LOOKUP_NO_KEY
+    else:
+        from core.search_grok import GROK_MODEL
+
+        model = GROK_MODEL
+        no_key = msgs.LOOKUP_NO_XAI_KEY
+    key = provider_key(provider)
     if not key:
         return ToolResult(
-            text=msgs.LOOKUP_NO_KEY, fence=False, for_model=True, outcome="refusal",
-            status="no_key", detail=_detail(query, model, status="no_key"),
+            text=no_key, fence=False, for_model=True, outcome="refusal",
+            status="no_key", detail=_detail(query, model, status="no_key", provider=provider),
         )
-    first = await _search_once(query, model, key)
-    result = first
-    note = ""
-    if isinstance(first, SearchFailure) and _wants_fallback(first) and model != FALLBACK_MODEL:
-        second = await _search_once(query, FALLBACK_MODEL, key)
-        note = f"fallback after HTTP {first.http} on {model}"
-        if not isinstance(second, SearchFailure):
-            _log_lines([f"[web_search] answered by {FALLBACK_MODEL} ({note})"])
-            model, result = FALLBACK_MODEL, second
-        else:
-            result = _final_failure(first, second)
-            _log_lines([f"[web_search] {FALLBACK_MODEL} also failed (HTTP {second.http or '-'}); no answer"])
+    if provider == "gemini":
+        result = await _search_once(query, model, key)
+    else:
+        from core.search_grok import search as grok_search
+
+        result = await grok_search(query, key)
     if isinstance(result, SearchFailure):
+        lines = list(result.lines or [])
         return ToolResult(
             text=result.text, fence=False, for_model=True, outcome=result.outcome,
             status=result.status,
-            detail=_detail(query, model, status=result.status, http=result.http) + _failure_detail(first, result, note),
+            detail=_detail(query, model, status=result.status, http=result.http, provider=provider)
+            + (("\n" + "\n".join(lines)) if lines else ""),
         )
-    parsed = result
-    detail = _detail(query, model, parsed)
-    if note:
-        detail = detail.replace(f"model: {model}", f"model: {model} ({note})", 1)
     return ToolResult(
-        text=notes_text(parsed),
+        text=notes_text(result),
         fence=False,
         for_model=True,
-        footer=links_footer(parsed),
-        detail=detail,
+        footer=links_footer(result),
+        detail=_detail(query, model, result, provider=provider),
     )
-
-
-def _wants_fallback(fail: SearchFailure) -> bool:
-    return fail.http == 429 or fail.status == "no_grounding"
-
-
-_PRIORITY = ("free_zero", "free", "daily", "rate")
-
-
-def _final_failure(first: SearchFailure, second: SearchFailure) -> SearchFailure:
-    """The more useful of the two failures: billing/free-tier limit 0 first,
-    then a used-up free tier, a daily quota, a rate limit; else the first."""
-    best = None
-    for kind in _PRIORITY:
-        for fail in (first, second):
-            if fail.status == "quota" and getattr(fail, "reason", "") == kind:
-                best = fail
-                break
-        if best is not None:
-            break
-    if best is None and first.status == "no_grounding" and second.status == "quota":
-        best = second
-    return best or first
-
-
-def _failure_detail(first: SearchFailure, result: SearchFailure, note: str) -> str:
-    lines = list(getattr(first, "lines", []) or [])
-    if note and result is not first:
-        lines += list(getattr(result, "lines", []) or [])
-    if note:
-        lines.append(f"tried: {note}")
-    return ("\n" + "\n".join(lines)) if lines else ""
 
 
 async def _search_once(query: str, model: str, key: str):

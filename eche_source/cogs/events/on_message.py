@@ -26,7 +26,7 @@ from core.client import (
 
 # --- CHAT TOOLS ---
 import core.tools_context  # noqa: F401  registers context_raw
-import core.tools_web_search  # noqa: F401  registers web_search (Gemini + Google Search)
+import core.tools_web_search  # noqa: F401  registers web_search (Grok or Gemini, Settings)
 import core.tools_thread  # noqa: F401  registers thread
 import core.tools_admin  # noqa: F401  registers mute, timeout, kick, ban
 import core.tools_asset  # noqa: F401  registers asset
