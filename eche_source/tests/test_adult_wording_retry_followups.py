@@ -137,13 +137,14 @@ class RetryCueTests(unittest.TestCase):
                     "a scene " + SAFETY_FOOTER):
             self.assertEqual(S.clean_rewrite(bad), "", bad)
 
-    def test_failed_rewrite_does_not_retry(self):
+    def test_failed_rewrite_falls_back_to_forced_adult_age_and_retries_once(self):
         from core import imagine as I
 
         plan = SimpleNamespace(prompt="a burger", user_text="a burger", model_prompt="a burger",
                                mode="image", source=None)
         prepared = SimpleNamespace(footer_hash="h", sent_prompt="no footer here")
         calls = []
+        prep = mock.AsyncMock(return_value=prepared)
 
         async def check(*a, **k):
             calls.append(1)
@@ -162,8 +163,9 @@ class RetryCueTests(unittest.TestCase):
             with self.assertRaises(ImagineError):
                 asyncio.run(I._run_asset_reserved(
                     plan, "k", mock.Mock(), {"user_id": 1, "guild_id": 2, "channel_id": 3},
-                    lambda: backend, mock.AsyncMock(return_value=prepared), check))
-        self.assertEqual(len(calls), 1)
+                    lambda: backend, prep, check))
+        self.assertEqual(len(calls), 2)  # one retry, then the block stands
+        self.assertEqual(prep.await_args_list[1].args[0], "a burger. " + S.FORCED_ADULT_AGE)
 
 
 class AgeVisionUnchangedTests(unittest.TestCase):

@@ -9,7 +9,10 @@
 
 from __future__ import annotations
 
+import re
+
 COMMAND_PREFIX = "?"
+_LEADING_MENTIONS = re.compile(r"^\s*(?:<@[!&]?\d+>\s*)*")
 
 
 def command_start(content: str | None, has_command) -> int | None:
@@ -21,7 +24,10 @@ def command_start(content: str | None, has_command) -> int | None:
     text = content or ""
     pos = 0
     for line in text.splitlines(keepends=True):
-        stripped = line.lstrip()
+        # Leading mentions do not hide a command: "@eche ?<command> ..." is
+        # that command, not chat (owner 2026-11-23: a picture command
+        # overrides the chat model).
+        stripped = _LEADING_MENTIONS.sub("", line, count=1)
         if stripped.startswith(COMMAND_PREFIX):
             rest = stripped[len(COMMAND_PREFIX):]
             if rest and not rest[0].isspace():

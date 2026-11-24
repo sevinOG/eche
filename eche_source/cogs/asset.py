@@ -30,6 +30,18 @@ def _mark_outcome(exc) -> None:
         pass
 
 
+def _clear_outcome() -> None:
+    """A delivered asset logs success even when an earlier attempt was blocked
+    (live 2026-11-23 20:21:06 ET: the retry posted and the row said refusal)."""
+    try:
+        from core.audit import consume_command_error, consume_refusal
+
+        consume_refusal()
+        consume_command_error()
+    except Exception:
+        pass
+
+
 class Asset(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -114,6 +126,7 @@ class Asset(commands.Cog):
             record_sent_message(sent, result.data)
             from core.asset_review import audit_posted
             audit_posted(**ids)
+            _clear_outcome()
         except ImagineError as exc:
             _mark_outcome(exc)
             await ctx.reply(exc.text, mention_author=False)

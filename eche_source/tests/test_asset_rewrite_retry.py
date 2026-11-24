@@ -49,8 +49,10 @@ class AgeRefusal(unittest.TestCase):
         self.assertEqual(exc.category, "age-vision-unsure")
         self.assertEqual(exc.label, "uncertain age")
         self.assertEqual(error_status(SimpleNamespace(text=S.AGE_CHECK_REFUSAL)), "safety_block")
-        self.assertIn("realistic or semi-realistic", S.AGE_CHECK_REFUSAL)
         self.assertIn("adult", S.AGE_CHECK_REFUSAL)
+        # Eche retries itself; the user is never told how to reword it.
+        for word in ("Try", "describ", "30", "resubmit", "realistic"):
+            self.assertNotIn(word, S.AGE_CHECK_REFUSAL)
 
     def test_source_age_block_message_is_unchanged(self):
         exc = self._block("uncertain age", stage="source")
@@ -58,6 +60,22 @@ class AgeRefusal(unittest.TestCase):
 
     def test_clear_message_never_trips_the_minors_list(self):
         self.assertEqual(B.match_info(S.AGE_CHECK_REFUSAL), ("", ""))
+
+
+class ForcedAdultAge(unittest.TestCase):
+    def test_line_is_added_once_at_the_end(self):
+        out = S.force_adult_age("  a woman   in a red coat. ")
+        self.assertEqual(out, "a woman in a red coat. " + S.FORCED_ADULT_AGE)
+        self.assertEqual(S.force_adult_age(out), out)
+        self.assertEqual(S.force_adult_age(""), "")
+        self.assertIn("30 years old", S.FORCED_ADULT_AGE)
+
+    def test_line_passes_every_input_list(self):
+        from core.asset_filter import school_sexual_cues
+        text = S.force_adult_age("a knight in armor")
+        self.assertEqual(B.match_info(text), ("", ""))
+        self.assertEqual(B.match_info(text, force_context=True), ("", ""))
+        self.assertEqual(school_sexual_cues(text), ([], []))
 
 
 class RewritePrompt(unittest.TestCase):
