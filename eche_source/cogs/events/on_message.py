@@ -180,6 +180,23 @@ def _log_empty_reply(message, reason: str, **detail) -> None:
     except Exception:
         pass
 
+class _AutoTurn:
+    """Stands in for the first model turn when the clip is watched first."""
+
+    def __init__(self, tool_calls):
+        self.reply = ""
+        self.tool_calls = list(tool_calls or [])
+        self.quota = False
+        self.cut = False
+
+
+AUTO_WATCH_FAILED_SYSTEM = (
+    "A video or audio clip came with this message, but watching it didn't work this time. "
+    "If they ask about it, say plainly that you couldn't watch it. Do not describe it or guess."
+)
+AUTO_WATCH_FAILED_REPLY = "I couldn't watch that clip this time."
+
+
 class OnMessage(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -192,15 +209,24 @@ class OnMessage(commands.Cog):
     async def cog_load(self):
         dprint("[on_message] Cog loaded")
 
-    async def _speak_lookup(self, prompt: str, notes: str) -> tuple[str, bool]:
-        """Answer the same turn from the lookup notes. The notes themselves are not sent."""
+    async def _speak_lookup(self, prompt: str, notes: str, tool: str = "") -> tuple[str, bool]:
+        """Answer the same turn from the lookup notes. The notes themselves are not sent.
+
+        watch_video notes get their own prompt: the answer comes from what
+        was seen and heard (core/watch_auto)."""
         from core.client import (
             call_groq_turn,
             channel_completion_tokens,
             lookup_failed,
             lookup_prompt,
         )
-        follow = lookup_prompt(prompt, notes)
+        watched = (tool or "").casefold() == "watch_video"
+        if watched:
+            from core.watch_auto import grounded_reply, watch_prompt
+
+            follow = watch_prompt(prompt, notes)
+        else:
+            follow = lookup_prompt(prompt, notes)
         try:
             turn = await call_groq_turn(
                 follow,
@@ -211,6 +237,8 @@ class OnMessage(commands.Cog):
             )
         except Exception as exc:
             dprint(f"[on_message] lookup reply failed: {exc}")
+            if watched:
+                return grounded_reply("", notes), False
             if lookup_failed(notes):
                 return (notes or "").strip(), False
             return "I found the notes, but I couldn't answer from them.", False
@@ -226,11 +254,17 @@ class OnMessage(commands.Cog):
             if turn.quota:
                 return turn.reply, True
         spoken = (turn.reply or "").strip()
+        if watched:
+            # Grounded in the notes: a denial, a stall or a typed
+            # "[Watched ...]" record falls back to the notes themselves.
+            return grounded_reply(spoken, notes), False
         if not spoken:
             if lookup_failed(notes):
                 return (notes or "").strip(), False
             return "I couldn't turn that into an answer.", False
-        return spoken, False
+        from core.watch_auto import strip_action_markers
+
+        return strip_action_markers(spoken) or spoken, False
 
     async def _deliver_tool_calls(self, message: discord.Message, calls: list, prompt: str):
         """
@@ -303,7 +337,7 @@ class OnMessage(commands.Cog):
             tools_used.append(name)
             spoken = result.text
             if result.for_model:
-                spoken, this_quota = await self._speak_lookup(prompt, result.text)
+                spoken, this_quota = await self._speak_lookup(prompt, result.text, tool=result.name)
                 if this_quota or (spoken or "").strip().lower().startswith(
                     "sorry, i'm being rate limited"
                 ):
@@ -587,14 +621,42 @@ class OnMessage(commands.Cog):
         # Every offered tool, context_raw included. The model decides when
         # someone is asking about their own memory; there is no phrase trigger.
         offered = specs_for(speaker_is_owner=speaker_is_owner, admin_enabled=admin_on)
-        turn = await call_groq_turn(
-            prompt,
-            user_id=message.author.id,
-            max_completion_tokens=completion_tokens,
-            tools=offered,
-            extra_system=admin_injection(enabled=admin_visible),
-            images=all_images or None,
-        )
+        # A video or audio clip on this message, or on the message it
+        # replies to, is watched first; the model does not get to skip it
+        # (live 2026-11-25 15:42 ET). Same gates as a model call: the
+        # default-tools toggle, the watch_video toggle, ffmpeg.
+        from core.watch_auto import TOOL as WATCH_TOOL, plan as plan_watch
+
+        try:
+            watch_on = WATCH_TOOL in visible_names(speaker_is_owner=speaker_is_owner, admin_enabled=admin_on)
+        except Exception:
+            watch_on = False
+        auto_call = None
+        if watch_on:
+            try:
+                auto_call, auto_reason = await plan_watch(
+                    message,
+                    cleaned,
+                    bot_user_id=getattr(getattr(self.bot, "user", None), "id", None),
+                    offered=watch_on,
+                    media=media,
+                )
+            except Exception as exc:
+                dprint(f"[on_message] auto watch plan failed: {type(exc).__name__}")
+                auto_call, auto_reason = None, "error"
+            if auto_call:
+                dprint(f"[on_message] auto watch: {auto_reason}")
+        if auto_call:
+            turn = _AutoTurn(tool_calls=[auto_call])
+        else:
+            turn = await call_groq_turn(
+                prompt,
+                user_id=message.author.id,
+                max_completion_tokens=completion_tokens,
+                tools=offered,
+                extra_system=admin_injection(enabled=admin_visible),
+                images=all_images or None,
+            )
 
         reply = turn.reply or ""
         quota_reply = turn.quota or reply.strip().lower().startswith(
@@ -643,6 +705,33 @@ class OnMessage(commands.Cog):
             except Exception as e:
                 dprint(f"[on_message] tool delivery failed: {e}")
                 ran_tools = False
+        if auto_call and not ran_tools and not quota_reply:
+            # The auto watch did not run (a toggle flipped mid-turn, or it
+            # failed before posting). Answer normally, without the watch
+            # tool, and say plainly it wasn't watched.
+            try:
+                turn = await call_groq_turn(
+                    prompt,
+                    user_id=message.author.id,
+                    max_completion_tokens=completion_tokens,
+                    tools=[
+                        spec for spec in (offered or [])
+                        if str(((spec or {}).get("function") or {}).get("name") or "") != "watch_video"
+                    ] or None,
+                    extra_system="\n\n".join(
+                        part for part in (admin_injection(enabled=admin_visible), AUTO_WATCH_FAILED_SYSTEM) if part
+                    ),
+                    images=all_images or None,
+                )
+                reply = turn.reply or ""
+                quota_reply = turn.quota or reply.strip().lower().startswith(
+                    "sorry, i'm being rate limited"
+                )
+            except Exception as e:
+                dprint(f"[on_message] auto watch fallback reply failed: {type(e).__name__}")
+                reply = AUTO_WATCH_FAILED_REPLY
+            if not reply.strip() and not quota_reply:
+                reply = AUTO_WATCH_FAILED_REPLY
         if tool_declined and not ran_tools and not reply.strip() and not quota_reply:
             # The asset tool was called on a message that asks for nothing.
             # Answer in chat instead, without offering the asset tool.
@@ -671,6 +760,12 @@ class OnMessage(commands.Cog):
                 dprint(f"[on_message] declined-tool reply failed: {type(e).__name__}")
                 empty_reason = EMPTY_DECLINED_EMPTY
 
+        if not ran_tools and reply.strip() and not quota_reply:
+            # No typed "[Watched ...]" records, no "watching it now" when
+            # nothing ran, no "I don't have eyes" while watching is on.
+            from core.watch_auto import clean_reply
+
+            reply = clean_reply(reply, watch_on=watch_on, watched=False)
         if has_images and not ran_tools and reply.strip() and is_blocked(
             reply, user_id=user_id, channel_id=channel_id
         ):

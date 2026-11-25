@@ -34,10 +34,11 @@ TOOL_LINES = {
         "prompt, not even to exclude them."
     ),
     "watch_video": (
-        "watch_video: they ask what a video in this chat shows, what happens or what is said in it, and the "
-        "frames on this turn don't already answer it (a longer clip, or one from an earlier message); "
-        "or they ask what is said in an audio clip or voice message. "
-        "Not for pictures, and not for making or editing a video or audio."
+        "watch_video: they ask what a video in this chat shows, what happens or what is said in it "
+        "(on their message, the one they replied to, or an earlier message), or what is said in an "
+        "audio clip or voice message. You can watch videos and hear audio with this: never say you "
+        "have no eyes or can't watch videos, and never claim you watched something unless this tool "
+        "ran. Not for pictures, and not for making or editing a video or audio."
     ),
 }
 

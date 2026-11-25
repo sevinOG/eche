@@ -93,7 +93,9 @@ CANT_SEE = (
     "I can't watch that video: the local vision model isn't available and the chat model can't see images."
 )
 BUSY = "I'm already watching a video. Ask again in a moment."
-FAILED = "I couldn't watch that video."
+FAILED = "I couldn't watch that video: something went wrong while I was processing it."
+TIMED_OUT = "I couldn't watch that video: it took too long to process."
+NO_AUDIT = "I couldn't watch that video: my safety log couldn't be written, so I didn't open it."
 
 _PTS = re.compile(r"pts_time:(\d+(?:\.\d+)?)")
 _DURATION = re.compile(r"Duration:\s*(\d+):(\d{2}):(\d{2}(?:\.\d+)?)")
@@ -862,9 +864,9 @@ async def watch_video(ctx: ToolContext, arguments: dict) -> ToolResult:
             line = str(exc) if str(exc) in (NO_FFMPEG, NO_FRAMES) else FAILED
             return _said(line, "frames", "error")
         except PermissionError:
-            return _said(FAILED, "audit", "error")
+            return _said(NO_AUDIT, "audit", "error")
         except (asyncio.TimeoutError, TimeoutError):
-            return _said(FAILED, "timeout", "error")
+            return _said(TIMED_OUT, "timeout", "error")
         except Exception as exc:
             dprint(f"[watch_video] failed: {type(exc).__name__}")
             return _said(FAILED, "error", "error")
