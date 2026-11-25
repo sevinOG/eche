@@ -4,6 +4,8 @@
 import discord
 from discord.ext import commands
 
+from core.permissions import owner_only
+
 
 def override_turn(name: str, text: str) -> str:
     """The channel job answers the block under MOST RECENT MESSAGE."""
@@ -19,7 +21,7 @@ class CharOverride(commands.Cog):
         self.bot.override_waiting_for = None
 
     @commands.command(name="charoverride")
-    @commands.is_owner()
+    @owner_only()
     async def charoverride(self, ctx):
         msg = await ctx.send("What would you like me to say?")
 
@@ -39,7 +41,9 @@ class CharOverride(commands.Cog):
         if message.reference.message_id != self.bot.override_waiting_for:
             return
 
-        if not await self.bot.is_owner(message.author):
+        from core.permissions import is_owner as owner_tier
+
+        if not await owner_tier(self.bot, message.author):
             return
 
         user_text = message.content

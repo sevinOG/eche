@@ -4,6 +4,8 @@
 import discord
 from discord.ext import commands
 
+from core.permissions import owner_only
+
 from core.context_manager import get_home_guild
 
 
@@ -15,7 +17,7 @@ class DebugCommands(commands.Cog):
     # OPT-IN MEMBERS WHO ALREADY HAVE A USER CHANNEL
     # ---------------------------------------------------------
     @commands.command(name="context_optin_all")
-    @commands.is_owner()
+    @owner_only()
     async def context_optin_all(self, ctx):
         from core.discord_store import list_user_ids
         from core.opt_in_manager import ensure_user_category, save_opted_in
@@ -81,7 +83,7 @@ class DebugCommands(commands.Cog):
     # FLASHYTHING NUKE — delete EVERYTHING except pinned
     # ---------------------------------------------------------
     @commands.command(name="flashything_nuke")
-    @commands.is_owner()
+    @owner_only()
     async def flashything_nuke(self, ctx):
         channel = ctx.channel
         pinned_ids = {p.id for p in await channel.pins()}

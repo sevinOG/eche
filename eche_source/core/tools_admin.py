@@ -175,8 +175,8 @@ def _blocked(ctx: ToolContext, guild, member) -> str | None:
     if author_id and target_id == author_id:
         return "I won't do that to you."
     try:
-        from core.admin_tools import configured_owner_ids
-        owner_ids = set(configured_owner_ids())
+        from core.permissions import protected_ids
+        owner_ids = protected_ids(ctx.bot)
     except Exception:
         owner_ids = set()
     if target_id in owner_ids:
@@ -269,8 +269,8 @@ async def ban_member(ctx: ToolContext, arguments: dict) -> ToolResult:
         bot_id = getattr(getattr(ctx.bot, "user", None), "id", None)
         author_id = getattr(getattr(message, "author", None), "id", None)
         try:
-            from core.admin_tools import configured_owner_ids
-            owner_ids = set(configured_owner_ids())
+            from core.permissions import protected_ids
+            owner_ids = protected_ids(ctx.bot)
         except Exception:
             owner_ids = set()
         if user_id in owner_ids or user_id in {bot_id, author_id, getattr(guild, "owner_id", None)}:
