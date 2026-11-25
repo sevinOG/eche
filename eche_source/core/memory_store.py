@@ -163,6 +163,15 @@ def normalize(data, side: str) -> dict:
                 "last": _num(row.get("last")),
                 "hits": max(1, int(_num(row.get("hits"), 1))),
             }
+            ids = row.get("mention_ids")
+            if isinstance(ids, list):
+                clean_ids = []
+                for item in ids:
+                    digits = re.sub(r"\D", "", str(item or ""))
+                    if 5 <= len(digits) <= 25 and digits not in clean_ids:
+                        clean_ids.append(digits)
+                if clean_ids:
+                    entry["mention_ids"] = clean_ids
             if not entry["id"]:
                 continue
             digits = re.sub(r"\D", "", entry["id"])
@@ -292,13 +301,38 @@ def _route(side: str, key: str, text: str) -> str:
             return "projects"
     if side == "bot" and key == "stances" and _ONE_OFF.search(text):
         return "recent"
+    if side == "bot":
+        if _sticky(side, "commitments", text):
+            return "commitments"
+        if _sticky(side, "bits", text):
+            return "bits"
     return key
 
 
-def _allowed(side: str, text: str, own_names, known_names, stats: dict) -> bool:
+def _sticky(side: str, key: str, text: str) -> bool:
+    try:
+        from core.standing import is_sticky, is_unsafe
+        if is_unsafe(text):
+            return False
+        return is_sticky(side, key, text)
+    except Exception:
+        return False
+
+
+def _allowed(side: str, text: str, own_names, known_names, stats: dict, *, key: str = "") -> bool:
     from core.memory_privacy import entry_problem
 
+    try:
+        from core.standing import is_unsafe
+        if is_unsafe(text):
+            stats["dropped"].append("unsafe instruction")
+            return False
+    except Exception:
+        pass
     problem = entry_problem(text, own_names, known_names)
+    if problem == "third-party name" and side == "bot" and _sticky(side, key or "commitments", text):
+        # A standing "tag them" / "call them X" instruction needs the label.
+        problem = ""
     if problem:
         stats["dropped"].append(problem)
         return False
@@ -316,6 +350,7 @@ def apply_ops(
     now: float | None = None,
     own_names=(),
     known_names=(),
+    mention_ids=(),
 ) -> dict:
     """Apply the summarizer's edits. Returns counts. Invalid parts are ignored."""
     now = time.time() if now is None else float(now)
@@ -351,7 +386,7 @@ def apply_ops(
         if row is None:
             continue
         text = clean_text(item.get("text"))
-        if not text or not _allowed(side, text, own_names, known_names, stats):
+        if not text or not _allowed(side, text, own_names, known_names, stats, key=key):
             # The old wording stays. A bad rewrite is never stored.
             continue
         row["text"] = text
@@ -369,17 +404,24 @@ def apply_ops(
         if not isinstance(item, dict):
             continue
         text = clean_text(item.get("text"))
-        if not text or not _allowed(side, text, own_names, known_names, stats):
+        if not text:
             continue
         key = _route(side, str(item.get("section") or "").strip().lower(), text)
+        if not _allowed(side, text, own_names, known_names, stats, key=key):
+            continue
         if _merge_into_existing(profile, side, key, text, now):
             stats["merged"] += 1
             continue
-        profile["sections"][key].append(
-            {"id": _new_id(profile, side), "text": text, "first": now, "last": now, "hits": 1}
-        )
+        row = {"id": _new_id(profile, side), "text": text, "first": now, "last": now, "hits": 1}
+        profile["sections"][key].append(row)
         stats["added"] += 1
 
+    if side == "bot" and mention_ids:
+        try:
+            from core.standing import attach_mentions
+            attach_mentions(profile, list(mention_ids))
+        except Exception:
+            pass
     maintain(profile, side, now=now)
     profile["updated"] = now
     return stats
@@ -416,23 +458,38 @@ def maintain(profile: dict, side: str, *, now: float | None = None) -> int:
         rows = profile["sections"].setdefault(sec.key, [])
         kept: list[dict] = []
         for row in rows:
-            if sec.expire_days > 0 and now - _num(row.get("last")) > sec.expire_days * DAY:
+            sticky = _sticky(side, sec.key, row.get("text") or "")
+            # Standing instructions stay until their end condition, not a timer.
+            if not sticky and sec.expire_days > 0 and now - _num(row.get("last")) > sec.expire_days * DAY:
                 gone += 1
                 continue
-            if sec.half_life_days > 0 and weight(row, sec, now) < DROP_WEIGHT:
+            if not sticky and sec.half_life_days > 0 and weight(row, sec, now) < DROP_WEIGHT:
                 gone += 1
                 continue
             if any(similar(other["text"], row["text"]) for other in kept):
                 twin = next(o for o in kept if similar(o["text"], row["text"]))
                 twin["hits"] = int(twin["hits"]) + int(row.get("hits") or 1)
                 twin["last"] = max(_num(twin["last"]), _num(row.get("last")))
+                if row.get("mention_ids") and not twin.get("mention_ids"):
+                    twin["mention_ids"] = list(row["mention_ids"])
                 gone += 1
                 continue
             kept.append(row)
         if len(kept) > sec.cap:
-            ranked = sorted(kept, key=lambda r: _rank(r, sec, now), reverse=True)
-            keep_ids = {r["id"] for r in ranked[: sec.cap]}
-            gone += len(kept) - sec.cap
+            sticky_rows = [r for r in kept if _sticky(side, sec.key, r.get("text") or "")]
+            filler = [r for r in kept if r not in sticky_rows]
+            # Filler goes first. Extra standing instructions drop oldest first.
+            if len(sticky_rows) > sec.cap:
+                sticky_rows.sort(key=lambda r: _num(r.get("first")))
+                gone += len(sticky_rows) - sec.cap
+                sticky_rows = sticky_rows[-sec.cap :]
+                filler = []
+            else:
+                room = sec.cap - len(sticky_rows)
+                ranked = sorted(filler, key=lambda r: _rank(r, sec, now), reverse=True)
+                gone += len(filler) - room
+                filler = ranked[:room]
+            keep_ids = {r["id"] for r in sticky_rows + filler}
             kept = [r for r in kept if r["id"] in keep_ids]
         profile["sections"][sec.key] = kept
     return gone
@@ -459,7 +516,7 @@ def is_empty(profile: dict | None) -> bool:
     return not profile or not any(profile["sections"].get(k) for k in profile["sections"])
 
 
-def render(profile: dict | None, limit: int, side: str, *, now: float | None = None) -> str:
+def render(profile: dict | None, limit: int, side: str, *, now: float | None = None, skip_texts=()) -> str:
     """One "- Title: entry entry" line per section, most important first.
 
     Whole entries only; an entry that would not fit is skipped. Never longer
@@ -480,7 +537,10 @@ def render(profile: dict | None, limit: int, side: str, *, now: float | None = N
         head = f"- {sec.title}:"
         sep = 1 if lines else 0
         parts: list[str] = []
+        skip = {str(t) for t in (skip_texts or ()) if str(t)}
         for row in rows:
+            if row["text"] in skip:
+                continue
             trial = " ".join([head, *parts, row["text"]])
             if used + sep + len(trial) <= room:
                 parts.append(row["text"])
@@ -491,7 +551,7 @@ def render(profile: dict | None, limit: int, side: str, *, now: float | None = N
     return "\n".join(lines)
 
 
-def prompt_text(profile: dict | None, side: str, limit: int | None = None) -> str:
+def prompt_text(profile: dict | None, side: str, limit: int | None = None, *, skip_texts=()) -> str:
     """The long-term memory block the reply sees."""
     from core.content_filter import clean_memory_text
 
@@ -499,4 +559,4 @@ def prompt_text(profile: dict | None, side: str, limit: int | None = None) -> st
         from core.context_caps import get
 
         limit = get("memory_summary_prompt_chars")
-    return clean_memory_text(render(profile, limit, side))
+    return clean_memory_text(render(profile, limit, side, skip_texts=skip_texts))

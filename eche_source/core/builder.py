@@ -83,7 +83,16 @@ def _structured(user_id, side: str) -> str | None:
         return None
     from core.context_caps import get
 
-    return memory_store.prompt_text(profile, side, get("memory_summary_prompt_chars")) or "none"
+    skip = ()
+    if side == "bot":
+        try:
+            from core.standing import skip_texts
+            skip = skip_texts(profile)
+        except Exception:
+            skip = ()
+    return memory_store.prompt_text(
+        profile, side, get("memory_summary_prompt_chars"), skip_texts=skip
+    ) or "none"
 
 
 _BACKGROUND = "Background. Use this only when the message at the end needs it."
@@ -122,6 +131,12 @@ async def build_prompt(
     username MUST be the user's global username (member.name),
     not nickname, not display_name.
     """
+    standing = ""
+    try:
+        from core.standing import instructions_for_prompt
+        standing = instructions_for_prompt(user_id, user_message)
+    except Exception:
+        standing = ""
     user_context, user_pin = await load_user_context(bot, user_id, username)
     bot_context, bot_pin = await load_bot_context(bot, user_id, username)
     from core.personal_recent import prompt_lines
@@ -151,6 +166,7 @@ async def build_prompt(
         bot_recent,
         episode,
         latest,
+        standing=standing,
     )
 
 
@@ -194,6 +210,11 @@ _RECENT_LABELS = (_RECENT_THEM, _RECENT_YOU)
 
 def _recent_at(prompt: str) -> int:
     spots = [prompt.find(label) for label in _RECENT_LABELS]
+    try:
+        from core.standing import PROMPT_LABEL
+        spots.append(prompt.find(PROMPT_LABEL))
+    except Exception:
+        pass
     spots = [spot for spot in spots if spot >= 0]
     if not spots:
         return -1
@@ -269,6 +290,7 @@ def render_memory_prompt(
     bot_rows: list[str],
     episode: str,
     latest: str,
+    standing: str = "",
 ) -> str:
     """Summaries first. The rolling messages sit with the turn being answered.
 
@@ -304,6 +326,9 @@ def render_memory_prompt(
     episode = (episode or "").strip()
     if episode:
         tail_parts.append(_THIS_SERVER + episode)
+    block = (standing or "").strip()
+    if block:
+        tail_parts.append(block)
     tail_parts.append((latest or "").strip())
     tail = "\n\n".join(part for part in tail_parts if part)
     if not tail:
@@ -320,6 +345,7 @@ def fit_memory_prompt(
     episode: str,
     latest: str,
     limit: int | None = None,
+    standing: str = "",
 ) -> str:
     """Keep the latest turn and the rolling messages. Shorten the clouds first.
 
@@ -338,6 +364,7 @@ def fit_memory_prompt(
             bot_kept,
             episode,
             latest,
+            standing=standing,
         )
         if len(text) <= limit:
             return text
