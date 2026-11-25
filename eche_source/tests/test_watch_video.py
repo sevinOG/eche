@@ -88,6 +88,7 @@ class Base(unittest.TestCase):
         self.transcribed = 0
         for key in ("ECHE_WATCH_VISION", "ECHE_WATCH_VISION_MODEL", "OLLAMA_API_URL", "ECHE_WATCH_WHISPER"):
             os.environ.pop(key, None)
+        os.environ["ECHE_LOCAL_QUEUE"] = "off"  # the queue has its own tests (test_local_queue.py)
 
     def _record(self, ids, *, source, items, kinds):
         self.audits.append({"ids": ids, "source": source, "items": items, "kinds": kinds})
