@@ -14,6 +14,12 @@ def _bootstrap():
 
 def main():
     _bootstrap()
+    if "--whisper-worker" in sys.argv:
+        # Speech-to-text for watch_video runs here, in its own process (core/watch_listen).
+        # Checked first: the bot's environment (ECHE_RUNNING=BOT) must not start a second bot.
+        from core.watch_listen import worker_main
+        args = sys.argv[sys.argv.index("--whisper-worker") + 1:]
+        raise SystemExit(worker_main(args))
     if "--reset-memory" in sys.argv:
         # One-time owner reset on its own connection. Needs --yes.
         from core.memory_wipe import main as wipe_main

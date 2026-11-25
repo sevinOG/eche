@@ -122,7 +122,7 @@ class LocalVision(Base):
     def test_ollama_url_is_localhost_only(self):
         cases = {
             "": "http://127.0.0.1:11434",
-            "http://localhost:11500/v1/chat/completions": "http://localhost:11500",
+            "http://localhost:11500/v1/chat/completions": "http://127.0.0.1:11500",
             "http://127.0.0.1/api/chat": "http://127.0.0.1:11434",
             "http://192.168.1.20:11434/v1/chat/completions": "http://127.0.0.1:11434",
             "https://ollama.example.com/v1/chat/completions": "http://127.0.0.1:11434",

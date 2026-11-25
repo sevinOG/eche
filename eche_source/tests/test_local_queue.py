@@ -309,7 +309,7 @@ class Fallback(unittest.TestCase):
             with mock.patch.dict(os.environ, {"ECHE_LOCAL_QUEUE": "off"}):
                 self.assertEqual(run(Q.run_local("http://localhost:11434/v1/chat/completions", "m", fn)), "direct")
         self.assertTrue(Q.is_local("http://[::1]:11434/api/chat"))
-        self.assertEqual(Q.base_of("http://localhost:11500/v1/chat/completions"), "http://localhost:11500")
+        self.assertEqual(Q.base_of("http://localhost:11500/v1/chat/completions"), "http://127.0.0.1:11500")
 
 
 class ClientWiring(unittest.TestCase):

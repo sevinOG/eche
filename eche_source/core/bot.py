@@ -491,6 +491,15 @@ class Eche(commands.Bot):
     async def setup_hook(self):
         print(">>> setup_hook: loading extensions")
         try:
+            # A stalled loop logs once and dumps every thread's stack (core/loop_watchdog).
+            import asyncio
+
+            from core.loop_watchdog import start as start_loop_watchdog
+
+            start_loop_watchdog(asyncio.get_running_loop())
+        except Exception as e:
+            print(f">>> loop watchdog skipped: {type(e).__name__}")
+        try:
             self.tree.error(self.on_app_command_error)
         except Exception as e:
             print(f">>> app command error hook skipped: {e}")

@@ -12,12 +12,24 @@
 # works and the text says the sound was not transcribed. The model downloads
 # on first use into the data folder (models/whisper); the log names the model
 # and that folder only. Nothing here makes or posts audio, pictures or video.
+#
+# faster-whisper runs in its OWN PROCESS (Eche.exe --whisper-worker, or
+# eche_app.py --whisper-worker from source), never inside the bot. Live
+# 2026-11-25 16:04 ET the first in-process import/load (ctranslate2, PyAV,
+# onnxruntime, numpy DLLs on a worker thread of the frozen build) left the
+# bot's event loop stuck in Thread.start() for minutes: on Windows a thread
+# cannot start while another thread holds the DLL loader lock. In a child
+# process a hang or crash costs one transcript (killed at the deadline), not
+# the bot. The bot process never imports faster_whisper, ctranslate2 or numpy.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -46,7 +58,12 @@ OFF = "off"
 LOADING = "loading"        # the model is still downloading/loading in the background
 FAILED = "failed"
 
+WORKER_FLAG = "--whisper-worker"
+WORKER_TIMEOUT_S = LOAD_WAIT_S + TRANSCRIBE_DEADLINE_S + 15   # load + transcribe + start-up
+_SECRETISH = re.compile(r"TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY|_KEY$|COOKIE|WEBHOOK", re.I)
+
 _model_lock = threading.Lock()
+_download: "subprocess.Popen | None" = None
 # One transcription at a time, even if a timed-out watch left its thread running.
 _busy = threading.Lock()
 _model = None
@@ -239,19 +256,131 @@ def _transcribe(video: bytes, suffix: str, name: str) -> Heard:
                 return Heard(NO_AUDIO)
         except Exception as exc:
             return Heard(FAILED, note=f"extract {type(exc).__name__}")
-        try:
-            model = get_model(name)
-        except Exception as exc:
-            return Heard(FAILED, note=f"load {exc}")
-        if model is None:
+        if downloading() or not _downloaded(model_folder(), name):
+            # First use: the model downloads in its own process; this watch goes on without sound.
+            start_download(name)
             return Heard(LOADING)
-        try:
-            segments, cut = run_model(model, wav)
-        except Exception as exc:
-            return Heard(FAILED, note=type(exc).__name__)
-        return Heard(HEARD, segments, cut, "timeout" if cut else "")
+        return run_worker(name, wav)
     finally:
         shutil.rmtree(folder, ignore_errors=True)
+
+
+# --- the worker process ------------------------------------------------------------------------
+
+def worker_command(*args: str) -> list[str]:
+    """The same program in worker mode: Eche.exe when frozen, else eche_app.py with this Python."""
+    if getattr(sys, "frozen", False):
+        return [sys.executable, WORKER_FLAG, *args]
+    app = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "eche_app.py")
+    return [sys.executable, app, WORKER_FLAG, *args]
+
+
+def worker_env() -> dict:
+    """The bot's environment without tokens or keys; the worker needs none."""
+    env = {k: v for k, v in os.environ.items() if not _SECRETISH.search(k)}
+    env["ECHE_RUNNING"] = "WHISPER"
+    env.pop("ECHE_GUI_BRIDGE", None)
+    env.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+    env.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
+    return env
+
+
+def _spawn_kwargs() -> dict:
+    kwargs = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL,
+              "env": worker_env()}
+    if sys.platform == "win32":
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    return kwargs
+
+
+def downloading() -> bool:
+    with _model_lock:
+        return _download is not None and _download.poll() is None
+
+
+def start_download(name: str) -> None:
+    """One background download process at a time. Never waited on."""
+    global _download
+    with _model_lock:
+        if _download is not None and _download.poll() is None:
+            return
+        try:
+            _download = subprocess.Popen(worker_command("download", name), **_spawn_kwargs())
+            dprint(f"[watch_video] whisper: downloading model '{name}' in a worker process (first use)")
+        except Exception as exc:
+            _download = None
+            dprint(f"[watch_video] whisper: download worker failed to start: {type(exc).__name__}")
+
+
+def _clean_segments(raw) -> list[dict]:
+    out = []
+    for seg in raw if isinstance(raw, list) else []:
+        if not isinstance(seg, dict):
+            continue
+        text = _SPACES.sub(" ", str(seg.get("text") or "")).strip()[:SEGMENT_CHARS]
+        if not text:
+            continue
+        try:
+            out.append({"start": float(seg.get("start") or 0.0), "end": float(seg.get("end") or 0.0), "text": text})
+        except (TypeError, ValueError):
+            continue
+    return out[:500]
+
+
+def run_worker(name: str, wav: str, timeout_s: float = WORKER_TIMEOUT_S) -> Heard:
+    """Transcribe `wav` in a worker process. Blocking (called from a thread); killed at the deadline."""
+    out = wav + ".json"
+    try:
+        subprocess.run(worker_command("transcribe", name, wav, out), timeout=timeout_s, check=False,
+                       **_spawn_kwargs())
+    except subprocess.TimeoutExpired:   # subprocess.run kills the child first
+        return Heard(FAILED, note="timeout")
+    except Exception as exc:
+        return Heard(FAILED, note=f"worker {type(exc).__name__}")
+    try:
+        with open(out, encoding="utf-8") as handle:
+            data = json.load(handle)
+    except Exception:
+        return Heard(FAILED, note="worker no result")
+    state = str((data or {}).get("state") or "")
+    if state == HEARD:
+        cut = bool(data.get("cut"))
+        return Heard(HEARD, _clean_segments(data.get("segments")), cut, "timeout" if cut else "")
+    note = re.sub(r"[^A-Za-z0-9_ .:-]", "", str(data.get("note") or "failed"))[:60]
+    return Heard(FAILED, note=note)
+
+
+def _write_result(path: str, data: dict) -> None:
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as handle:
+        json.dump(data, handle)
+    os.replace(tmp, path)
+
+
+def worker_main(argv: list[str]) -> int:
+    """Entry for `--whisper-worker download <name>` / `--whisper-worker transcribe <name> <wav> <out>`."""
+    mode = argv[0] if argv else ""
+    name = argv[1] if len(argv) > 1 and argv[1] in MODELS else DEFAULT_MODEL
+    if mode == "download":
+        _load(name)
+        return 0 if _model is not None else 1
+    if mode != "transcribe" or len(argv) < 4:
+        return 2
+    wav, out = argv[2], argv[3]
+    try:
+        _load(name)
+        if _model is None:
+            _write_result(out, {"state": FAILED, "note": f"load {_load_error or 'failed'}"})
+            return 1
+        segments, cut = run_model(_model, wav)
+        _write_result(out, {"state": HEARD, "segments": segments, "cut": cut})
+        return 0
+    except Exception as exc:
+        try:
+            _write_result(out, {"state": FAILED, "note": type(exc).__name__})
+        except Exception:
+            pass
+        return 1
 
 
 def heard_line(heard: Heard, has_audio: bool, stamp) -> str:
