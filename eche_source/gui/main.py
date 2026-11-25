@@ -1199,6 +1199,10 @@ class MainWindow(QMainWindow):
                     and hasattr(self.cog_manager_window, "apply_cog_list")
                 ):
                     self.cog_manager_window.apply_cog_list(loaded)
+            elif event == "gpu_queue":
+                # core/local_queue status: {"running": {model, label} | None, "waiting": n, "loaded": [...]}.
+                # Kept for a status widget; the notable moments already arrive as [gpu] log lines.
+                self.gpu_queue_status = dict(data or {})
             elif event == "unifier_update":
                 # The chat pane is the conversation. The prompt stays out of it.
                 pass

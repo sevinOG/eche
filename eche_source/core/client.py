@@ -1708,16 +1708,45 @@ def _sync_post(url: str, payload: dict, headers: dict, timeout: int = 45) -> dic
     return {"error": f"{_provider_label()} request failed. model=`{payload.get('model', '?')}`"}
 
 
+LOCAL_QUEUE_BUSY = (
+    "The local model is busy with other work right now (waited too long in line). Try again in a minute."
+)
+LOCAL_QUEUE_TIMEOUT = "The local model took too long to answer."
+
+
+async def _ollama_post(url: str, payload: dict, headers: dict, timeout: int = 90) -> dict:
+    """_sync_post off the event loop. A local Ollama call waits its turn in core.local_queue
+    (one local model job at a time, VRAM-aware); a remote URL never queues. A queue that is
+    too busy or a job past its limit fails clearly; a broken queue runs the call directly."""
+    loop = asyncio.get_running_loop()
+
+    def direct():
+        return loop.run_in_executor(None, lambda: _sync_post(url, payload, headers, timeout))
+
+    if _provider_backend() != "ollama":
+        return await direct()
+    try:
+        from core import local_queue
+    except Exception:
+        return await direct()
+    try:
+        return await local_queue.run_local(
+            url, str(payload.get("model") or ""), direct, label="chat",
+            run_timeout=float(timeout) * 3 + 30,  # _sync_post may try up to three times
+        )
+    except local_queue.QueueBusy:
+        return {"error": LOCAL_QUEUE_BUSY}
+    except local_queue.QueueTimeout:
+        return {"error": LOCAL_QUEUE_TIMEOUT}
+
+
 async def _async_post(url: str, payload: dict, headers: dict, timeout: int = 45) -> dict:
     visible = int(payload.get("max_tokens") or 256)
     stage = 0
     if _provider_backend() == "ollama":
         # Chat, checkers' sibling path, and the episodic summary must not
         # block the loop. _sync_post also covers /api/show and the body.
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(
-            None, lambda: _sync_post(url, payload, headers, timeout)
-        )
+        return await _ollama_post(url, payload, headers, timeout)
     for _ in range(3):
         send_url = url
         try:
@@ -2697,11 +2726,7 @@ async def call_groq_turn(
             url, str(payload.get("model") or "")
         ):
             _flatten_image_messages(payload.get("messages"))
-        loop = asyncio.get_event_loop()
-        data = await loop.run_in_executor(
-            None,
-            lambda: _sync_post(url, payload, _headers(), timeout=90),
-        )
+        data = await _ollama_post(url, payload, _headers(), 90)
 
         if (
             isinstance(data, dict)
@@ -2710,18 +2735,12 @@ async def call_groq_turn(
             and _images_rejected(data["error"])
             and _flatten_image_messages(payload.get("messages"))
         ):
-            data = await loop.run_in_executor(
-                None,
-                lambda: _sync_post(url, payload, _headers(), timeout=90),
-            )
+            data = await _ollama_post(url, payload, _headers(), 90)
 
         if isinstance(data, dict) and "error" in data and tools and _tools_unsupported(data["error"]):
             payload.pop("tools", None)
             payload.pop("tool_choice", None)
-            data = await loop.run_in_executor(
-                None,
-                lambda: _sync_post(url, payload, _headers(), timeout=90),
-            )
+            data = await _ollama_post(url, payload, _headers(), 90)
 
         if isinstance(data, dict) and "error" in data:
             error_msg = _error_text(data["error"])

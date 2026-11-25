@@ -531,8 +531,8 @@ _THINK = re.compile(r"<think>.*?</think>", re.S | re.I)
 
 
 async def describe_local(frames: list[tuple[float, bytes]], prompt: str) -> tuple[str, str]:
-    """(text, reason). reason is "" on success, else off / missing / unreachable / timeout / http_N /
-    error / no_stamps. Never raises."""
+    """(text, reason). reason is "" on success, else off / missing / unreachable / busy / timeout /
+    http_N / error / no_stamps. Never raises."""
     import base64
 
     model = vision_model()
@@ -550,9 +550,17 @@ async def describe_local(frames: list[tuple[float, bytes]], prompt: str) -> tupl
         "keep_alive": LOCAL_KEEP_ALIVE,
         "options": {"temperature": 0.2, "num_predict": DESCRIBE_TOKENS, "num_ctx": LOCAL_NUM_CTX},
     }
+    from core import local_queue
+
     try:
-        status, data = await _ollama_chat(base, body, LOCAL_VISION_TIMEOUT_S)
-    except (asyncio.TimeoutError, TimeoutError):
+        # Waits its turn behind other local model jobs (core/local_queue); the queue makes room on the card.
+        status, data = await local_queue.run_local(
+            base, model, lambda: _ollama_chat(base, body, LOCAL_VISION_TIMEOUT_S),
+            label="watch", run_timeout=LOCAL_VISION_TIMEOUT_S + 5,
+        )
+    except local_queue.QueueBusy:
+        return "", "busy"
+    except (asyncio.TimeoutError, TimeoutError, local_queue.QueueTimeout):
         await _unload_local(base, model)
         return "", "timeout"
     except (ConnectionError, OSError):

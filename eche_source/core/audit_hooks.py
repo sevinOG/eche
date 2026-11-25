@@ -20,6 +20,7 @@ LISTENER_SUCCESS_ALLOWLIST: dict[str, str] = {
 # BACKGROUND_PROBES are checked by calling the probe instead.
 BACKGROUND_ALLOWLIST: dict[str, str] = {
     "_watch_asset_mode": "polls read_asset_mode; toggle changes are audited and probed via save_all",
+    "_work": "core.local_queue worker; every job it runs is a chat or watch call that writes its own api/tool audit row",
 }
 
 # Qt slots that are UI chrome only. Operator slots must be reviewed and probed
