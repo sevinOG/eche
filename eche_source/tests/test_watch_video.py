@@ -188,11 +188,128 @@ class FindingTheVideo(Base):
 
     def test_named_message_is_fetched_from_this_channel_only(self):
         target = msg([Att(b"named")], mid=123456789012345678)
-        here = msg(fetched=target, history=[msg([Att(b"other")])])
-        link = "https://discord.com/channels/1/2/123456789012345678"
+        here = msg(fetched=target, history=[msg([Att(b"other")], mid=3)])
+        link = "https://discord.com/channels/111111111111111111/222222222222222222/123456789012345678"
         self.assertEqual(run(W.find_video(here, link))[0], b"named")
         here.channel.fetch_message.assert_awaited_once_with(123456789012345678)
-        self.assertEqual(run(W.find_video(here, "not an id"))[3], W.NO_VIDEO)
+        # A hint that names nothing still falls back to the automatic search.
+        self.assertEqual(run(W.find_video(here, "not an id"))[0], b"other")
+
+
+def not_found(*_a, **_k):
+    raise LookupError("404 Unknown Message")
+
+
+class LiveRegressions(Base):
+    """2026-11-25 14:36/14:37 ET, #ai-slop-chat: video on the asking message or its reply, model passed
+    a message_id (the attachment id copied from the attachment url), Eche said it found no video."""
+
+    ATTACHMENT_ID = 1575233873929965679
+
+    def test_model_passed_attachment_id_still_finds_video_on_the_asking_message(self):
+        att = Att(b"on-trigger", "meme.mp4")
+        att.id = self.ATTACHMENT_ID
+        here = msg([att], mid=1575233874000000000)
+        here.channel.fetch_message = mock.AsyncMock(side_effect=not_found)
+        stats = {}
+        data, _m, source, err = run(W.find_video(here, str(self.ATTACHMENT_ID), stats))
+        self.assertEqual((data, source, err), (b"on-trigger", "attachment", ""))
+        self.assertEqual((stats["hint"], stats["where"]), ("attachment", "trigger"))
+
+    def test_bad_message_id_falls_back_to_the_automatic_search(self):
+        replied = msg([Att(b"from-reply")], mid=9)
+        here = msg(ref=replied)
+        here.channel.fetch_message = mock.AsyncMock(side_effect=not_found)
+        stats = {}
+        self.assertEqual(run(W.find_video(here, "1575233138202775744", stats))[0], b"from-reply")
+        self.assertEqual((stats["hint"], stats["where"]), ("unmatched", "reply"))
+        # And through the tool: success, not "couldn't find".
+        result = self.watch_tool(msg([Att(b"v")], mid=11), {"message_id": "1575233138202775744"})
+        self.assertTrue(result.for_model)
+        self.assertIn("find: hint=unmatched", result.detail)
+
+    def test_hint_naming_a_message_in_another_channel_is_not_searched_but_auto_still_runs(self):
+        here = msg([Att(b"here")])
+        here.channel.fetch_message = mock.AsyncMock(side_effect=not_found)
+        link = "https://discord.com/channels/1/999/123456789012345678"
+        self.assertEqual(run(W.find_video(here, link))[0], b"here")
+
+    def test_hint_ids_from_links_urls_and_bare_ids(self):
+        self.assertEqual(W.hint_ids("https://discord.com/channels/111111111111111111/222222222222222222/"
+                                    "333333333333333333"), [333333333333333333])
+        self.assertEqual(W.hint_ids("https://cdn.discordapp.com/attachments/222222222222222222/"
+                                    "444444444444444444/clip.mp4?ex=1"), [444444444444444444])
+        self.assertEqual(W.hint_ids("<1575233138202775744>"), [1575233138202775744])
+        self.assertEqual(W.hint_ids("12 34 nope"), [])
+
+    def test_unresolved_reply_is_fetched(self):
+        replied = msg([Att(b"fetched-reply")], mid=9)
+        here = msg()
+        here.reference = SimpleNamespace(resolved=None, message_id=9)
+        here.channel.fetch_message = mock.AsyncMock(return_value=replied)
+        self.assertEqual(run(W.find_video(here))[0], b"fetched-reply")
+        here.channel.fetch_message.assert_awaited_once_with(9)
+
+    def test_odd_or_missing_content_type_and_mov(self):
+        for att in (
+            Att(b"none", "clip.mp4", None),
+            Att(b"octet", "clip.mp4", "application/octet-stream"),
+            Att(b"qt", "IMG_0042.MOV", "video/quicktime"),
+            Att(b"mov-bare", "IMG_0042.mov", None),
+            Att(b"mkv", "clip.mkv", ""),
+            Att(b"semi", "clip", "video/mp4; codecs=avc1"),
+        ):
+            with self.subTest(name=att.filename, ctype=att.content_type):
+                data, mime, source, err = run(W.find_video(msg([att])))
+                self.assertEqual((data, source, err), (att.read.return_value, "attachment", ""))
+                self.assertTrue(mime.startswith("video/"))
+        self.assertEqual(run(W.find_video(msg([Att(b"q", "IMG.mov", None)])))[1], "video/quicktime")
+
+    def test_gifv_embed_without_known_suffix(self):
+        embed = SimpleNamespace(type="gifv", video=SimpleNamespace(proxy_url="https://media.example/v/abc", url=""),
+                                image=None, thumbnail=None, url="")
+        with mock.patch("core.chat_media.fetch", new=mock.AsyncMock(return_value=(b"g", "video/mp4", ""))):
+            self.assertEqual(run(W.find_video(msg(embeds=[embed])))[0], b"g")
+
+    def test_forwarded_video_on_message_snapshot(self):
+        here = msg()
+        here.message_snapshots = [SimpleNamespace(attachments=[Att(b"fwd")], embeds=[])]
+        self.assertEqual(run(W.find_video(here))[0], b"fwd")
+
+    def test_one_failure_does_not_stop_the_search(self):
+        broken = Att(b"", "a.mp4")
+        here = msg([broken], history=[msg([Att(b"good")], mid=3)])
+        self.assertEqual(run(W.find_video(here))[0], b"good")
+
+
+class FailureReasons(Base):
+    def test_distinct_status_and_counts_in_the_log_detail(self):
+        cases = (
+            (msg(), W.NO_VIDEO, "not_found", "videos=0"),
+            (msg([Att(b"p", "notes.pdf", "application/pdf")]), W.NOT_A_VIDEO, "unsupported", "other_files=1"),
+            (msg([Att(b"v", size=26 * 1024 * 1024)]), W.TOO_LARGE, "too_large", "too_large=1"),
+            (msg([Att(b"", "a.mp4")]), W.NO_DOWNLOAD, "download", "download=1"),
+        )
+        for message, line, status, count in cases:
+            with self.subTest(status=status):
+                result = self.watch_tool(message, {})
+                self.assertEqual((result.text, result.status), (line, status))
+                self.assertIn(f"status: {status}", result.detail)
+                self.assertIn("find: hint=none messages=1 ", result.detail)
+                self.assertIn(count, result.detail)
+
+    def test_log_line_has_no_urls_ids_or_secrets(self):
+        att = Att(b"v", size=26 * 1024 * 1024)
+        result = self.watch_tool(msg([att], mid=1575233874000000000), {"message_id": "1575233873929965679"})
+        for leak in ("http", "cdn", "secret", "hm=", "1575233873929965679", "1575233874000000000"):
+            self.assertNotIn(leak, result.detail)
+
+    def watch_tool(self, message, arguments):
+        with self._model():
+            return run(W.watch_video(T.ToolContext(bot=None, message=message), arguments))
+
+
+LiveRegressions.watch_tool = FailureReasons.watch_tool
 
 
 class WatchTool(Base):

@@ -57,6 +57,9 @@ NO_VIDEO = (
     "or the last few messages here."
 )
 TOO_LARGE = "That video is too large for me to open (25 MB limit)."
+NOT_A_VIDEO = (
+    "I found an attachment, but it isn't a video file I can open (mp4, mov, webm, mkv)."
+)
 NO_DOWNLOAD = "I couldn't download that video."
 NO_FRAMES = "I couldn't read any frames from that video."
 CANT_SEE = "The current chat model can't see images, so I can't watch that video."
@@ -66,7 +69,6 @@ FAILED = "I couldn't watch that video."
 _PTS = re.compile(r"pts_time:(\d+(?:\.\d+)?)")
 _DURATION = re.compile(r"Duration:\s*(\d+):(\d{2}):(\d{2}(?:\.\d+)?)")
 _STAMP_LINE = re.compile(r"\[\d+:\d{2}\]")
-_ID = re.compile(r"(\d{15,22})\s*>?\s*$")
 
 _lock = asyncio.Lock()
 _CACHE_MAX = 32
@@ -217,37 +219,81 @@ def sample_frames(video: bytes, mime: str = "video/mp4") -> tuple[list[tuple[flo
 
 
 # --- finding the video on Discord ------------------------------------------------------------
+#
+# The model's message_id is only a HINT. Live 2026-11-25 14:36/14:37 ET: the model copied the
+# ATTACHMENT id out of the attachment url in the prompt (cdn.../attachments/<channel>/<attachment>/
+# name) and passed it as message_id; fetch_message 404'd and the old code searched nothing else, so a
+# video attached to the very message that asked was "not found". Now a hint is tried first (as a
+# message in THIS channel, or as an attachment id on the messages searched), and the automatic search
+# (this message, the replied-to message, recent history) always runs after it.
+
+_SNOWFLAKE = re.compile(r"(?<!\d)(\d{15,22})(?!\d)")
+# Discord phone uploads: .mov (video/quicktime), sometimes no content type at all.
+_VIDEO_SUFFIXES = (".mp4", ".m4v", ".mov", ".webm", ".mkv", ".avi", ".3gp")
+
+
+def _is_video_attachment(item) -> bool:
+    from core.message_media import _content_type, _filename, _is_video_item
+
+    if _is_video_item(item):
+        return True
+    name = (_filename(item) or "").lower().split("?")[0]
+    if name.endswith(_VIDEO_SUFFIXES):
+        return True
+    kind = (_content_type(item) or "").lower()
+    return kind in ("application/mp4", "application/x-matroska")
+
 
 def _video_refs(message) -> list[tuple[str, object]]:
-    """[("attachment", item) | ("embed", url)] for the videos on one message, in order."""
-    from core.message_media import _embed_media, _is_video_item
+    """[("attachment", item) | ("embed", url)] for the videos on one message, in order.
 
+    Forwarded messages carry their files on message_snapshots."""
+    from core.message_media import _embed_media
+
+    sources = [message] + list(getattr(message, "message_snapshots", None) or [])
     refs: list[tuple[str, object]] = []
-    for item in list(getattr(message, "attachments", None) or []):
-        if _is_video_item(item):
-            refs.append(("attachment", item))
-    for embed in list(getattr(message, "embeds", None) or []):
-        url, is_video = _embed_media(embed)
-        if url and is_video:
-            refs.append(("embed", url))
+    for source in sources:
+        for item in list(getattr(source, "attachments", None) or []):
+            if _is_video_attachment(item):
+                refs.append(("attachment", item))
+        for embed in list(getattr(source, "embeds", None) or []):
+            url, is_video = _embed_media(embed)
+            if not is_video and str(getattr(embed, "type", "") or "") == "gifv":
+                video = getattr(embed, "video", None)
+                url = str(getattr(video, "proxy_url", "") or getattr(video, "url", "") or "").strip()
+                is_video = bool(url)
+            if url and is_video:
+                refs.append(("embed", url))
     return refs
 
 
-async def _candidates(message, wanted: str):
-    """Messages to search, best first: a named one in THIS channel, else this, its reply, recent."""
-    channel = getattr(message, "channel", None)
-    if wanted:
-        match = _ID.search(wanted.strip())
-        fetch = getattr(channel, "fetch_message", None)
-        if match and fetch is not None:
-            try:
-                found = await fetch(int(match.group(1)))
-            except Exception:
-                found = None
-            if found is not None:
-                yield found
-        return
-    yield message
+def _other_files(message) -> int:
+    sources = [message] + list(getattr(message, "message_snapshots", None) or [])
+    return sum(
+        1
+        for source in sources
+        for item in list(getattr(source, "attachments", None) or [])
+        if not _is_video_attachment(item)
+    )
+
+
+_JUMP = re.compile(r"channels/(?:\d+|@me)/\d+/(\d{15,22})")
+_ATTACHMENT_URL = re.compile(r"attachments/\d+/(\d{15,22})/")
+
+
+def hint_ids(wanted: str) -> list[int]:
+    """Ids in the model's message_id: the message of a jump link, the attachment of an attachment url,
+    else every bare snowflake (at most four, so a junk hint costs at most four lookups)."""
+    text = wanted or ""
+    picked = _JUMP.findall(text) + _ATTACHMENT_URL.findall(text)
+    if not picked:
+        picked = _SNOWFLAKE.findall(text)
+    return list(dict.fromkeys(int(m) for m in picked))[:4]
+
+
+async def _auto_candidates(message):
+    """("trigger"|"reply"|"history", message), best first."""
+    yield "trigger", message
     from core.message_media import _referenced
 
     try:
@@ -255,53 +301,127 @@ async def _candidates(message, wanted: str):
     except Exception:
         replied = None
     if replied is not None:
-        yield replied
-    history = getattr(channel, "history", None)
+        yield "reply", replied
+    history = getattr(getattr(message, "channel", None), "history", None)
     if history is None:
         return
     try:
         async for earlier in history(limit=HISTORY_LOOKBACK, before=message):
-            yield earlier
+            yield "history", earlier
     except Exception as exc:
         dprint(f"[watch_video] history read failed: {type(exc).__name__}")
 
 
+async def _hinted_messages(message, ids: list[int]):
+    """Messages in THIS channel named by the hint (never another channel or server)."""
+    fetch = getattr(getattr(message, "channel", None), "fetch_message", None)
+    if fetch is None:
+        return
+    for msg_id in ids:
+        if msg_id == getattr(message, "id", None):
+            continue
+        try:
+            found = await fetch(msg_id)
+        except Exception:
+            found = None
+        if found is not None:
+            yield found
+
+
 async def _download(kind: str, ref) -> tuple[bytes, str, str]:
-    """(data, mime, error line)."""
+    """(data, mime, reason). reason: "", "too_large" or "download"."""
     from core.chat_media import MAX_VIDEO_DOWNLOAD, fetch
 
     if kind == "attachment":
         size = int(getattr(ref, "size", 0) or 0)
         if size > MAX_VIDEO_DOWNLOAD:
-            return b"", "", TOO_LARGE
-        from core.message_media import _content_type, _read_bytes
+            return b"", "", "too_large"
+        from core.message_media import _content_type, _filename, _read_bytes
 
         data, err = await _read_bytes(ref)
         if err or not data:
-            return b"", "", NO_DOWNLOAD
+            return b"", "", "download"
         if len(data) > MAX_VIDEO_DOWNLOAD:
-            return b"", "", TOO_LARGE
-        return data, _content_type(ref) or "video/mp4", ""
+            return b"", "", "too_large"
+        mime = _content_type(ref) or ""
+        if not mime.startswith("video/"):
+            name = (_filename(ref) or "").lower()
+            mime = "video/quicktime" if name.endswith(".mov") else "video/webm" if name.endswith(".webm") else "video/mp4"
+        return data, mime, ""
     data, mime, err = await fetch(str(ref), MAX_VIDEO_DOWNLOAD)
     if err == "too-large":
-        return b"", "", TOO_LARGE
+        return b"", "", "too_large"
     if err or not data:
-        return b"", "", NO_DOWNLOAD
+        return b"", "", "download"
     return data, mime or "video/mp4", ""
 
 
-async def find_video(message, wanted: str = "") -> tuple[bytes, str, str, str]:
-    """(data, mime, source, error line). source is attachment/embed for the log only."""
-    error = ""
-    async for candidate in _candidates(message, wanted):
-        for kind, ref in _video_refs(candidate):
-            data, mime, err = await _download(kind, ref)
+_REASON_LINES = {"too_large": TOO_LARGE, "download": NO_DOWNLOAD}
+
+
+async def find_video(message, wanted: str = "", stats: dict | None = None) -> tuple[bytes, str, str, str]:
+    """(data, mime, source, error line). source is attachment/embed for the log only.
+
+    `stats` (optional) is filled with counts for the log: never urls, ids or text."""
+    stats = stats if stats is not None else {}
+    stats.update(hint="none", messages=0, videos=0, too_large=0, download=0, other_files=0, where="")
+    ids = hint_ids(wanted)
+    if ids:
+        stats["hint"] = "unmatched"
+    searched: set = set()
+
+    async def search(candidate, where: str):
+        key = getattr(candidate, "id", None)
+        if key is not None and key in searched:
+            return None
+        if key is not None:
+            searched.add(key)
+        stats["messages"] += 1
+        refs = _video_refs(candidate)
+        stats["other_files"] += _other_files(candidate)
+        if ids:
+            if key in ids:
+                stats["hint"] = "message"
+            named = [r for r in refs if r[0] == "attachment" and getattr(r[1], "id", None) in ids]
+            if named:
+                stats["hint"] = "attachment"
+                refs = named + [r for r in refs if r not in named]
+        for kind, ref in refs:
+            stats["videos"] += 1
+            data, mime, reason = await _download(kind, ref)
             if data:
-                return data, mime, kind, ""
-            error = error or err
-        if error:
-            break
-    return b"", "", "", error or NO_VIDEO
+                stats["where"] = where
+                return data, mime, kind
+            stats[reason] = stats.get(reason, 0) + 1
+        return None
+
+    if ids:
+        # An attachment id named by the hint on this message or its reply wins outright.
+        async for where, candidate in _auto_candidates(message):
+            if where == "history":
+                break
+            if any(getattr(item, "id", None) in ids for item in getattr(candidate, "attachments", None) or []):
+                hit = await search(candidate, where)
+                if hit:
+                    return (*hit, "")
+        async for candidate in _hinted_messages(message, ids):
+            hit = await search(candidate, "hint")
+            if hit:
+                return (*hit, "")
+    async for where, candidate in _auto_candidates(message):
+        hit = await search(candidate, where)
+        if hit:
+            return (*hit, "")
+    for reason in ("too_large", "download"):
+        if stats.get(reason):
+            return b"", "", "", _REASON_LINES[reason]
+    return b"", "", "", NOT_A_VIDEO if stats["other_files"] else NO_VIDEO
+
+
+def find_line(stats: dict) -> str:
+    """One log line about the search. Counts and labels only."""
+    keys = ("hint", "messages", "videos", "too_large", "download", "other_files", "where")
+    return "find: " + " ".join(f"{k}={stats.get(k, '') or ('-' if k in ('where',) else stats.get(k, 0))}" for k in keys)
 
 
 # --- describing ------------------------------------------------------------------------------
@@ -407,9 +527,20 @@ async def watch_video(ctx: ToolContext, arguments: dict) -> ToolResult:
     wanted = str((arguments or {}).get("message_id") or "").strip()[:200]
     async with _lock:
         try:
-            video, mime, source, error = await find_video(message, wanted)
+            stats: dict = {}
+            video, mime, source, error = await find_video(message, wanted, stats)
+            found = find_line(stats)
+            dprint(f"[watch_video] {found}")
             if error:
-                return _said(error, "not_found" if error == NO_VIDEO else "download")
+                status = {
+                    NO_VIDEO: "not_found",
+                    NOT_A_VIDEO: "unsupported",
+                    TOO_LARGE: "too_large",
+                    NO_DOWNLOAD: "download",
+                }.get(error, "not_found")
+                result = _said(error, status)
+                result.detail = f"status: {status}\n{found}"
+                return result
             text = await asyncio.wait_for(watch(video, mime, _ids(message)), WATCH_TIMEOUT_S)
         except ValueError as exc:
             line = str(exc) if str(exc) in (NO_FFMPEG, NO_FRAMES) else FAILED
@@ -429,7 +560,7 @@ async def watch_video(ctx: ToolContext, arguments: dict) -> ToolResult:
         return _said(CANT_SEE, "no_vision")
     from core.chat_media import sha256_hex
 
-    detail = f"source: {source}\nsha256: {sha256_hex(video)[:16]}\n\n{text}"
+    detail = f"source: {source}\n{found}\nsha256: {sha256_hex(video)[:16]}\n\n{text}"
     return ToolResult(text=text, for_model=True, fence=False, detail=detail)
 
 
@@ -445,7 +576,9 @@ def register_watch_tool() -> None:
                     "message_id": {
                         "type": "string",
                         "description": "Only when they point at a specific earlier message in this channel: "
-                                       "its message ID or link. Leave out for the newest video.",
+                                       "its message link. Not an attachment url or id. Leave out when "
+                                       "the video is on their message, the message they replied to, or "
+                                       "is the newest one here.",
                     },
                 },
                 "required": [],
