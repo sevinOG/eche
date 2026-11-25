@@ -35,8 +35,9 @@ TOOL_LINES = {
     ),
     "watch_video": (
         "watch_video: they ask what a video in this chat shows, what happens or what is said in it, and the "
-        "frames on this turn don't already answer it (a longer clip, or one from an earlier message). "
-        "Not for pictures, and not for making or editing a video."
+        "frames on this turn don't already answer it (a longer clip, or one from an earlier message); "
+        "or they ask what is said in an audio clip or voice message. "
+        "Not for pictures, and not for making or editing a video or audio."
     ),
 }
 
