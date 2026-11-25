@@ -72,13 +72,21 @@ RESULT_CHARS = 1500       # core.client.lookup_prompt keeps 1500 characters of n
 
 NO_FFMPEG = "I can't watch videos here: ffmpeg isn't installed."
 NO_VIDEO = (
-    "I couldn't find a video to watch in this message, the message it replies to, "
+    "I couldn't find a video or audio clip in this message, the message it replies to, "
     "or the last few messages here."
 )
-TOO_LARGE = "That video is too large for me to open (25 MB limit)."
+TOO_LARGE = "That clip is too large for me to open (25 MB limit)."
 NOT_A_VIDEO = (
-    "I found an attachment, but it isn't a video file I can open (mp4, mov, webm, mkv)."
+    "I found an attachment, but it isn't a video or audio file I can open "
+    "(mp4, mov, webm, mkv, mp3, m4a, ogg/opus, wav, flac)."
 )
+NO_LISTEN = (
+    "I can't listen to audio clips here: local speech-to-text (faster-whisper) isn't installed."
+)
+LISTEN_OFF = "Listening to audio clips is turned off here."
+LISTEN_LOADING = "My speech-to-text model is still downloading. Ask again in a minute."
+NO_SOUND = "I couldn't find any sound in that clip."
+LISTEN_FAILED = "I couldn't transcribe that audio clip."
 NO_DOWNLOAD = "I couldn't download that video."
 NO_FRAMES = "I couldn't read any frames from that video."
 CANT_SEE = (
@@ -96,10 +104,11 @@ _CACHE_MAX = 32
 _seen: "OrderedDict[str, str]" = OrderedDict()
 
 _DESCRIPTION = (
-    "Watch a video in this Discord chat (attached to this message, in the message it replies to, "
-    "or posted in the last few messages) and get a timestamped description of what happens in it, "
-    "with what is said in it when the sound can be transcribed. "
-    "Use it when they ask what a video shows, what happens or what is said in it."
+    "Watch a video or listen to an audio clip (mp3, m4a, ogg/opus, Discord voice messages, wav, flac...) "
+    "in this Discord chat: attached to this message, in the message it replies to, or posted in the "
+    "last few messages. A video gets a timestamped description of what happens, with what is said "
+    "when the sound can be transcribed; an audio clip gets its length and a timestamped transcript. "
+    "Use it when they ask what a video shows, what happens in it, or what is said in a video or audio clip."
 )
 
 
@@ -254,9 +263,43 @@ _SNOWFLAKE = re.compile(r"(?<!\d)(\d{15,22})(?!\d)")
 _VIDEO_SUFFIXES = (".mp4", ".m4v", ".mov", ".webm", ".mkv", ".avi", ".3gp")
 
 
+# Audio clips (Discord voice messages are voice-message.ogg, audio/ogg; Opus inside).
+_AUDIO_SUFFIXES = (".mp3", ".m4a", ".aac", ".ogg", ".oga", ".opus", ".wav", ".flac", ".wma",
+                   ".aif", ".aiff", ".amr", ".weba", ".mka")
+_AUDIO_MIME_BY_SUFFIX = {
+    ".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".aac": "audio/aac", ".ogg": "audio/ogg", ".oga": "audio/ogg",
+    ".opus": "audio/ogg", ".wav": "audio/wav", ".flac": "audio/flac", ".wma": "audio/x-ms-wma",
+    ".aif": "audio/aiff", ".aiff": "audio/aiff", ".amr": "audio/amr", ".weba": "audio/webm", ".mka": "audio/x-matroska",
+}
+_SUFFIX_BY_AUDIO_MIME = {
+    "audio/mpeg": ".mp3", "audio/mp3": ".mp3", "audio/mp4": ".m4a", "audio/x-m4a": ".m4a", "audio/aac": ".aac",
+    "audio/ogg": ".ogg", "audio/opus": ".ogg", "audio/wav": ".wav", "audio/x-wav": ".wav", "audio/wave": ".wav",
+    "audio/flac": ".flac", "audio/x-flac": ".flac", "audio/webm": ".webm", "audio/aiff": ".aiff",
+    "audio/x-aiff": ".aiff", "audio/amr": ".amr", "audio/x-ms-wma": ".wma", "audio/x-matroska": ".mka",
+}
+
+
+def _name_and_type(item) -> tuple[str, str]:
+    from core.message_media import _content_type, _filename
+
+    return (_filename(item) or "").lower().split("?")[0], (_content_type(item) or "").lower()
+
+
+def _is_audio_attachment(item) -> bool:
+    """audio/* (audio/webm included), or a missing/generic type with an audio file name."""
+    name, kind = _name_and_type(item)
+    if kind.startswith("audio/"):
+        return True
+    if kind.startswith("video/"):
+        return False
+    return name.endswith(_AUDIO_SUFFIXES)
+
+
 def _is_video_attachment(item) -> bool:
     from core.message_media import _content_type, _filename, _is_video_item
 
+    if _is_audio_attachment(item):
+        return False
     if _is_video_item(item):
         return True
     name = (_filename(item) or "").lower().split("?")[0]
@@ -267,7 +310,7 @@ def _is_video_attachment(item) -> bool:
 
 
 def _video_refs(message) -> list[tuple[str, object]]:
-    """[("attachment", item) | ("embed", url)] for the videos on one message, in order.
+    """[("attachment", item) | ("audio", item) | ("embed", url)] for the clips on one message, in order.
 
     Forwarded messages carry their files on message_snapshots."""
     from core.message_media import _embed_media
@@ -278,6 +321,8 @@ def _video_refs(message) -> list[tuple[str, object]]:
         for item in list(getattr(source, "attachments", None) or []):
             if _is_video_attachment(item):
                 refs.append(("attachment", item))
+            elif _is_audio_attachment(item):
+                refs.append(("audio", item))
         for embed in list(getattr(source, "embeds", None) or []):
             url, is_video = _embed_media(embed)
             if not is_video and str(getattr(embed, "type", "") or "") == "gifv":
@@ -295,7 +340,7 @@ def _other_files(message) -> int:
         1
         for source in sources
         for item in list(getattr(source, "attachments", None) or [])
-        if not _is_video_attachment(item)
+        if not _is_video_attachment(item) and not _is_audio_attachment(item)
     )
 
 
@@ -354,7 +399,7 @@ async def _download(kind: str, ref) -> tuple[bytes, str, str]:
     """(data, mime, reason). reason: "", "too_large" or "download"."""
     from core.chat_media import MAX_VIDEO_DOWNLOAD, fetch
 
-    if kind == "attachment":
+    if kind in ("attachment", "audio"):
         size = int(getattr(ref, "size", 0) or 0)
         if size > MAX_VIDEO_DOWNLOAD:
             return b"", "", "too_large"
@@ -366,6 +411,11 @@ async def _download(kind: str, ref) -> tuple[bytes, str, str]:
         if len(data) > MAX_VIDEO_DOWNLOAD:
             return b"", "", "too_large"
         mime = _content_type(ref) or ""
+        if kind == "audio":
+            if not mime.startswith("audio/"):
+                name = (_filename(ref) or "").lower().split("?")[0]
+                mime = next((m for suf, m in _AUDIO_MIME_BY_SUFFIX.items() if name.endswith(suf)), "audio/mpeg")
+            return data, mime, ""
         if not mime.startswith("video/"):
             name = (_filename(ref) or "").lower()
             mime = "video/quicktime" if name.endswith(".mov") else "video/webm" if name.endswith(".webm") else "video/mp4"
@@ -689,6 +739,68 @@ async def watch(video: bytes, mime: str, ids: dict, notes: list[str] | None = No
     return text
 
 
+def probe_bytes(data: bytes, suffix: str) -> tuple[float, bool, bool]:
+    """(duration, has_video, has_audio) of a clip held in memory."""
+    ffmpeg = find_ffmpeg()
+    if not ffmpeg:
+        raise ValueError(NO_FFMPEG)
+    folder = tempfile.mkdtemp(prefix="eche-listen-")
+    try:
+        path = os.path.join(folder, "clip" + suffix)
+        with open(path, "wb") as handle:
+            handle.write(data)
+        return probe(ffmpeg, path)
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+
+
+async def listen_clip(data: bytes, mime: str, ids: dict, notes: list[str]) -> tuple[str, str]:
+    """An audio clip: (text, status). status "" means text is the result for the model.
+
+    Same caps (25 MB on download, the first ten minutes), the same audit row (kinds=audio) before
+    anything is decoded for meaning, the same output check on the transcript. No frames, no vision."""
+    from core import watch_listen as L
+    from core.blocklist import REFUSAL
+    from core.chat_media import record_viewed, sha256_hex
+
+    sha = sha256_hex(data)
+    if sha in _seen:
+        _seen.move_to_end(sha)
+        notes.append("cache: hit")
+        return _seen[sha], ""
+    suffix = _SUFFIX_BY_AUDIO_MIME.get((mime or "").split(";")[0].strip().lower(), ".audio")
+    duration, _has_video, has_audio = await asyncio.to_thread(probe_bytes, data, suffix)
+    if not has_audio:
+        notes.append("audio: no_audio")
+        return NO_SOUND, "no_audio"
+    if not record_viewed(ids, source="watch", items=[{"data": data, "sha256": sha}], kinds=["audio"]):
+        raise PermissionError("watch audit row could not be written")
+    heard = await asyncio.to_thread(L.transcribe, data, suffix)
+    notes.append(L.log_line(heard))
+    failures = {
+        L.NOT_INSTALLED: (NO_LISTEN, "no_whisper"),
+        L.OFF: (LISTEN_OFF, "listen_off"),
+        L.LOADING: (LISTEN_LOADING, "loading"),
+        L.NO_AUDIO: (NO_SOUND, "no_audio"),
+    }
+    if heard.state in failures:
+        return failures[heard.state]
+    if heard.state != L.HEARD:
+        return LISTEN_FAILED, "transcribe"
+    line = L.heard_line(heard, True, stamp)
+    if heard.segments and await _blocked(line):
+        notes.append("audio: blocked")
+        return REFUSAL, "blocked"
+    head = f"Audio clip, {stamp(duration)} long." if duration > 0 else "Audio clip."
+    if duration > L.AUDIO_SECONDS:
+        head += f" Only the first {stamp(L.AUDIO_SECONDS)} was transcribed."
+    text = f"{head}\n{line}"[:RESULT_CHARS]
+    _seen[sha] = text
+    while len(_seen) > _CACHE_MAX:
+        _seen.popitem(last=False)
+    return text, ""
+
+
 def _ids(message) -> dict:
     return dict(
         user_id=getattr(getattr(message, "author", None), "id", None),
@@ -727,7 +839,17 @@ async def watch_video(ctx: ToolContext, arguments: dict) -> ToolResult:
                 result.detail = f"status: {status}\n{found}"
                 return result
             notes: list[str] = []
-            text = await asyncio.wait_for(watch(video, mime, _ids(message), notes), WATCH_TIMEOUT_S)
+            if source == "audio":
+                text, status = await asyncio.wait_for(
+                    listen_clip(video, mime, _ids(message), notes), WATCH_TIMEOUT_S
+                )
+                if status:
+                    outcome = "refusal" if status in ("blocked", "no_audio") else "error"
+                    result = _said(text, status, outcome)
+                    result.detail = f"status: {status}\nsource: audio\n{found}\n" + "\n".join(notes)
+                    return result
+            else:
+                text = await asyncio.wait_for(watch(video, mime, _ids(message), notes), WATCH_TIMEOUT_S)
         except ValueError as exc:
             line = str(exc) if str(exc) in (NO_FFMPEG, NO_FRAMES) else FAILED
             return _said(line, "frames", "error")
