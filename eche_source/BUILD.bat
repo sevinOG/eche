@@ -93,6 +93,19 @@ if errorlevel 1 (
   exit /b 1
 )
 
+echo [1a/5] Optional: local speech-to-text for watch_video ^(faster-whisper^)...
+REM Optional and hash-pinned like requirements.txt. A failure here never stops
+REM the build: watch_video then works without audio and says so.
+if /I "%ECHE_SKIP_WHISPER%"=="1" (
+  echo        skipped ^(ECHE_SKIP_WHISPER=1^)
+) else if exist "%SCRIPT_DIR%requirements-whisper.txt" (
+  "%PY%" -m pip install -q --require-hashes -r "%SCRIPT_DIR%requirements-whisper.txt"
+  if errorlevel 1 (
+    echo [WARN] faster-whisper did not install. The build will continue.
+    echo        watch_video will describe videos without transcribing their sound.
+  )
+)
+
 REM Runtime folders are gitignored - create them so PyInstaller datas= do not fail
 for %%D in (context cookies logs memories) do (
   if not exist "%SCRIPT_DIR%%%D" mkdir "%SCRIPT_DIR%%%D"
