@@ -145,11 +145,23 @@ def watch_prompt(prompt: str, notes: str) -> str:
         f"{base}\n\n"
         "Watch notes (what you saw and heard when you watched the clip just now; "
         f"[m:ss] are timestamps):\n{source}\n\n"
-        "You watched it. Answer the most recent message from these notes only: say what is "
-        "in the clip using them, and do not add anything they don't show. If they don't "
-        "answer the question, say that. Do not say you can't see or watch videos, and do "
-        "not write bracketed notes such as [Watched ...]."
+        "You watched it. The [m:ss] lines are what you saw across the whole clip (several "
+        "frames, not one picture). A line starting \"Heard:\" is what is said or sung in the "
+        "clip's sound, transcribed; use it when they ask what is said or about the audio, and "
+        "don't claim there was no sound when it is there. Answer the most recent message from "
+        "these notes only, and do not add anything they don't show. If they don't answer the "
+        "question, say that. Do not say you can't see, hear or watch videos, and do not write "
+        "bracketed notes such as [Watched ...]."
     )
+
+
+# A watch answer covers what was seen and heard; the channel cap (often ~64 tokens) cut it to
+# the frames alone (live 2026-11-25 16:29 ET). Only watch answers get this floor.
+WATCH_REPLY_TOKENS = 160
+
+
+def watch_reply_tokens(channel_tokens: int) -> int:
+    return max(int(channel_tokens or 0), WATCH_REPLY_TOKENS)
 
 
 def notes_fallback(notes: str, limit: int = 600) -> str:

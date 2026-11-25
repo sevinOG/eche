@@ -65,7 +65,10 @@ LOCAL_VISION_MODEL = "qwen3-vl:4b-instruct"   # Waerhouse's DEFAULT_LOCAL_CHECK_
 LOCAL_VISION_TIMEOUT_S = 90                   # includes loading a 4B model onto the card
 LOCAL_UNLOAD_TIMEOUT_S = 5
 LOCAL_KEEP_ALIVE = 0                          # unload right after the answer: the card is shared
-LOCAL_NUM_CTX = 4096                          # 6 frames at 448 px are ~1.2k image tokens
+# 6 frames + the prompt came to 6331 tokens in Ollama 0.40 (server.log 2026-11-25 16:29 ET:
+# "request (6331 tokens) exceeds the available context size (4096 tokens)" -> HTTP 400, so every
+# watch fell back to the chat model). ~1k tokens a frame; 12k leaves room. 4B Q4 + 12k KV ≈ 5 GB.
+LOCAL_NUM_CTX = 12288
 OLLAMA_DEFAULT = "http://127.0.0.1:11434"
 HISTORY_LOOKBACK = 15     # earlier messages in this channel searched for a video
 RESULT_CHARS = 1500       # core.client.lookup_prompt keeps 1500 characters of notes
@@ -627,7 +630,9 @@ async def describe_local(frames: list[tuple[float, bytes]], prompt: str) -> tupl
     if status == 404 or (status != 200 and "not found" in str(data).lower()):
         return "", "missing"
     if status != 200:
-        return "", f"http_{status}"
+        # A short, fixed reason for the log; never the response text itself.
+        hint = "_context" if "context" in str(data).lower() else ""
+        return "", f"http_{status}{hint}"
     message = (data or {}).get("message") if isinstance(data, dict) else None
     text = _THINK.sub("", str((message or {}).get("content") or "")).strip()
     if not _STAMP_LINE.search(text):
