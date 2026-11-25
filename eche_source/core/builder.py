@@ -186,7 +186,8 @@ def _latest_message(speaker: str, user_message: str, media_note: str, image_coun
         word = "picture" if count == 1 else "pictures"
         lines.extend([
             "",
-            f"{count} {word} follow this message. They belong to this turn, not the memory above.",
+            f"{count} {word} follow this message. They belong to this turn, not the memory above. "
+            "You can see them directly; no tool is needed to look at a picture.",
         ])
     return "\n".join(lines)
 

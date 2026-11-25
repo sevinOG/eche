@@ -197,7 +197,7 @@ _DENIAL = re.compile(
     r"|\buse\s+the\s+asset\s+tool\s+on\s+it\b"
 )
 _PRETEND = re.compile(
-    r"(?i)\b(?:i'?m|i\s+am|im)\s+(?:watching|listening\s+to|looking\s+at)\s+(?:it|this|that|the\s+(?:video|clip|audio))\b"
+    r"(?i)\b(?:i'?m|i\s+am|im)\s+(?:watching|listening\s+to)\s+(?:it|this|that|the\s+(?:video|clip|audio))\b"
     r"|\b(?:okay|ok|alright|sure)[, ]+(?:i'?ll|i\s+will|let\s+me)\s+(?:watch|listen\s+to)\b"
     r"|\bwatched\s+the\s+(?:video|clip)\s+from\s+this\s+message\b"
 )
@@ -225,10 +225,16 @@ _WATCH_MARKER = re.compile(
 )
 
 
-def clean_reply(reply: str, *, watch_on: bool, watched: bool) -> str:
-    """The model's chat reply on a turn where it wrote the answer itself."""
+def clean_reply(reply: str, *, watch_on: bool, watched: bool, pictures: bool = False) -> str:
+    """The model's chat reply on a turn where it wrote the answer itself.
+
+    With pictures on the turn the model really is looking at something, and a description
+    may say "no eyes" about what is in it: only typed [Watched ...] records are removed
+    (live 2026-11-25 17:42 ET, images regressed after #42)."""
     raw = str(reply or "").strip()
     text = strip_action_markers(raw)
+    if pictures:
+        return text
     if watch_on and not watched and (pretends_watching(raw) or _WATCH_MARKER.search(raw)):
         # Nothing was watched this turn: no "I'm watching it now".
         return NOT_WATCHED
@@ -250,15 +256,31 @@ def grounded_reply(spoken: str, notes: str) -> str:
 _SENTENCE = re.compile(r"[^.!?\n]+[.!?]*\s*")
 
 
+# "I can't see an image to work with here" / "I couldn't see the GIF": old replies that
+# teach the model it is blind to pictures (live 2026-11-25 17:42 ET). Memory only; a reply
+# on the current turn is never rewritten for this.
+_IMAGE_DENIAL = re.compile(
+    r"(?i)\b(?:can'?t|cannot|can\s+not|couldn'?t|could\s+not|unable\s+to|don'?t|do\s+not|didn'?t)\s+"
+    r"see\s+(?:an?\s+|the\s+|any\s+|this\s+|that\s+|your\s+)?(?:images?|pictures?|pics?|photos?|gifs?)\b"
+)
+
+
+def denies_seeing_pictures(text: str) -> bool:
+    return bool(_IMAGE_DENIAL.search(str(text or "")))
+
+
 def scrub_text(text: str) -> str:
-    """Drop sentences that deny watching or pretend to; drop typed markers."""
+    """Drop sentences that deny watching or seeing pictures, or pretend to; drop typed markers."""
     raw = str(text or "")
-    if not (denies_watching(raw) or pretends_watching(raw) or _MARKER.search(raw)):
+    if not (denies_watching(raw) or pretends_watching(raw) or denies_seeing_pictures(raw) or _MARKER.search(raw)):
         return raw
     kept = [
         part
         for part in _SENTENCE.findall(_MARKER.sub("", raw))
-        if part.strip() and not denies_watching(part) and not pretends_watching(part)
+        if part.strip()
+        and not denies_watching(part)
+        and not pretends_watching(part)
+        and not denies_seeing_pictures(part)
     ]
     return "".join(kept).strip()
 

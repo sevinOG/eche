@@ -180,6 +180,26 @@ def _log_empty_reply(message, reason: str, **detail) -> None:
     except Exception:
         pass
 
+TOOL_RETRY_TOKENS = 320
+_TOOLISH = ("<tool_call", '"name"', "\"arguments\"", "asset(", "watch_video", "web_search")
+
+
+def _cut_may_be_a_tool_call(reply: str, text: str, has_images: bool) -> bool:
+    """A cut reply that may have been a tool call: tool-shaped text, an empty cut, a request
+    to make/edit something, or pictures on the turn."""
+    raw = str(reply or "")
+    if not raw.strip() or any(mark in raw for mark in _TOOLISH):
+        return True
+    if has_images:
+        return True
+    try:
+        from core.asset_intent import has_request_wording
+
+        return has_request_wording(text)
+    except Exception:
+        return False
+
+
 class _AutoTurn:
     """Stands in for the first model turn when the clip is watched first."""
 
@@ -669,6 +689,33 @@ class OnMessage(commands.Cog):
         if not calls and not quota_reply:
             # The model typed a tool call instead of using the API.
             calls = calls_from_model_text(turn.reply, names)
+        if not calls and not quota_reply and turn.cut and offered and _cut_may_be_a_tool_call(
+            turn.reply, cleaned, bool(all_images)
+        ):
+            # The channel cap (often ~61 tokens) can stop a tool call halfway, and the
+            # repair below has no tools, so "make them badder" on a picture came back as
+            # "I can't see an image to work with" (live 2026-11-25 17:42 ET). One retry
+            # keeps the tools and the pictures, with room for the call.
+            try:
+                retry = await call_groq_turn(
+                    prompt,
+                    user_id=message.author.id,
+                    max_completion_tokens=max(TOOL_RETRY_TOKENS, completion_tokens),
+                    tools=offered,
+                    extra_system=admin_injection(enabled=admin_visible),
+                    images=all_images or None,
+                )
+                retry_calls = list(retry.tool_calls or []) or calls_from_model_text(retry.reply, names)
+                if retry.quota:
+                    turn, quota_reply = retry, True
+                    reply = retry.reply or ""
+                elif retry_calls:
+                    calls = retry_calls
+                elif (retry.reply or "").strip():
+                    turn = retry
+                    reply = retry.reply or ""
+            except Exception as e:
+                dprint(f"[on_message] tool retry after a cut reply failed: {type(e).__name__}")
         was_cut = bool(not calls and not quota_reply and turn.cut)
         empty_reason = ""
         if not calls and not quota_reply and turn.cut:
@@ -767,7 +814,7 @@ class OnMessage(commands.Cog):
             # nothing ran, no "I don't have eyes" while watching is on.
             from core.watch_auto import clean_reply
 
-            reply = clean_reply(reply, watch_on=watch_on, watched=False)
+            reply = clean_reply(reply, watch_on=watch_on, watched=False, pictures=bool(all_images))
         if has_images and not ran_tools and reply.strip() and is_blocked(
             reply, user_id=user_id, channel_id=channel_id
         ):
