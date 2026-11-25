@@ -185,6 +185,11 @@ def conversation_text(user_rows, bot_rows, limit: int = CONVERSATION_CHARS) -> s
     rows.sort(key=lambda row: (row[0], row[1]))
     lines: list[str] = []
     for _at, _order, line in rows:
+        try:
+            from core.standing import hide_mentions
+            line = hide_mentions(line)
+        except Exception:
+            pass
         body = clean_memory_text(" ".join(line.split()))
         if len(body) > _LINE_CHARS:
             body = body[: _LINE_CHARS - 1].rstrip() + "…"
@@ -412,7 +417,24 @@ async def fold_person(bot, guild, user_id, username=None, *, reason: str = "coun
                 if ops is None:
                     done = False
                     continue
-                stats = memory_store.apply_ops(profile, ops, side, own_names=own, known_names=known)
+                mention_ids = []
+                if side == "bot":
+                    try:
+                        from core.standing import mentioned_user_ids, sync_messages
+                        for _at, raw in list(user_rows or []) + list(bot_rows or []):
+                            mention_ids.extend(mentioned_user_ids(str(raw or "")))
+                    except Exception:
+                        mention_ids = []
+                stats = memory_store.apply_ops(
+                    profile, ops, side, own_names=own, known_names=known, mention_ids=mention_ids,
+                )
+                if side == "bot" and conversation:
+                    try:
+                        from core.standing import sync_messages
+                        messages = [text for _at, text in (user_rows or [])]
+                        sync_messages(profile, messages, mention_ids)
+                    except Exception:
+                        pass
                 print(
                     f"[memory] {side} memory for {uid}: +{stats['added']} ~{stats['updated']} "
                     f"-{stats['removed']} merged {stats['merged']} dropped {len(stats['dropped'])}",

@@ -85,6 +85,11 @@ async def _send_reply(message, content: str):
     chunks = discord_chunks(content)
     if not chunks:
         return None
+    try:
+        from core.standing import reply_allowed_mentions
+        mentions = reply_allowed_mentions()
+    except Exception:
+        mentions = discord.AllowedMentions(everyone=False, users=True, roles=False, replied_user=False)
     sent = None
     for index, chunk in enumerate(chunks):
         if index == 0:
@@ -92,15 +97,16 @@ async def _send_reply(message, content: str):
                 sent = await message.channel.send(
                     chunk,
                     reference=message.to_reference(fail_if_not_exists=False),
+                    allowed_mentions=mentions,
                 )
             except discord.HTTPException as exc:
                 missing = getattr(exc, "code", None) == 50035 or "unknown message" in str(exc).lower()
                 if not missing:
                     raise
                 dprint(f"[on_message] reply had no message to reference: {exc}")
-                sent = await message.channel.send(chunk)
+                sent = await message.channel.send(chunk, allowed_mentions=mentions)
         else:
-            sent = await message.channel.send(chunk)
+            sent = await message.channel.send(chunk, allowed_mentions=mentions)
     return sent
 
 
