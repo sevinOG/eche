@@ -6,6 +6,7 @@ ffmpeg and the chat model are mocked. Nothing here makes a picture or video.
 from __future__ import annotations
 
 import asyncio
+import os
 import subprocess
 import unittest
 from types import SimpleNamespace
@@ -15,6 +16,7 @@ from core import client as C
 from core import prompt_text as P
 from core import tools as T
 from core import tools_watch as W
+from core import watch_listen as L
 from core.blocklist import REFUSAL
 
 FRAME = b"\xff\xd8placeholder-frame"
@@ -73,14 +75,27 @@ class Base(unittest.TestCase):
             mock.patch.object(W, "sample_frames",
                               return_value=([(1.0, FRAME), (5.0, FRAME + b"2"), (9.0, FRAME + b"3")], 12.0, True)),
             mock.patch("core.chat_media.record_viewed", side_effect=self._record),
+            # No real Ollama or Whisper in tests: local vision is "unreachable" and
+            # speech-to-text "not installed" unless a test says otherwise.
+            mock.patch.object(W, "_ollama_chat", new=mock.AsyncMock(side_effect=ConnectionRefusedError())),
+            mock.patch.object(L, "transcribe", side_effect=self._transcribe),
+            mock.patch.dict(os.environ, {}, clear=False),
         ):
             p.start()
             self.addCleanup(p.stop)
         self.reply = described()
+        self.heard = L.Heard(L.NOT_INSTALLED)
+        self.transcribed = 0
+        for key in ("ECHE_WATCH_VISION", "ECHE_WATCH_VISION_MODEL", "OLLAMA_API_URL", "ECHE_WATCH_WHISPER"):
+            os.environ.pop(key, None)
 
     def _record(self, ids, *, source, items, kinds):
         self.audits.append({"ids": ids, "source": source, "items": items, "kinds": kinds})
         return True
+
+    def _transcribe(self, video, suffix=".mp4"):
+        self.transcribed += 1
+        return self.heard
 
     def _model(self):
         async def fake(prompt, **kw):
@@ -419,8 +434,17 @@ class Registration(Base):
         with open(W.__file__, encoding="utf-8") as fh:
             text = fh.read()
         self.assertEqual(source_has_generation(text), "")
-        for host in ("api.x.ai", "generativelanguage", "http://", "https://"):
+        for host in ("api.x.ai", "generativelanguage", "https://"):
             self.assertNotIn(host, text)
+        # The only host is the local Ollama default.
+        import re as _re
+        self.assertEqual(set(_re.findall(r"http://[^\s\"']+", text)), {"http://127.0.0.1:11434"})
+        from core import watch_listen as L
+        with open(L.__file__, encoding="utf-8") as fh:
+            listen = fh.read()
+        self.assertEqual(source_has_generation(listen), "")
+        for host in ("http://", "https://", "api.x.ai"):
+            self.assertNotIn(host, listen)
 
 
 if __name__ == "__main__":

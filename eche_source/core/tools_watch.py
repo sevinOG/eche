@@ -17,10 +17,23 @@
 # row can't be written. The description itself still goes through the chat
 # call's output check. Nothing here makes, edits or posts a picture or video.
 #
-# GPU: the frames go to the configured chat model (Ollama is shared). Bounded:
-# one watch at a time, at most MAX_FRAMES small frames, ffmpeg timeouts, and a
-# per-video cache so a follow-up question does not watch the clip again.
-# Sound is not transcribed (Eche has no speech-to-text); the text says so.
+# Seeing: the frames go to a local vision model through Ollama first
+# (qwen3-vl:4b-instruct, the same default as Waerhouse's vision helper), and
+# to the configured chat model only when that is missing or fails. Local
+# first because it is free, does not touch the provider quota, and a small
+# purpose-built VL model is steadier at "[m:ss] what is visible" than a chat
+# model; the chat model stays as the fallback so a PC without the model still
+# watches. Ollama is shared with Waerhouse: localhost only, one request,
+# keep_alive 0 (the model leaves VRAM as soon as it answers, and an explicit
+# unload follows a timeout), at most MAX_FRAMES small frames, a timeout.
+# ECHE_WATCH_VISION_MODEL picks another tag ("off" skips local); ECHE_WATCH_VISION
+# = local / chat pins one route.
+#
+# Hearing: core/watch_listen (faster-whisper on the CPU, optional). It runs
+# at the same time as the vision call, after the audit row.
+#
+# Bounded: one watch at a time, ffmpeg timeouts, and a per-video cache so a
+# follow-up question does not watch the clip again.
 
 from __future__ import annotations
 
@@ -47,7 +60,13 @@ SCENE_TIMEOUT_S = 45
 FRAME_TIMEOUT_S = 15
 PROBE_TIMEOUT_S = 20
 DESCRIBE_TOKENS = 450
-WATCH_TIMEOUT_S = 180
+WATCH_TIMEOUT_S = 240     # frames + (local vision | chat fallback) alongside the transcript
+LOCAL_VISION_MODEL = "qwen3-vl:4b-instruct"   # Waerhouse's DEFAULT_LOCAL_CHECK_MODEL / vision helper
+LOCAL_VISION_TIMEOUT_S = 90                   # includes loading a 4B model onto the card
+LOCAL_UNLOAD_TIMEOUT_S = 5
+LOCAL_KEEP_ALIVE = 0                          # unload right after the answer: the card is shared
+LOCAL_NUM_CTX = 4096                          # 6 frames at 448 px are ~1.2k image tokens
+OLLAMA_DEFAULT = "http://127.0.0.1:11434"
 HISTORY_LOOKBACK = 15     # earlier messages in this channel searched for a video
 RESULT_CHARS = 1500       # core.client.lookup_prompt keeps 1500 characters of notes
 
@@ -62,7 +81,9 @@ NOT_A_VIDEO = (
 )
 NO_DOWNLOAD = "I couldn't download that video."
 NO_FRAMES = "I couldn't read any frames from that video."
-CANT_SEE = "The current chat model can't see images, so I can't watch that video."
+CANT_SEE = (
+    "I can't watch that video: the local vision model isn't available and the chat model can't see images."
+)
 BUSY = "I'm already watching a video. Ask again in a moment."
 FAILED = "I couldn't watch that video."
 
@@ -76,8 +97,9 @@ _seen: "OrderedDict[str, str]" = OrderedDict()
 
 _DESCRIPTION = (
     "Watch a video in this Discord chat (attached to this message, in the message it replies to, "
-    "or posted in the last few messages) and get a timestamped description of what happens in it. "
-    "Use it when they ask what a video shows or what happens in it."
+    "or posted in the last few messages) and get a timestamped description of what happens in it, "
+    "with what is said in it when the sound can be transcribed. "
+    "Use it when they ask what a video shows, what happens or what is said in it."
 )
 
 
@@ -434,30 +456,138 @@ PROMPT = (
 )
 
 
-def render(duration: float, described: str, has_audio: bool) -> str:
-    lines = [f"Video, {stamp(duration)} long."]
+def render(duration: float, described: str, has_audio: bool, heard_line: str = "") -> str:
+    """Length, what was seen, what was heard. The heard line is kept whole; the description is clipped."""
+    head = [f"Video, {stamp(duration)} long."]
     if duration > MAX_SECONDS:
-        lines.append(f"Only the first {stamp(MAX_SECONDS)} was watched.")
-    lines.append((described or "").strip())
-    lines.append("It has a sound track that was not transcribed." if has_audio else "It has no sound track.")
-    text = "\n".join(lines)
-    if len(text) > RESULT_CHARS:
-        text = text[: RESULT_CHARS - 1].rstrip() + "…"
-    return text
+        head.append(f"Only the first {stamp(MAX_SECONDS)} was watched.")
+    tail = heard_line or (
+        "It has a sound track that was not transcribed." if has_audio else "It has no sound track."
+    )
+    room = RESULT_CHARS - len("\n".join(head)) - len(tail) - 2
+    body = (described or "").strip()
+    if len(body) > room:
+        body = body[: max(0, room - 1)].rstrip() + "…"
+    return "\n".join(head + [body, tail])
 
 
-async def describe(frames: list[tuple[float, bytes]], ids: dict) -> str:
-    """The frames through the chat model. "" when it can't see them. Fail closed on the audit row."""
-    from core.chat_media import record_viewed, sha256_hex
+def vision_model() -> str:
+    raw = (os.environ.get("ECHE_WATCH_VISION_MODEL") or "").strip()
+    if raw.lower() in ("0", "off", "false", "no", "none"):
+        return ""
+    return raw[:100] or LOCAL_VISION_MODEL
+
+
+def vision_order() -> list[str]:
+    """Which models look at the frames, in order. Default: local, then the chat model."""
+    raw = (os.environ.get("ECHE_WATCH_VISION") or "").strip().lower()
+    if raw == "local":
+        return ["local"]
+    if raw == "chat":
+        return ["chat"]
+    return ["local", "chat"]
+
+
+_LOOPBACK = {"localhost", "127.0.0.1", "::1"}
+
+
+def ollama_base() -> str:
+    """Eche's Ollama URL (OLLAMA_API_URL) reduced to scheme://host:port, only when it is this PC.
+
+    Anything else falls back to the local default: frames never leave the machine on this route."""
+    from urllib.parse import urlsplit
+
+    raw = (os.environ.get("OLLAMA_API_URL") or "").strip()
+    if raw:
+        try:
+            parts = urlsplit(raw)
+            if parts.scheme in ("http", "https") and (parts.hostname or "").lower() in _LOOPBACK:
+                host = parts.hostname if ":" not in (parts.hostname or "") else f"[{parts.hostname}]"
+                return f"{parts.scheme}://{host}:{parts.port or 11434}"
+        except ValueError:
+            pass
+    return OLLAMA_DEFAULT
+
+
+async def _ollama_chat(base: str, body: dict, timeout: float) -> tuple[int, object]:
+    """POST {base}/api/chat. (status, parsed json | text)."""
+    import aiohttp
+
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout)) as session:
+        async with session.post(base + "/api/chat", json=body) as resp:
+            if resp.status == 200:
+                return resp.status, await resp.json(content_type=None)
+            return resp.status, (await resp.text())[:300]
+
+
+async def _unload_local(base: str, model: str) -> None:
+    try:
+        await _ollama_chat(base, {"model": model, "messages": [], "keep_alive": 0}, LOCAL_UNLOAD_TIMEOUT_S)
+    except Exception:
+        pass
+
+
+_THINK = re.compile(r"<think>.*?</think>", re.S | re.I)
+
+
+async def describe_local(frames: list[tuple[float, bytes]], prompt: str) -> tuple[str, str]:
+    """(text, reason). reason is "" on success, else off / missing / unreachable / timeout / http_N /
+    error / no_stamps. Never raises."""
+    import base64
+
+    model = vision_model()
+    if not model:
+        return "", "off"
+    base = ollama_base()
+    body = {
+        "model": model,
+        "messages": [{
+            "role": "user",
+            "content": prompt,
+            "images": [base64.b64encode(blob).decode("ascii") for _t, blob in frames],
+        }],
+        "stream": False,
+        "keep_alive": LOCAL_KEEP_ALIVE,
+        "options": {"temperature": 0.2, "num_predict": DESCRIBE_TOKENS, "num_ctx": LOCAL_NUM_CTX},
+    }
+    try:
+        status, data = await _ollama_chat(base, body, LOCAL_VISION_TIMEOUT_S)
+    except (asyncio.TimeoutError, TimeoutError):
+        await _unload_local(base, model)
+        return "", "timeout"
+    except (ConnectionError, OSError):
+        return "", "unreachable"
+    except Exception as exc:
+        name = type(exc).__name__
+        return "", "unreachable" if "Connect" in name else "error"
+    if status == 404 or (status != 200 and "not found" in str(data).lower()):
+        return "", "missing"
+    if status != 200:
+        return "", f"http_{status}"
+    message = (data or {}).get("message") if isinstance(data, dict) else None
+    text = _THINK.sub("", str((message or {}).get("content") or "")).strip()
+    if not _STAMP_LINE.search(text):
+        return "", "no_stamps"
+    return text, ""
+
+
+async def _blocked(text: str) -> bool:
+    """The chat output check, in its image-turn form (the strict one), for text no chat call checked."""
+    from core import client as C
+
+    token = C._request_images.set(True)
+    try:
+        return bool(await C._output_blocked(text))
+    finally:
+        C._request_images.reset(token)
+
+
+async def describe_chat(frames: list[tuple[float, bytes]], prompt: str, ids: dict) -> str:
+    """The frames through the chat model. "" when it can't see them."""
     from core.client import call_groq_turn, reset_precleared_images, set_precleared_images
     from core.message_media import image_part
 
-    items = [{"data": blob, "sha256": sha256_hex(blob)} for _t, blob in frames]
-    if not record_viewed(ids, source="watch", items=items, kinds=["video"]):
-        raise PermissionError("watch audit row could not be written")
     parts = [image_part(blob, "image/jpeg") for _t, blob in frames]
-    stamps = ", ".join(f"{i}. [{stamp(t)}]" for i, (t, _b) in enumerate(frames, 1))
-    prompt = PROMPT.format(n=len(frames), stamps=stamps)
     token = set_precleared_images(parts)
     try:
         turn = await call_groq_turn(
@@ -482,25 +612,80 @@ async def describe(frames: list[tuple[float, bytes]], ids: dict) -> str:
     return text if _STAMP_LINE.search(text) else ""
 
 
-async def watch(video: bytes, mime: str, ids: dict) -> str:
-    from core.chat_media import sha256_hex
+async def describe(frames: list[tuple[float, bytes]], ids: dict, notes: list[str] | None = None) -> str:
+    """The frames, described, by the first route in vision_order() that answers. "" when none can.
 
+    The caller has already written the audit row. `notes` gets one short line per route tried."""
+    notes = notes if notes is not None else []
+    stamps = ", ".join(f"{i}. [{stamp(t)}]" for i, (t, _b) in enumerate(frames, 1))
+    prompt = PROMPT.format(n=len(frames), stamps=stamps)
+    from core.blocklist import REFUSAL
+
+    for route in vision_order():
+        if route == "local":
+            text, reason = await describe_local(frames, prompt)
+            if text:
+                if await _blocked(text):
+                    notes.append("vision: local blocked")
+                    return REFUSAL
+                notes.append(f"vision: local model={vision_model()}")
+                return text
+            notes.append(f"vision: local {reason}")
+            dprint(f"[watch_video] local vision unavailable: {reason}")
+            continue
+        text = await describe_chat(frames, prompt, ids)
+        notes.append("vision: chat" + ("" if text else " cannot_see"))
+        if text:
+            return text
+    return ""
+
+
+async def hear(video: bytes, mime: str, has_audio: bool):
+    """core.watch_listen.Heard for this clip, off the event loop. Never raises."""
+    from core import watch_listen as L
+
+    if not has_audio:
+        return L.Heard(L.NO_AUDIO)
+    suffix = ".webm" if "webm" in (mime or "") else ".mov" if "quicktime" in (mime or "") else ".mp4"
+    try:
+        return await asyncio.to_thread(L.transcribe, video, suffix)
+    except Exception as exc:
+        return L.Heard(L.FAILED, note=type(exc).__name__)
+
+
+async def watch(video: bytes, mime: str, ids: dict, notes: list[str] | None = None) -> str:
+    from core import watch_listen as L
+    from core.chat_media import record_viewed, sha256_hex
+
+    notes = notes if notes is not None else []
     sha = sha256_hex(video)
     if sha in _seen:
         _seen.move_to_end(sha)
+        notes.append("cache: hit")
         return _seen[sha]
     frames, duration, has_audio = await asyncio.to_thread(sample_frames, video, mime)
-    described = await describe(frames, ids)
+    # Audit row first, fail closed: nothing is looked at or listened to without it.
+    items = [{"data": blob, "sha256": sha256_hex(blob)} for _t, blob in frames]
+    if not record_viewed(ids, source="watch", items=items, kinds=["video"]):
+        raise PermissionError("watch audit row could not be written")
+    # GPU (vision) and CPU (Whisper) work side by side.
+    described, heard = await asyncio.gather(describe(frames, ids, notes), hear(video, mime, has_audio))
+    notes.append(L.log_line(heard))
     if not described:
         return ""
     from core.blocklist import REFUSAL
 
     if described == REFUSAL:
         return REFUSAL
-    text = render(duration, described, has_audio)
-    _seen[sha] = text
-    while len(_seen) > _CACHE_MAX:
-        _seen.popitem(last=False)
+    line = L.heard_line(heard, has_audio, stamp)
+    text = render(duration, described, has_audio, line)
+    if heard.state == L.HEARD and heard.segments and await _blocked(line):
+        notes.append("audio: blocked")
+        return REFUSAL
+    if heard.state not in (L.LOADING,):  # a later watch should get the transcript
+        _seen[sha] = text
+        while len(_seen) > _CACHE_MAX:
+            _seen.popitem(last=False)
     return text
 
 
@@ -541,7 +726,8 @@ async def watch_video(ctx: ToolContext, arguments: dict) -> ToolResult:
                 result = _said(error, status)
                 result.detail = f"status: {status}\n{found}"
                 return result
-            text = await asyncio.wait_for(watch(video, mime, _ids(message)), WATCH_TIMEOUT_S)
+            notes: list[str] = []
+            text = await asyncio.wait_for(watch(video, mime, _ids(message), notes), WATCH_TIMEOUT_S)
         except ValueError as exc:
             line = str(exc) if str(exc) in (NO_FFMPEG, NO_FRAMES) else FAILED
             return _said(line, "frames", "error")
@@ -555,12 +741,17 @@ async def watch_video(ctx: ToolContext, arguments: dict) -> ToolResult:
     from core.blocklist import REFUSAL
 
     if text == REFUSAL:
-        return _said(REFUSAL, "blocked")
+        result = _said(REFUSAL, "blocked")
+        result.detail = "status: blocked\n" + "\n".join(notes)
+        return result
     if not text:
-        return _said(CANT_SEE, "no_vision")
+        result = _said(CANT_SEE, "no_vision")
+        result.detail = "status: no_vision\n" + "\n".join(notes)
+        return result
     from core.chat_media import sha256_hex
 
-    detail = f"source: {source}\n{found}\nsha256: {sha256_hex(video)[:16]}\n\n{text}"
+    route = "\n".join(notes)
+    detail = f"source: {source}\n{found}\n{route}\nsha256: {sha256_hex(video)[:16]}\n\n{text}"
     return ToolResult(text=text, for_model=True, fence=False, detail=detail)
 
 

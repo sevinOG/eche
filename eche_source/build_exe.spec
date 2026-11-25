@@ -124,6 +124,22 @@ if collect_submodules is not None:
         except Exception:
             pass
 
+# Optional local speech-to-text for watch_video (requirements-whisper.txt).
+# Collected only when BUILD.bat managed to install it; core/ is shipped as
+# source, so its lazy "import faster_whisper" is invisible to the analysis.
+if collect_all is not None:
+    import importlib.util as _ilu
+    for pkg in ("faster_whisper", "ctranslate2", "onnxruntime", "av", "tokenizers", "huggingface_hub"):
+        try:
+            if _ilu.find_spec(pkg) is None:
+                continue
+            d, b, h = collect_all(pkg)
+            _extra_datas += d
+            _extra_binaries += b
+            _extra_hidden += h
+        except Exception:
+            pass
+
 # Force collection of PyNaCl / nacl native libraries (libsodium etc.)
 if collect_dynamic_libs is not None:
     for pkg in ("nacl", "PyNaCl"):
