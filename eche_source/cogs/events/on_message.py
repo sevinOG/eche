@@ -221,17 +221,19 @@ class OnMessage(commands.Cog):
             lookup_prompt,
         )
         watched = (tool or "").casefold() == "watch_video"
+        reply_tokens = channel_completion_tokens()
         if watched:
-            from core.watch_auto import grounded_reply, watch_prompt
+            from core.watch_auto import grounded_reply, watch_prompt, watch_reply_tokens
 
             follow = watch_prompt(prompt, notes)
+            reply_tokens = watch_reply_tokens(reply_tokens)
         else:
             follow = lookup_prompt(prompt, notes)
         try:
             turn = await call_groq_turn(
                 follow,
                 user_id=None,
-                max_completion_tokens=channel_completion_tokens(),
+                max_completion_tokens=reply_tokens,
                 include_tool_note=False,
                 job="lookup",
             )
