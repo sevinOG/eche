@@ -55,6 +55,12 @@ RUN_TIMEOUT_S = 300.0
 UNLOAD_TIMEOUT_S = 30.0
 UNLOAD_POLL_S = 0.5
 PS_TIMEOUT_S = 2.0
+# Hard caps on each bookkeeping call, enforced with asyncio.wait_for on top of aiohttp's own
+# timeout (live 2026-11-25 16:04 ET: the loop froze inside /api/ps). A slow or failed call
+# skips the budget work and the job runs anyway.
+PS_CALL_TIMEOUT_S = 3.0
+UNLOAD_CALL_TIMEOUT_S = 12.0
+PREPARE_TIMEOUT_S = 75.0
 MAX_BYPASS = 3
 BATCH_WAIT_S = 30.0
 MAX_QUEUED = 32
@@ -161,9 +167,16 @@ def is_local(url: str) -> bool:
         return False
 
 
+def ip_literal(host: str) -> str:
+    """'localhost' -> '127.0.0.1'. aiohttp resolves names through loop.getaddrinfo, which needs
+    a thread from the default executor; an IP literal skips resolution entirely."""
+    host = str(host or "").strip().lower()
+    return "127.0.0.1" if host in ("", "localhost") else host
+
+
 def base_of(url: str) -> str:
     parts = urlsplit(str(url or ""))
-    host = parts.hostname or "127.0.0.1"
+    host = ip_literal(parts.hostname or "")
     if ":" in host:
         host = f"[{host}]"
     return f"{parts.scheme or 'http'}://{host}:{parts.port or 11434}"
@@ -306,7 +319,11 @@ class LocalQueue:
             job.started.set()
             self._emit()
             try:
-                await self._prepare(job)
+                await asyncio.wait_for(self._prepare(job), PREPARE_TIMEOUT_S)
+            except asyncio.TimeoutError:
+                self._log(f"getting the GPU ready for {job.label} took over {PREPARE_TIMEOUT_S:.0f}s; running it directly")
+                _settle(job, ("broken", "prepare timeout"))
+                continue
             except Exception as exc:
                 # The job still runs: directly, by its caller, outside the queue's bookkeeping.
                 _settle(job, ("broken", type(exc).__name__))
@@ -327,8 +344,8 @@ class LocalQueue:
             self.resident.add(job.model)
 
     async def _prepare(self, job: _Job) -> None:
-        """Make room for job.model. /api/ps unreadable: run anyway (Ollama decides, as before)."""
-        listed = await self.ps(job.base)
+        """Make room for job.model. /api/ps unreadable or slow: run anyway (Ollama decides, as before)."""
+        listed = await self._ps(job.base)
         if listed is None:
             return
         self.resident = {norm(n) for n, _s in listed}
@@ -350,18 +367,21 @@ class LocalQueue:
         if model in self.sizes:
             return self.sizes[model]
         try:
-            weights = await self.tag_size(base, model)
-        except Exception:
+            weights = await asyncio.wait_for(self.tag_size(base, model), PS_CALL_TIMEOUT_S)
+        except Exception:  # includes asyncio.TimeoutError
             weights = None
         return footprint(weights) or footprint(guess_bytes(model))
 
     async def _unload(self, base: str, name: str) -> None:
         """keep_alive 0, then /api/ps until it is gone. Not gone in time: the queue is broken for this job."""
         self._log(f"unloading {_short(name)} to make room")
-        await self.unload(base, name)
+        try:
+            await asyncio.wait_for(self.unload(base, name), UNLOAD_CALL_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            raise _QueueBroken("unload call timed out") from None
         deadline = time.monotonic() + self.unload_timeout
         while True:
-            listed = await self.ps(base)
+            listed = await self._ps(base)
             if listed is not None and name not in {norm(n) for n, _s in listed}:
                 self.owned.pop(name, None)
                 self.resident.discard(name)
@@ -370,6 +390,16 @@ class LocalQueue:
                 self._log(f"{_short(name)} did not leave the GPU within {self.unload_timeout:.0f}s")
                 raise _QueueBroken("unload not verified")
             await asyncio.sleep(self.unload_poll)
+
+    async def _ps(self, base: str):
+        """/api/ps with a hard cap. None (unknown) when it is slow or fails."""
+        try:
+            return await asyncio.wait_for(self.ps(base), PS_CALL_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            self._log(f"/api/ps took over {PS_CALL_TIMEOUT_S:.0f}s; skipping the VRAM check")
+            return None
+        except Exception:
+            return None
 
     def _emit(self) -> None:
         status = self.status()
@@ -406,8 +436,15 @@ def _short(model: str) -> str:
 
 # --- Ollama HTTP (local only) -------------------------------------------------------------------
 
+def _local_base(base: str) -> str:
+    """Always an IP literal: no DNS, so no executor thread, for this PC's Ollama."""
+    return base_of(base)
+
+
 async def _http_ps(base: str):
     import aiohttp
+
+    base = _local_base(base)
 
     try:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=PS_TIMEOUT_S)) as session:
@@ -424,6 +461,8 @@ async def _http_ps(base: str):
 async def _http_unload(base: str, name: str) -> None:
     import aiohttp
 
+    base = _local_base(base)
+
     try:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
             async with session.post(base + "/api/chat", json={"model": name, "messages": [], "keep_alive": 0}):
@@ -434,6 +473,8 @@ async def _http_unload(base: str, name: str) -> None:
 
 async def _http_tag_size(base: str, model: str) -> int | None:
     import aiohttp
+
+    base = _local_base(base)
 
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=PS_TIMEOUT_S)) as session:
         async with session.get(base + "/api/tags") as resp:

@@ -554,7 +554,11 @@ def ollama_base() -> str:
         try:
             parts = urlsplit(raw)
             if parts.scheme in ("http", "https") and (parts.hostname or "").lower() in _LOOPBACK:
-                host = parts.hostname if ":" not in (parts.hostname or "") else f"[{parts.hostname}]"
+                from core.local_queue import ip_literal
+
+                # An IP literal: aiohttp then never resolves (no executor thread for DNS).
+                host = ip_literal(parts.hostname or "")
+                host = host if ":" not in host else f"[{host}]"
                 return f"{parts.scheme}://{host}:{parts.port or 11434}"
         except ValueError:
             pass
