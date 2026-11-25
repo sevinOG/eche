@@ -33,6 +33,11 @@ TOOL_LINES = {
         "Describe people in prompt as adults. Never mention age, youth, or anyone under 18 in "
         "prompt, not even to exclude them."
     ),
+    "watch_video": (
+        "watch_video: they ask what a video in this chat shows or what happens in it, and the "
+        "frames on this turn don't already answer it (a longer clip, or one from an earlier message). "
+        "Not for pictures, and not for making or editing a video."
+    ),
 }
 
 _CLOSER = "When one of these fits, call it. That call is the reply."
@@ -107,6 +112,10 @@ _LOOKUP_SHAPE = (
     "Use only what the notes say, and quote the part that answers it. "
     "Do not call a tool. Do not ask for a thread."
 )
+_WATCH_SHAPE = (
+    "Follow the instruction in the message exactly: one line per frame, then the Overall line. "
+    "Describe only what is visible. Do not call a tool."
+)
 _SEARCH_SHAPE = (
     "This round is one web_search call for the query in the message. "
     "Do not answer. Do not write DONE."
@@ -174,7 +183,10 @@ def _task_and_shape(job: str, names: list[str], room: int) -> tuple[str, str]:
         return "The message has one query.", _SEARCH_SHAPE
     if job == "execute":
         return "The message is the plan.", _execute_shape(room)
-    # Channel, and any job name that is not one of the five above.
+    if job == "watch":
+        # core/tools_watch: frames in order, described with timestamps. No voice.
+        return "The pictures are frames of one video, in order.", _WATCH_SHAPE
+    # Channel, and any job name that is not one of the six above.
     # The old thread job is not one of them and must not come back.
     shape = _CHANNEL_SHAPE
     if "thread" in names:
