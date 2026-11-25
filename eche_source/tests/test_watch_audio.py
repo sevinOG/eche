@@ -95,7 +95,7 @@ class AudioClips(Base):
         W._seen.clear()
         with mock.patch("core.chat_media.record_viewed", return_value=False):
             result = self.tool(msg([voice(b"other")]))
-        self.assertEqual((result.text, result.status), (W.FAILED, "audit"))
+        self.assertEqual((result.text, result.status), (W.NO_AUDIT, "audit"))
         self.assertEqual(self.transcribed, 1)  # nothing transcribed without the row
 
     def test_whisper_missing_says_so_clearly(self):

@@ -358,7 +358,7 @@ class WatchTool(Base):
         with mock.patch("core.chat_media.record_viewed", return_value=False):
             result = self.watch(msg([Att(b"v")]))
         self.assertEqual(self.model_calls, [])
-        self.assertEqual((result.text, result.status, result.for_model), (W.FAILED, "audit", False))
+        self.assertEqual((result.text, result.status, result.for_model), (W.NO_AUDIT, "audit", False))
 
     def test_model_that_cannot_see_and_output_block(self):
         self.reply = C.IMAGES_DROPPED_NOTE

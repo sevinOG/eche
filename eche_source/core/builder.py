@@ -205,6 +205,10 @@ def _speaker(username: str, user_id) -> str:
 
 _RECENT_THEM = "Recent messages from them:"
 _RECENT_YOU = "Your own recent replies to them, as you posted them:"
+_RECORD_NOTE = (
+    "(A bracketed [I used ...] line is the app's record of a tool that really ran. "
+    "Never write one yourself.)"
+)
 _RECENT_LABELS = (_RECENT_THEM, _RECENT_YOU)
 
 
@@ -303,6 +307,14 @@ def render_memory_prompt(
     bot_summary = clean_memory_text(bot_summary or "") or "none"
     user_rows = clean_lines(user_rows)
     bot_rows = clean_lines(bot_rows)
+    # Eche's own old "I don't have eyes" / "watching it now" lines and typed
+    # "[Watched ...]" records are not repeated back to it (live 2026-11-25).
+    from core.watch_auto import scrub_rows, scrub_text
+
+    bot_rows = scrub_rows(bot_rows)
+    if any("[I used " in row for row in bot_rows):
+        bot_rows = [*bot_rows, _RECORD_NOTE]
+    bot_summary = scrub_text(bot_summary) or "none"
     episode = clean_memory_text(episode or "")
     head = "\n\n".join(
         [
