@@ -3,6 +3,8 @@
 import discord
 from discord.ext import commands
 
+from core.permissions import owner_only
+
 from core.context_manager import ensure_context_channel, get_home_guild, read_raw_context
 from core.context_summarizer import fold_person, replace_memory
 
@@ -48,7 +50,7 @@ class ContextDebug(commands.Cog):
     # OVERWRITE SUMMARY (PATCHED + SAFE)
     # ---------------------------------------------------------
     @commands.command(name="context_overwrite")
-    @commands.is_owner()
+    @owner_only()
     async def context_overwrite(self, ctx, member: discord.Member, *, new_summary: str):
         guild = get_home_guild(self.bot)
         channel, pinned = await ensure_context_channel(
@@ -86,7 +88,7 @@ class ContextDebug(commands.Cog):
     # CLEAR SUMMARY
     # ---------------------------------------------------------
     @commands.command(name="context_clear")
-    @commands.is_owner()
+    @owner_only()
     async def context_clear(self, ctx, member: discord.Member):
         guild = get_home_guild(self.bot)
         channel, pinned = await ensure_context_channel(
@@ -126,7 +128,7 @@ class ContextDebug(commands.Cog):
     # REPAIR BOT MEMORY (FULL AUTO-REBUILD)
     # ---------------------------------------------------------
     @commands.command(name="bot_repair")
-    @commands.is_owner()
+    @owner_only()
     async def repair_bot_memory(self, ctx, member: discord.Member = None):
         from core.bot_memory import ensure_bot_memory_channel
         from core.discord_store import bot_memory_header

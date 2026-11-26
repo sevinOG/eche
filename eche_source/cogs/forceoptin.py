@@ -2,6 +2,8 @@
 
 import discord
 from discord.ext import commands
+
+from core.permissions import owner_only
 from core.opt_in_manager import opt_in, ensure_user_category, load_opted_in, save_opted_in
 import os
 
@@ -11,7 +13,7 @@ class ForceOptIn(commands.Cog):
         self.bot = bot
 
     @commands.command(name="forceoptin")
-    @commands.is_owner()
+    @owner_only()
     async def forceoptin(self, ctx, member: discord.Member = None):
         """
         Force a user into the opt-in system.

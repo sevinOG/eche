@@ -154,6 +154,10 @@ def strict_prefix(bot, message):
 
 
 class Eche(commands.Bot):
+    # A host (Waerhouse) sets this to its owner file path to turn on the Owner
+    # tier; see core/permissions.py. None = standalone (Owner is Admin).
+    owner_tier_source = None
+
     def __init__(self):
         intents = discord.Intents.default()
         intents.message_content = True
@@ -181,6 +185,13 @@ class Eche(commands.Bot):
             super(Eche, self).add_listener(callback, event_name)
 
         self.safe_add_listener = safe_add_listener
+
+        # OWNER TIER: remember the host's owner file setting (core/permissions.py)
+        try:
+            from core.permissions import register_bot
+            register_bot(self)
+        except Exception as exc:
+            print(f"[owner-tier] register failed: {type(exc).__name__}")
 
         # LOAD OPT-IN STATE
         from core.opt_in_manager import load_opted_in
@@ -466,6 +477,16 @@ class Eche(commands.Bot):
         except Exception:
             pass
         if isinstance(error, commands.CommandNotFound):
+            return
+        try:
+            from core.permissions import NotOwnerTier
+        except Exception:
+            NotOwnerTier = None
+        if NotOwnerTier is not None and isinstance(error, NotOwnerTier):
+            try:
+                await ctx.send("Only the Owner can use that command.")
+            except Exception:
+                pass
             return
         if isinstance(error, commands.NotOwner):
             try:
